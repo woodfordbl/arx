@@ -131,7 +131,7 @@ void EventForward(const char* line, size_t n) {
 }
 
 // Spawns an observer reading the stream from a non-blocking pipe.
-void EventsAddObserver(const char* command) {
+void EventsAddObserver(const char* command, char* const* env) {
   int p[2];
   if (g_events.observer_count >= ARX_MAX_OBSERVERS || pipe(p)) return;
   fcntl(p[1], F_SETFD, FD_CLOEXEC);
@@ -142,12 +142,14 @@ void EventsAddObserver(const char* command) {
   posix_spawn_file_actions_addclose(&fa, p[0]);
   char* argv[] = {"sh", "-c", (char*)command, NULL};
   pid_t pid;
-  if (posix_spawnp(&pid, "sh", &fa, NULL, argv, environ) == 0) {
+  char** full_env = env ? EnvWith(env) : environ;
+  if (posix_spawnp(&pid, "sh", &fa, NULL, argv, full_env) == 0) {
     g_events.observer_pids[g_events.observer_count] = pid;
     g_events.observers[g_events.observer_count++] = p[1];
   } else {
     close(p[1]);
   }
+  if (full_env != environ) free(full_env);
   posix_spawn_file_actions_destroy(&fa);
   close(p[0]);
 }

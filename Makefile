@@ -1,7 +1,7 @@
 # Makefile for arx.
 #   make          release binary ./arx (-Os, LTO, dead-code stripped)
 #   make debug    ./arx-debug with AddressSanitizer and UBSan
-#   make test     run tests/run.sh against ./arx-debug
+#   make test     run tests/run.sh and tests/plugins.sh against ./arx-debug
 #   make bench    check the performance budgets against ./arx
 #   make lint     style checks (scripts/lint.sh)
 #   make format   rewrite src/ in Google style
@@ -51,6 +51,7 @@ build/dbg/vendor/%.o: vendor/%.c
 
 test: arx-debug
 	ARX=./arx-debug tests/run.sh
+	ARX=./arx-debug tests/plugins.sh
 
 bench: arx
 	tests/bench.sh

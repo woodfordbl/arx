@@ -1,0 +1,14 @@
+#!/usr/bin/env python3
+"""after_tool: when a tool fails, adds a reminder to its result.
+
+stdin:  {"tool": {"name": ...}, "result": {"text": ..., "error": true|false},
+         "point": ..., "session": ..., "turn": ...}
+stdout: nothing, or {"note": "..."} (appended to the result the model sees).
+"""
+import json
+import sys
+
+event = json.load(sys.stdin)
+if event["result"]["error"]:
+    print(json.dumps({"note": "The tool failed. Read the full output file "
+                              "named above before you retry."}))

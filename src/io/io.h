@@ -113,8 +113,9 @@ void EventFlush(void);
 // Passes a subagent's event line through to our sinks and shows it.
 void EventForward(const char* line, size_t n);
 
-// Starts `sh -c command` with the event stream on its stdin.
-void EventsAddObserver(const char* command);
+// Starts `sh -c command` with the event stream on its stdin and `env`
+// ("KEY=value", NULL-terminated, may be NULL) added to its environment.
+void EventsAddObserver(const char* command, char* const* env);
 
 // Flushes, closes the sinks, and gives observers a moment to finish.
 void EventsClose(void);

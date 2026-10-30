@@ -1,0 +1,7 @@
+#!/bin/sh
+# now: an example tool in shell, with no arguments. It never reads stdin.
+if [ "$1" = --schema ]; then
+  echo '{"description": "The current date and time in UTC.", "parameters": {"type": "object", "properties": {}}}'
+  exit 0
+fi
+date -u +%Y-%m-%dT%H:%M:%SZ

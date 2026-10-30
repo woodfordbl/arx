@@ -25,7 +25,7 @@ static const double kKillGraceSeconds = 3.0;
 static const double kDrainSeconds = 0.2;
 
 // Returns a copy of environ with `extra` entries added or replaced.
-static char** EnvWith(char* const* extra) {
+char** EnvWith(char* const* extra) {
   size_t n = 0, m = 0, k = 0;
   while (environ[n]) n++;
   while (extra[m]) m++;

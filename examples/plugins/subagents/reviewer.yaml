@@ -1,0 +1,13 @@
+# A subagent spec. The parent calls it as the `reviewer` tool with
+# {"task": "..."}; arx runs itself again with this spec, one level deeper,
+# and returns the reviewer's final answer as the tool result.
+name: reviewer
+model: your/model-id
+endpoint: {base_url: "https://openrouter.ai/api/v1", api_key_env: OPENROUTER_API_KEY}
+instructions: >-
+  You review code. Read the files named in the task and reply with the three
+  most important problems, most severe first, each with the file and line.
+  Do not change any files.
+tools:
+  edit: {enabled: false}
+limits: {max_turns: 20}

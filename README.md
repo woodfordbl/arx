@@ -70,7 +70,11 @@ and the spec cannot raise them.
 
 ## Plugins
 
-All plugins are executables, in any language.
+All plugins are executables, in any language. **[docs/plugins.md](docs/plugins.md)**
+is the full guide: the exact input and output of each kind, the `ARX_*`
+variables they all get, every event type, and the session files.
+[examples/plugins/](examples/plugins) has one working example of each kind,
+and `make test` runs them all.
 
 | Kind | Where | Contract |
 |---|---|---|
@@ -86,6 +90,25 @@ Built-in compaction strategies:
 - **`summarize`:** one model call summarizes the older turns.
 - **`hybrid`:** mask first, then summarize if the context is still too large.
 - **`restart`:** starts from a fresh context each time, like the Ralph loop.
+
+## Roadmap
+
+1. ~~Plugin guide and example plugins~~ (done:
+   [docs/plugins.md](docs/plugins.md)).
+2. **External commands and plugin packs:**
+   - `arx foo` runs `arx-foo`, git-style.
+   - `plugins: [dir, ...]` in the spec merges a folder of tools, hooks,
+     skills, observers and MCP servers into the harness.
+3. **`arx acp`:** an [Agent Client Protocol](https://agentclientprotocol.com)
+   server over stdio, for editors and custom front-ends. It shares one small
+   JSON-RPC module with the MCP client.
+4. **`arx-tui`:** a terminal front-end built with
+   [OpenTUI](https://opentui.com) that talks to `arx acp`. It is a separate
+   package, so it adds nothing to the binary.
+5. **MCP client:** MCP servers in the spec become tools. Their schemas load
+   lazily through two built-in tools, `mcp_search` and `mcp_select`.
+6. **`arx climb`:** a keep/revert driver that runs the official eval outside
+   the agent's reach.
 
 ## Command line
 
@@ -111,7 +134,7 @@ Each session lives in `.arx/sessions/<id>/`:
 | | |
 |---|---|
 | `make` / `make debug` | release build / AddressSanitizer + UBSan build |
-| `make test` | 46 end-to-end checks against `tests/fake-curl`; no network or API key needed |
+| `make test` | 66 end-to-end checks against `tests/fake-curl` (46 core, 20 for the example plugins); no network or API key needed |
 | `make bench` | the performance budgets above |
 | `make lint` | Google style (clang-format, cpplint), files of 400 lines or fewer, doc comments ([docs/STYLE.md](docs/STYLE.md)) |
 | `make static` | static Linux binary, built in Docker |

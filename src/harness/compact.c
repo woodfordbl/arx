@@ -207,7 +207,8 @@ static int Restart(struct Agent* a, const char* message) {
 }
 
 // Runs an external compactor: {"messages", "usage", "context_window"} in,
-// {"messages": [...]} out. Returns 1, or -1 if it failed.
+// {"messages": [...]} out. Returns 1 when it changed the history, 0 when it
+// returned it unchanged, and -1 if it failed.
 static int External(struct Agent* a, const char* strategy) {
   cJSON* in = cJSON_CreateObject();
   cJSON_AddItemToObject(in, "messages", cJSON_Duplicate(a->messages, 1));
@@ -218,11 +219,13 @@ static int External(struct Agent* a, const char* strategy) {
   char* text = cJSON_PrintUnformatted(in);
   char* path = PathJoin(a->spec.dir, strategy);
   char* argv[] = {path, NULL};
+  char** env = ToolEnv(a);  // the same ARX_* variables tools and hooks get
   Buffer out = {0};
   Proc p = {.argv = argv,
             .in = text,
             .in_len = strlen(text),
             .timeout = 120,
+            .env = env,
             .on_out = BufferSink,
             .out_ctx = &out};
   ProcResult r;
@@ -233,13 +236,15 @@ static int External(struct Agent* a, const char* strategy) {
   for (cJSON* m = ok ? messages->child : NULL; m; m = m->next) {
     if (!JsonStr(m, "role", NULL)) ok = 0;
   }
-  if (ok) Replace(a, cJSON_DetachItemViaPointer(result, messages));
+  int same = ok && cJSON_Compare(messages, a->messages, 1);
+  if (ok && !same) Replace(a, cJSON_DetachItemViaPointer(result, messages));
   cJSON_Delete(result);
   cJSON_Delete(in);
   BufferFree(&out);
+  FreeEnv(env);
   free(text);
   free(path);
-  return ok ? 1 : -1;
+  return !ok ? -1 : same ? 0 : 1;
 }
 
 // Runs a strategy; see harness.h.

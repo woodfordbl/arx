@@ -1,0 +1,12 @@
+#!/bin/sh
+# before_tool: denies a few destructive shell commands.
+# stdin: {"tool":{"name":"bash","args":{"command":"..."}},"point":...,
+#         "session":...,"turn":...}
+# stdout: nothing to allow, or {"decision":"deny","reason":"..."}.
+input=$(cat)
+case "$input" in
+  *'"name":"bash"'*'rm -rf /'* | *'git push --force'* | *'git push -f'*)
+    echo '{"decision": "deny", "reason": "destructive command; ask the operator first"}'
+    ;;
+esac
+exit 0

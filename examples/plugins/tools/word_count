@@ -1,0 +1,31 @@
+#!/usr/bin/env python3
+"""word_count: an example tool in Python.
+
+`word_count --schema` describes the tool. A call gets its arguments as JSON
+on stdin; whatever it prints is the result, and a non-zero exit marks an
+error.
+"""
+import json
+import sys
+
+if sys.argv[1:] == ["--schema"]:
+    print(json.dumps({
+        "description": "Count the lines, words and bytes of a file.",
+        "parameters": {
+            "type": "object",
+            "properties": {"path": {"type": "string",
+                                    "description": "The file to count"}},
+            "required": ["path"],
+        },
+    }))
+    sys.exit(0)
+
+args = json.load(sys.stdin)
+try:
+    with open(args["path"], "rb") as f:
+        data = f.read()
+except OSError as e:
+    print(f"cannot read {args['path']}: {e.strerror}")
+    sys.exit(1)
+lines = data.count(b"\n")
+print(f"{lines} lines, {len(data.split())} words, {len(data)} bytes")

@@ -1,0 +1,7 @@
+#!/bin/sh
+# session_start: gives the agent the repository state up front.
+# stdout: nothing, or {"context": "..."} (added to the first message).
+status=$(git status --short 2>/dev/null | head -20)
+[ -n "$status" ] || exit 0
+printf '%s\n' "$status" |
+  python3 -c 'import json, sys; print(json.dumps({"context": "git status --short:\n" + sys.stdin.read()}))'

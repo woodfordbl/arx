@@ -1,0 +1,7 @@
+#!/bin/sh
+# stop: runs when the agent replies without calling a tool. Sends it back to
+# work until the file DONE exists.
+# stdout: nothing to stop, {"decision":"continue","message":"..."} to go on,
+#         or {"decision":"restart","message":"..."} for a fresh context.
+[ -f DONE ] && exit 0
+echo '{"decision": "continue", "message": "Not finished yet. When the task is complete, create the file DONE and say so."}'

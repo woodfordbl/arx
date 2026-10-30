@@ -172,6 +172,10 @@ typedef struct ProcResult {
 // started.
 int ProcRun(const Proc* p, ProcResult* r);
 
+// Returns a copy of the environment with `extra` ("KEY=value", NULL-terminated)
+// added or replaced. Free only the array; the strings are borrowed.
+char** EnvWith(char* const* extra);
+
 // ---- json.c ----
 
 // Returns the node at a dotted path such as "tools.bash.timeout", or NULL.
