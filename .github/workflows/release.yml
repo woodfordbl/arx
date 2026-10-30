@@ -12,7 +12,9 @@ permissions:
 
 jobs:
   macos:
-    runs-on: macos-14
+    # macos-latest tracks GitHub's current image; macos-14 was retired in
+    # November 2026 (https://github.com/actions/runner-images/issues/13518).
+    runs-on: macos-latest
     strategy:
       matrix:
         include:
