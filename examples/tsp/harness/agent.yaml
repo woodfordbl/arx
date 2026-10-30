@@ -1,0 +1,21 @@
+# The TSP climber's harness. The agent may edit this file and everything
+# under harness/; edits take effect on its next turn.
+name: tsp-climber
+model: your/model-id   # any model your endpoint serves; or use --set model=...
+endpoint:
+  base_url: https://openrouter.ai/api/v1
+  api_key_env: OPENROUTER_API_KEY
+context_window: 128000
+model_settings: {temperature: 0.7, max_tokens: 8000}
+instructions: [{file: prompts/system.md}]
+first_message: {file: prompts/first.md}
+tools:
+  bash: {timeout: 120}
+tool_output: {head: 2kb, tail: 6kb}
+hooks:
+  stop: {timeout: 10s}
+# Each restart begins fresh from first.md, which pulls in results.tsv and
+# notes.md: memory lives in files, not in the context.
+compaction: {strategy: restart, trigger: 0.6}
+skills: skills
+limits: {max_turns: 1000, turn_timeout: 10m}

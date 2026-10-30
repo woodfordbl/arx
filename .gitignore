@@ -1,0 +1,6 @@
+/arx
+/arx-debug
+/arx-linux-*
+/build/
+*.dSYM/
+.arx/

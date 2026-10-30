@@ -1,0 +1,3 @@
+#!/bin/sh
+# Never stop: when the agent ends its turn, it starts the next experiment.
+echo '{"decision":"continue","message":"Next experiment. Log it in results.tsv and keep notes.md current."}'

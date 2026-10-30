@@ -1,0 +1,62 @@
+#!/usr/bin/env python3
+"""Scores work/solve.py: runs it on fixed TSP instances and prints the mean
+tour length (lower is better) as the last line, `score: <value>`.
+
+The scorer builds the instances, checks every tour and computes its length
+itself; nothing the solver prints about its own quality is trusted.
+Usage: eval/score [--holdout]
+"""
+import math
+import random
+import subprocess
+import sys
+import time
+
+PUBLIC_SEEDS = [1, 2, 3]
+HOLDOUT_SEEDS = [101, 102, 103]  # for you, not for the agent to tune on
+CITIES = 1000
+BUDGET = 10.0  # seconds per instance
+
+
+def instance(seed):
+    rng = random.Random(seed)
+    return [(rng.random(), rng.random()) for _ in range(CITIES)]
+
+
+def tour_length(points, tour):
+    return sum(math.dist(points[tour[i]], points[tour[i - 1]])
+               for i in range(len(tour)))
+
+
+def run(points):
+    text = f"{len(points)}\n" + "".join(f"{x:.6f} {y:.6f}\n" for x, y in points)
+    start = time.time()
+    done = subprocess.run([sys.executable, "work/solve.py", str(BUDGET)],
+                          input=text, capture_output=True, text=True,
+                          timeout=BUDGET + 5)
+    secs = time.time() - start
+    if done.returncode:
+        raise RuntimeError(f"solve.py exited {done.returncode}: "
+                           f"{done.stderr.strip()[-500:]}")
+    tour = [int(v) for v in done.stdout.split()]
+    if sorted(tour) != list(range(len(points))):
+        raise ValueError("not a valid tour: every city exactly once")
+    return tour_length(points, tour), secs
+
+
+def main():
+    seeds = HOLDOUT_SEEDS if "--holdout" in sys.argv else PUBLIC_SEEDS
+    total = 0.0
+    for seed in seeds:
+        try:
+            length, secs = run(instance(seed))
+        except Exception as e:  # report any failure as a crash
+            print(f"instance {seed}: FAILED: {e}")
+            print("score: inf")
+            sys.exit(1)
+        print(f"instance {seed}: length {length:.4f} in {secs:.1f}s")
+        total += length
+    print(f"score: {total / len(seeds):.4f}")
+
+
+main()

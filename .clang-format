@@ -1,0 +1,14 @@
+# Google style (https://google.github.io/styleguide/cppguide.html), applied to C.
+BasedOnStyle: Google
+Language: Cpp
+DerivePointerAlignment: false
+PointerAlignment: Left
+IncludeBlocks: Regroup
+IncludeCategories:
+  # C system headers, then vendored libraries, then this project.
+  - Regex: '^<.*\.h>'
+    Priority: 1
+  - Regex: '^"vendor/'
+    Priority: 2
+  - Regex: '^"src/'
+    Priority: 3
