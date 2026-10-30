@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include "vendor/libyaml/include/yaml.h"
 
@@ -125,13 +126,89 @@ static int ParseYaml(const char* path, Spec* spec, Buffer* err) {
   return ok ? 0 : -1;
 }
 
-// Loads, overrides, validates and fingerprints; see harness.h.
+// Copies the line numbers of `prefix` and everything under it from `from`
+// into `lines`, as "file:line" strings.
+static void CopyLines(cJSON* lines, cJSON* from, const char* prefix,
+                      const char* file) {
+  size_t n = strlen(prefix);
+  for (cJSON* l = from->child; l; l = l->next) {
+    if (strncmp(l->string, prefix, n)) continue;  // also ensures length >= n
+    char next = l->string[n];
+    if (next && next != '.' && next != '[') continue;
+    char* where = XAsprintf("%s:%d", file, l->valueint);
+    cJSON_AddStringToObject(lines, l->string, where);
+    free(where);
+  }
+}
+
+// Moves every key of `defaults` that `target` lacks into `target`,
+// recursing into mappings that both have, so the project spec wins.
+static void MergeDefaults(cJSON* target, cJSON* defaults, const char* path,
+                          Spec* spec, const Spec* config) {
+  for (cJSON* d = defaults->child; d;) {
+    cJSON* next = d->next;
+    char* p = *path ? XAsprintf("%s.%s", path, d->string) : XStrdup(d->string);
+    cJSON* t = cJSON_GetObjectItemCaseSensitive(target, d->string);
+    if (!t) {
+      cJSON* moved = cJSON_DetachItemViaPointer(defaults, d);
+      cJSON_AddItemToObject(target, moved->string, moved);
+      CopyLines(spec->lines, config->lines, p, config->path);
+    } else if (cJSON_IsObject(t) && cJSON_IsObject(d)) {
+      MergeDefaults(t, d, p, spec, config);
+    }
+    free(p);
+    d = next;
+  }
+}
+
+// Reads the user's defaults (config.yaml in ConfigDir) into `config`.
+// Returns 1 if they exist, 0 if not, and -1 on a YAML error.
+static int LoadDefaults(Spec* config, Buffer* err) {
+  char* dir = ConfigDir();
+  char* path = XAsprintf("%s/config.yaml", dir);
+  memset(config, 0, sizeof(*config));
+  int found = access(path, R_OK) == 0;
+  if (found && ParseYaml(path, config, err)) found = -1;
+  if (found > 0) {
+    config->path = path;
+    config->dir = dir;
+  } else {
+    free(path);
+    free(dir);
+  }
+  return found;
+}
+
+// Loads, merges, overrides, validates and fingerprints; see harness.h.
 int SpecLoad(const char* path, cJSON* sets, Spec* spec, Buffer* err) {
+  Spec config;
   memset(spec, 0, sizeof(*spec));
   size_t errors_before = err->len;
-  if (ParseYaml(path, spec, err)) return -1;
-  spec->path = XStrdup(path);
-  spec->dir = DirName(path);
+  int have_defaults = LoadDefaults(&config, err);
+  if (have_defaults < 0) return -1;
+  if (!path && !have_defaults) {
+    BufferAppendStr(
+        err,
+        "no agent.yaml here and no saved defaults: run `arx "
+        "setup`, or `arx init` to start a harness in this folder\n");
+    return -1;
+  }
+  if (!path) {
+    *spec = config;  // the defaults are the whole spec
+    spec->config = XStrdup(spec->path);
+  } else if (ParseYaml(path, spec, err)) {
+    SpecFree(&config);
+    return -1;
+  } else {
+    spec->path = XStrdup(path);
+    spec->dir = DirName(path);
+    if (have_defaults && cJSON_IsObject(spec->root) &&
+        cJSON_IsObject(config.root)) {
+      MergeDefaults(spec->root, config.root, "", spec, &config);
+      spec->config = XStrdup(config.path);
+    }
+    SpecFree(&config);
+  }
   if (cJSON_IsObject(spec->root)) {
     for (cJSON* kv = sets ? sets->child : NULL; kv; kv = kv->next) {
       JsonSet(spec->root, kv->string, cJSON_Duplicate(kv, 1));
@@ -152,6 +229,7 @@ void SpecFree(Spec* spec) {
   cJSON_Delete(spec->lines);
   free(spec->path);
   free(spec->dir);
+  free(spec->config);
   memset(spec, 0, sizeof(*spec));
 }
 
@@ -245,6 +323,7 @@ static void HashTextFiles(uint64_t* h, const Spec* spec, cJSON* node) {
 uint64_t SpecSignature(const Spec* spec) {
   uint64_t h = 1469598103934665603ULL;
   HashFile(&h, spec->path);
+  if (spec->config) HashFile(&h, spec->config);
   HashTextFiles(&h, spec, JsonGet(spec->root, "instructions"));
   HashTextFiles(&h, spec, JsonGet(spec->root, "first_message"));
   HashTextFiles(&h, spec, JsonGet(spec->root, "compaction.prompt"));

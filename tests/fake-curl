@@ -2,18 +2,21 @@
 # fake-curl: a stand-in for curl in tests (set ARX_CURL to this file).
 #
 # Replays $FAKE_DIR/NN.resp in order, one file per call, and saves each
-# request body as $FAKE_DIR/req-NN.json. A .resp file is a status line
-# ("HTTP/1.1 200 OK"), optional header lines, a blank line, then the body.
+# request body as $FAKE_DIR/req-NN.json and its headers as hdr-NN.txt. A
+# .resp file is a status line ("HTTP/1.1 200 OK"), optional header lines, a
+# blank line, then the body.
 # A first line "EXIT n" makes it exit with n instead, like a curl error
 # (28 is a timeout). The body is written in 7-byte pieces so the stream
 # parser sees lines split at arbitrary points.
 set -u
 
 headers=/dev/null
+request_headers=""
 while [ $# -gt 0 ]; do
   case "$1" in
     -D) headers=$2; shift 2 ;;
-    -H | --max-time | --data-binary) shift 2 ;;
+    -H) case "$2" in @*) request_headers=${2#@} ;; esac; shift 2 ;;
+    -X | --max-time | --data-binary) shift 2 ;;
     *) shift ;;
   esac
 done
@@ -26,6 +29,7 @@ rmdir "$FAKE_DIR/.lock"
 
 id=$(printf %02d "$n")
 cat >"$FAKE_DIR/req-$id.json"
+if [ -n "$request_headers" ]; then cp "$request_headers" "$FAKE_DIR/hdr-$id.txt"; fi
 resp="$FAKE_DIR/$id.resp"
 if [ ! -f "$resp" ]; then
   echo "fake-curl: no response $resp" >&2

@@ -17,7 +17,10 @@
 // ---- util.c ----
 
 // The harness version, printed by `arx version` and in session.start events.
-#define ARX_VERSION "0.1.0"
+// The build sets it from the git tag (see the Makefile); "dev" otherwise.
+#ifndef ARX_VERSION
+#define ARX_VERSION "dev"
+#endif
 
 // Process exit codes. They are also the "status" of a session.
 typedef enum ExitCode {
@@ -116,6 +119,11 @@ char* DirName(const char* path);
 
 // Returns the absolute path of the running executable.
 char* SelfPath(const char* argv0);
+
+// Returns arx's config directory (malloc'd): $ARX_CONFIG_DIR, else
+// $XDG_CONFIG_HOME/arx, else ~/.config/arx. It holds config.yaml (the user's
+// defaults) and, outside macOS, the 0600 credentials file.
+char* ConfigDir(void);
 
 // Returns a file's modification time in nanoseconds, or -1 if it is missing.
 // Stores its size in `*size` (-1 if missing) when `size` is not NULL.

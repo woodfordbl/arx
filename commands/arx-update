@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+# arx-update: update arx to the latest GitHub release
+#
+# Like fx upgrade: downloads arx-<os>-<arch>.tar.gz and its .sha256 from the
+# release, verifies the checksum, and swaps the new files in with renames, so
+# a running arx is never left half-written. While the repo is private, it
+# downloads through gh (your GitHub login).
+set -u
+
+usage() {
+  cat <<'EOF'
+usage: arx update [--check] [--version vX.Y.Z] [--prefix DIR]
+  --check     only say whether a newer release exists (exit 10 if so)
+  --version   install this release instead of the latest
+  --prefix    install into DIR/bin and DIR/libexec/arx (default: where arx
+              is installed now)
+EOF
+}
+
+repo=${ARX_REPO:-woodfordbl/arx}
+check=0 want="" prefix=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --check) check=1; shift ;;
+    --version) want=$2; shift 2 ;;
+    --prefix) prefix=$2; shift 2 ;;
+    -h | --help) usage; exit 0 ;;
+    *) echo "arx update: unknown option $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+os=$(uname -s | tr '[:upper:]' '[:lower:]')
+arch=$(uname -m | sed 's/aarch64/arm64/')
+asset=arx-$os-$arch.tar.gz
+current=$("${ARX_BIN:-arx}" version 2>/dev/null | awk '{print $2}')
+
+# The newest release tag. ARX_UPDATE_DIR (a folder with a `latest` file and
+# the assets) replaces GitHub, for tests and mirrors.
+latest_tag() {
+  if [ -n "${ARX_UPDATE_DIR:-}" ]; then
+    cat "$ARX_UPDATE_DIR/latest"
+  elif command -v gh >/dev/null && gh auth status >/dev/null 2>&1; then
+    gh release view --repo "$repo" --json tagName -q .tagName
+  else
+    curl -fsSL "https://api.github.com/repos/$repo/releases/latest" | jq -r .tag_name
+  fi
+}
+
+# Downloads the asset and its checksum for tag $1 into folder $2.
+download() {
+  if [ -n "${ARX_UPDATE_DIR:-}" ]; then
+    cp "$ARX_UPDATE_DIR/$asset" "$ARX_UPDATE_DIR/$asset.sha256" "$2/"
+  elif command -v gh >/dev/null && gh auth status >/dev/null 2>&1; then
+    gh release download "$1" --repo "$repo" --pattern "$asset*" --dir "$2"
+  else
+    local base=https://github.com/$repo/releases/download/$1
+    curl -fsSL -o "$2/$asset" "$base/$asset" &&
+      curl -fsSL -o "$2/$asset.sha256" "$base/$asset.sha256"
+  fi
+}
+
+tag=${want:-$(latest_tag)} || exit 1
+[ -n "$tag" ] && [ "$tag" != null ] || { echo "arx update: no release found for $repo" >&2; exit 1; }
+if [ "${tag#v}" = "$current" ]; then
+  echo "arx is up to date ($current)."
+  exit 0
+fi
+if [ "$check" -eq 1 ]; then
+  echo "arx $current is installed; ${tag#v} is available. Run \`arx update\`."
+  exit 10
+fi
+
+# Where to install: --prefix, else next to the running binary when that is
+# an installed layout (bin/arx beside libexec/arx).
+bin=${ARX_BIN:-$(command -v arx)}
+if [ -z "$prefix" ]; then
+  prefix=$(cd "$(dirname "$bin")/.." && pwd)
+  if [ ! -d "$prefix/libexec/arx" ]; then
+    echo "arx update: $bin is not an installed copy (a source checkout?)." >&2
+    echo "Use \`git pull && make install\`, or \`arx update --prefix ~/.local\`." >&2
+    exit 2
+  fi
+fi
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+echo "Downloading arx $tag for $os-$arch..."
+download "$tag" "$tmp" || { echo "arx update: download failed" >&2; exit 1; }
+# Compare the hashes ourselves: `sha256sum -c` on macOS only warns about a
+# malformed checksum file and still exits 0.
+expected=$(awk '{print $1; exit}' "$tmp/$asset.sha256")
+actual=$({ sha256sum "$tmp/$asset" 2>/dev/null || shasum -a 256 "$tmp/$asset"; } | awk '{print $1}')
+if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
+  echo "arx update: checksum mismatch; nothing changed" >&2
+  exit 1
+fi
+tar -xzf "$tmp/$asset" -C "$tmp"
+new=$tmp/arx-$os-$arch
+
+mkdir -p "$prefix/bin" "$prefix/libexec"
+cp "$new/bin/arx" "$prefix/bin/.arx.new" && chmod 755 "$prefix/bin/.arx.new"
+mv -f "$prefix/bin/.arx.new" "$prefix/bin/arx"
+rm -rf "$prefix/libexec/.arx.new" && cp -R "$new/libexec/arx" "$prefix/libexec/.arx.new"
+rm -rf "$prefix/libexec/.arx.old"
+[ -d "$prefix/libexec/arx" ] && mv "$prefix/libexec/arx" "$prefix/libexec/.arx.old"
+mv "$prefix/libexec/.arx.new" "$prefix/libexec/arx" && rm -rf "$prefix/libexec/.arx.old"
+echo "Updated arx ${current:-?} -> $("$prefix/bin/arx" version | awk '{print $2}') in $prefix."

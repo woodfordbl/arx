@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# arx-init: start a harness in this folder (agent.yaml, prompts, tools, hooks)
+set -u
+
+usage() {
+  cat <<'EOF'
+usage: arx init [basic|autoresearch] [--force]
+  basic         agent.yaml, prompts/system.md, and empty tools/ hooks/ skills/
+  autoresearch  basic plus program.md, an experiment-loop prompt, a
+                never-stop hook and restart compaction (see examples/tsp)
+  --force       overwrite files that already exist
+The model and endpoint come from `arx setup`, so agent.yaml stays short.
+EOF
+}
+
+template=basic force=0
+for arg in "$@"; do
+  case "$arg" in
+    basic | autoresearch) template=$arg ;;
+    --force) force=1 ;;
+    -h | --help) usage; exit 0 ;;
+    *) echo "arx init: unknown argument $arg" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+# Writes stdin to $1 unless it exists (or --force).
+put() {
+  if [ -e "$1" ] && [ "$force" -eq 0 ]; then
+    echo "  kept    $1 (exists; --force overwrites)"
+    cat >/dev/null
+    return
+  fi
+  mkdir -p "$(dirname "$1")"
+  cat >"$1"
+  echo "  wrote   $1"
+}
+
+name=$(basename "$PWD" | tr -c 'A-Za-z0-9_\n-' '-')
+mkdir -p tools hooks skills
+
+if [ "$template" = basic ]; then
+  put agent.yaml <<EOF
+# The harness for this folder. The model and endpoint come from \`arx setup\`;
+# set them here to override. Every key: \`arx schema\`. Plugins: docs/plugins.md.
+name: $name
+instructions: [{file: prompts/system.md}]
+skills: skills
+EOF
+  put prompts/system.md <<'EOF'
+You are an autonomous agent working in {{cwd}}. Use the tools to act, check
+the results, and keep going until the task is done. A reply without a tool
+call ends the task, so never say you will do something later: do it now.
+When everything is done, reply with a short summary and no tool calls.
+
+{{harness}}
+EOF
+else
+  put agent.yaml <<EOF
+# An autoresearch harness: improve a score, keep what helps, never stop.
+# The model and endpoint come from \`arx setup\`; set them here to override.
+name: $name
+instructions: [{file: prompts/system.md}]
+first_message: {file: prompts/first.md}
+compaction: {strategy: restart, trigger: 0.6}
+skills: skills
+limits: {max_turns: 1000}
+EOF
+  put program.md <<'EOF'
+# Task
+
+Describe what to improve, how it is scored, and the rules. For example:
+
+`work/` holds the thing to improve. `eval/score` prints `score: <number>` as
+its last line; lower is better. Change only `work/`; never change `eval/` or
+this file.
+EOF
+  put prompts/system.md <<'EOF'
+You are an autonomous researcher working in {{cwd}}. Your job is to improve
+the score from eval/score (see program.md).
+
+Run this loop forever. Never stop to ask whether to continue.
+1. Pick one idea and change the work.
+2. Commit it: `git add -A work && git commit -qm "<idea>"`.
+3. Score it: `eval/score > run.log 2>&1; tail -3 run.log`.
+4. Add a line to results.tsv: commit, score, keep|discard|crash, idea.
+5. Keep the commit if the score improved. If not, undo only the work:
+   `git reset -q HEAD~1 && git checkout -- work`.
+6. Keep notes.md current: what worked, what failed, what to try next.
+
+Make yourself faster as you go: write tools, hooks and skills.
+
+{{harness}}
+EOF
+  put prompts/first.md <<'EOF'
+{{file:program.md}}
+
+{{prompt}}
+
+Results so far (last 20):
+{{file:results.tsv:tail=20}}
+
+Your notes:
+{{file:notes.md:max=8kb}}
+
+Your skills:
+{{skills}}
+EOF
+  put hooks/stop <<'EOF'
+#!/bin/sh
+# Never stop: when the agent ends its turn, start the next experiment.
+echo '{"decision":"continue","message":"Next experiment. Log it in results.tsv."}'
+EOF
+  chmod +x hooks/stop
+fi
+grep -qs '^\.arx/$' .gitignore || echo ".arx/" >>.gitignore
+echo "Ready. Check it with \`arx check\`, then run \`arx\`."

@@ -7,6 +7,9 @@ ARX=${ARX:-./arx-debug}
 ARX=$(cd "$(dirname "$ARX")" && pwd)/$(basename "$ARX")
 export ARX_CURL="$ROOT/tests/fake-curl"
 export NO_COLOR=1
+# Never read the real user defaults or stored keys.
+export ARX_CONFIG_DIR=$(mktemp -d "${TMPDIR:-/tmp}/arx-config.XXXXXX")
+export ARX_DISABLE_KEYCHAIN=1
 export ASAN_OPTIONS=${ASAN_OPTIONS:-detect_leaks=0:abort_on_error=1}
 export UBSAN_OPTIONS=${UBSAN_OPTIONS:-halt_on_error=1:print_stacktrace=1}
 passed=0

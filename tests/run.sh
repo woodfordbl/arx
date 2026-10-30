@@ -14,6 +14,17 @@ check "final_output in --json" has out.txt '"final_output":"Hello"'
 check "events cover the session" has .arx/sessions/last/events.jsonl '"type":"session.end"'
 check "transcript has 3 messages" test "$(wc -l <.arx/sessions/last/transcript.jsonl)" -eq 3
 
+# Cost: usage.cost is 0 when Vercel AI Gateway uses your own provider key;
+# the real price is in usage.market_cost.
+begin "gateway cost"
+{
+  printf 'data: {"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}\n\n'
+  printf 'data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":2,"cost":0,"market_cost":0.0123}}\n\n'
+  printf 'data: [DONE]\n\n'
+} | reply 1 "200 OK"
+run "hi" --json
+check "cost from market_cost" has out.txt '"cost":0.0123'
+
 # A tool call: the output reaches the next request.
 begin "bash tool"
 sse_tool bash '{\"command\":\"echo hi-there\"}' | reply 1 "200 OK"

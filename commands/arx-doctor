@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# arx-doctor: check the install, your spec, your key and your endpoint
+set -u
+
+if [ "${1:-}" = -h ] || [ "${1:-}" = --help ]; then
+  echo "usage: arx doctor [--live]   (--live also makes one small model call)"
+  exit 0
+fi
+arx=${ARX_BIN:-arx}
+problems=0
+
+ok() { echo "  ✓ $*"; }
+bad() { echo "  ✗ $*"; problems=$((problems + 1)); }
+warn() { echo "  ! $*"; }
+
+echo "arx"
+ok "$("$arx" version) at $arx"
+if command -v arx >/dev/null; then ok "on PATH as $(command -v arx)"; else warn "not on PATH (add its folder, or run make install)"; fi
+for tool in curl jq git; do
+  if command -v "$tool" >/dev/null; then ok "$tool"; else
+    case "$tool" in
+      curl) bad "curl is missing; arx needs it for every model call" ;;
+      jq) bad "jq is missing; arx setup, models and sessions need it" ;;
+      git) warn "git is missing; only needed for autoresearch loops" ;;
+    esac
+  fi
+done
+
+echo "harness"
+if [ -f agent.yaml ]; then ok "./agent.yaml"; else warn "no ./agent.yaml; using your defaults (arx init makes one)"; fi
+if check=$("$arx" check 2>&1); then
+  ok "$(echo "$check" | head -1)"
+else
+  bad "the spec has problems:"
+  echo "$check" | sed 's/^/      /'
+fi
+
+echo "endpoint"
+if source=$("$arx" request --auth-source 2>/dev/null); then
+  ok "API key from $source"
+else
+  warn "no API key found (fine for local servers such as Ollama; else run arx setup)"
+fi
+models=$("$arx" request /models 2>/dev/null)
+code=$?
+case "$code" in
+  0) ok "endpoint answers ($(printf '%s' "$models" | jq '.data | length' 2>/dev/null || echo "?") models)" ;;
+  4) bad "the endpoint rejected the key (run arx setup)" ;;
+  *) bad "the endpoint did not answer (arx request /models exited $code)" ;;
+esac
+model=$("$arx" check 2>/dev/null | sed -n 's/.*(model \(.*\) at .*/\1/p')
+if [ "$code" -eq 0 ] && [ -n "$model" ]; then
+  if printf '%s' "$models" | jq -e --arg m "$model" '.data[] | select(.id == $m)' >/dev/null 2>&1; then
+    ok "model $model is available"
+  else
+    bad "model $model is not in the endpoint's list (see arx models)"
+  fi
+fi
+
+if [ "${1:-}" = --live ]; then
+  tmp=$(mktemp -d)
+  if reply=$(cd "$tmp" && "$arx" -p "Reply with exactly: ok" --quiet --cap usd=0.02 --cap turns=2 2>&1); then
+    ok "live call: $reply"
+  else
+    bad "live call failed: $reply"
+  fi
+  rm -rf "$tmp"
+fi
+
+echo
+if [ "$problems" -eq 0 ]; then echo "All good."; else echo "$problems problem(s) found."; fi
+[ "$problems" -eq 0 ]

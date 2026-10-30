@@ -1,0 +1,21 @@
+# Runs the end-to-end tests on every push to main and every pull request,
+# against a static Linux build (Alpine, musl). Releases also test on macOS.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and test (static musl, in Alpine)
+        run: |
+          docker run --rm -v "$PWD":/w -w /w alpine:3.20 sh -c '
+            apk add -q build-base bash python3 curl jq git &&
+            make arx CC="gcc -static" VERSION=ci &&
+            ARX=./arx tests/run.sh && ARX=./arx tests/plugins.sh &&
+            ARX=./arx tests/cli.sh'

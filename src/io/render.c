@@ -83,7 +83,7 @@ static int RenderWork(cJSON* e, const char* type, int depth) {
   if (!strcmp(type, "model.message")) {
     double in = JsonNum(e, "tokens_in", 0), out = JsonNum(e, "tokens_out", 0);
     if (in || out) {
-      Line(depth, kDim, "  · %s in · %s out · $%.4f", Human(in, &a),
+      Line(depth, kDim, "  · %s in · %s out · $%.5f", Human(in, &a),
            Human(out, &b), JsonNum(e, "cost", 0));
     }
   } else if (!strcmp(type, "model.retry")) {
@@ -137,7 +137,7 @@ static void RenderHarness(cJSON* e, const char* type, int depth) {
   } else if (!strcmp(type, "error")) {
     Line(depth, kRed, "  ✗ %s", JsonStr(e, "error", ""));
   } else if (!strcmp(type, "session.end")) {
-    Line(depth, kBold, "● %s · %d turns · %s tokens · $%.4f · %.1fs",
+    Line(depth, kBold, "● %s · %d turns · %s tokens · $%.5f · %.1fs",
          JsonStr(e, "status", ""), (int)JsonNum(e, "turns", 0),
          Human(JsonNum(e, "tokens", 0), &a), JsonNum(e, "cost", 0),
          JsonNum(e, "secs", 0));

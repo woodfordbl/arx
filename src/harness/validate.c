@@ -109,6 +109,8 @@ static void Problem(const Spec* spec, Buffer* err, const char* path,
   cJSON* line = cJSON_GetObjectItemCaseSensitive(spec->lines, path);
   if (cJSON_IsNumber(line)) {
     BufferPrintf(err, "%s:%d: %s: ", spec->path, line->valueint, path);
+  } else if (cJSON_IsString(line)) {  // from the user's defaults
+    BufferPrintf(err, "%s: %s: ", line->valuestring, path);
   } else {
     BufferPrintf(err, "%s: %s: ", spec->path, path);
   }

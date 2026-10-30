@@ -19,11 +19,19 @@ kind, wired together in one spec, and `make test` runs every one of them.
 | [Compactor](#compactors) | `compaction.strategy: <path>` | when the prompt passes the trigger | `compactors/keep_last.py` |
 | [Observer](#observers) | `observers: [command]` | for the whole session | `observers/notify.sh` |
 | [Driver](#drivers) | anywhere: it runs `arx` | whenever you run it | `drivers/resume_on_cap.sh` |
+| [Command](#commands) | `arx-<name>` on PATH or next to arx | when you type `arx <name>` | `commands/arx-setup`, `arx-update` |
 | [Skill](#skills) | `<skills dir>/<name>/SKILL.md` | read by the agent when needed | `skills/plugin-authoring` |
 
 Paths are relative to the directory of the spec (`--spec`, default
 `./agent.yaml`). Check a harness with `arx check` and list its tools with
 `arx tools`.
+
+**With no `./agent.yaml`:** arx uses your defaults from `arx setup`, which are
+`config.yaml` in `~/.config/arx/`, or `$ARX_CONFIG_DIR` if you set it. In that
+case the spec directory is that folder, so tools and hooks you put in
+`~/.config/arx/tools/` and `~/.config/arx/hooks/` work everywhere. When a
+project does have an `agent.yaml`, it is merged over your defaults key by key,
+and the project wins.
 
 ## What every plugin gets
 
@@ -180,6 +188,32 @@ To control a running session, append commands to its inbox:
 - `arx ctl ID|last note "TEXT"`: the agent sees the note on its next turn.
 - `arx ctl ID|last stop`: it stops after the current turn.
 
+## Commands
+
+`arx <name>` runs the executable `arx-<name>` with the remaining arguments,
+the way `git foo` runs `git-foo`. `arx setup`, `init`, `doctor`, `models`,
+`sessions` and `update` are commands like this, written as short scripts in
+[`commands/`](../commands).
+
+- **Where arx looks, in order:**
+  1. `../libexec/arx/` next to the binary (installed copies);
+  2. `commands/` next to the binary (a source checkout);
+  3. your PATH.
+- **Environment:** the command gets `ARX_BIN` (the arx binary) and
+  `ARX_LIBEXEC` (the folder it was found in).
+- **Help:** a line `# arx-<name>: one-line summary` near the top makes it show
+  up in `arx help`. `arx help <name>` runs `arx-<name> --help`.
+- **Endpoint access:** use `"$ARX_BIN" request /models`, or any other path. It
+  calls your endpoint with your key without the key passing through your
+  script. `"$ARX_BIN" request --auth-source` says where the key came from
+  without showing it.
+
+```sh
+#!/bin/sh
+# arx-hello: says hello
+echo "hello $* from $("$ARX_BIN" version)"
+```
+
 ## Skills
 
 A skill is a folder `<skills dir>/<name>/SKILL.md`, where `skills:` in the spec
@@ -235,20 +269,17 @@ session:
 
 These extend the contracts above; see the roadmap in the README.
 
-1. **External commands:** `arx foo` runs `arx-foo` from PATH or
-   `~/.arx/plugins/*/bin`, git-style, so front-ends and drivers install like
-   any command.
-2. **Plugin packs:** `plugins: [dir, ...]` in the spec merges a folder of
+1. **Plugin packs:** `plugins: [dir, ...]` in the spec merges a folder of
    `tools/`, `hooks/` and `skills/`, plus a `plugin.yaml` with observers and MCP
    servers, into the harness.
-3. **ACP server (`arx acp`):** the Agent Client Protocol over stdio, for
+2. **ACP server (`arx acp`):** the Agent Client Protocol over stdio, for
    editors and custom front-ends:
    - `session/new` and `session/load` map to a new session and `--resume`;
    - `session/prompt` runs the turn loop;
    - `session/cancel` is the Ctrl-C path;
    - events become `session/update` messages;
    - `permissions: ask` sends `session/request_permission` before tool calls.
-4. **OpenTUI front-end (`arx-tui`):** a terminal UI that talks to `arx acp`.
-5. **MCP client:** MCP servers declared in the spec become tools. Only two
+3. **OpenTUI front-end (`arx-tui`):** a terminal UI that talks to `arx acp`.
+4. **MCP client:** MCP servers declared in the spec become tools. Only two
    built-in tools sit in the prompt: `mcp_search` finds a tool, and
    `mcp_select` adds its full schema on the next turn.

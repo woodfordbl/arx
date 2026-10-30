@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# arx-sessions: list the sessions in this folder, newest last
+set -u
+
+if [ "${1:-}" = -h ] || [ "${1:-}" = --help ]; then
+  cat <<'EOF'
+usage: arx sessions [--all]
+  Lists .arx/sessions/ here: id, status, turns, cost and the task.
+  Shows the last 20 unless --all. Follow one with `arx watch ID`;
+  continue one with `arx --resume ID`.
+EOF
+  exit 0
+fi
+dir=.arx/sessions
+if [ ! -d "$dir" ]; then
+  echo "No sessions in this folder yet."
+  exit 0
+fi
+limit=20
+[ "${1:-}" = --all ] && limit=100000
+
+printf '%-22s %-11s %5s %9s  %s\n' session status turns cost task
+for meta in "$dir"/*/meta.json; do
+  [ -f "$meta" ] || continue
+  id=$(basename "$(dirname "$meta")")
+  task=$(sed -n 2p "$dir/$id/transcript.jsonl" 2>/dev/null | jq -r '.content // ""' 2>/dev/null |
+    tr '\n' ' ' | cut -c1-60)
+  jq -r --arg id "$id" --arg task "$task" \
+    '[$id, .status, (.turns | tostring), ("$" + ((.cost * 10000 | round) / 10000 | tostring)), $task] | @tsv' \
+    "$meta" 2>/dev/null
+done | tail -n "$limit" | awk -F'\t' '{ printf "%-22s %-11s %5s %9s  %s\n", $1, $2, $3, $4, $5 }'

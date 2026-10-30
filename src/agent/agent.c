@@ -18,8 +18,10 @@
 // Used when the spec has no instructions.
 static const char kDefaultInstructions[] =
     "You are an autonomous agent working in {{cwd}}. Use the tools to act, "
-    "check the results, and keep going until the task is done. When you are "
-    "finished, reply with a short summary and no tool calls.\n\n{{harness}}";
+    "check the results, and keep going until the task is done. A reply "
+    "without a tool call ends the task, so never say you will do something "
+    "later: do it now. When everything is done, reply with a short summary "
+    "and no tool calls.\n\n{{harness}}";
 
 // Parses one --cap; see agent.h.
 int CapsParse(Caps* c, const char* key_value) {

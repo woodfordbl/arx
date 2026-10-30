@@ -28,7 +28,7 @@ echo "== cpplint"
 uvx --quiet cpplint --quiet "${src[@]}" || fail=1
 
 echo "== file length (max 400 lines)"
-for f in "${src[@]}" scripts/* tests/*.sh tests/fake-curl Makefile; do
+for f in "${src[@]}" scripts/* tests/*.sh tests/fake-curl commands/* install.sh Makefile; do
   [ -f "$f" ] || continue
   n=$(wc -l <"$f")
   if [ "$n" -gt 400 ]; then

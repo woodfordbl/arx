@@ -27,16 +27,20 @@ struct Agent;
 // A loaded, validated spec.
 typedef struct Spec {
   cJSON* root;   // the spec as JSON
-  cJSON* lines;  // "dotted.path" -> line number, for error messages
+  cJSON* lines;  // "dotted.path" -> line number (or "file:line" for keys
+                 // that came from the user's defaults), for error messages
   char* path;    // the spec file
   char* dir;     // its directory; tools/, hooks/ and prompts are relative
+  char* config;  // the defaults file merged in (config.yaml), or NULL
   uint64_t sig;  // SpecSignature() when it was loaded
 } Spec;
 
-// Loads and validates `path`, applying `sets` (from --set; may be NULL).
-// On success returns 0 and fills `spec`. On failure returns -1, appends one
-// line per problem to `err` ("file:line: path: message"), and leaves `spec`
-// empty.
+// Loads and validates `path`, merged over the user's defaults in
+// ConfigDir()/config.yaml (the spec wins key by key), then applies `sets`
+// (from --set; may be NULL). With `path` NULL the defaults are the whole
+// spec, and tools/ and hooks/ come from the config directory. On success
+// returns 0 and fills `spec`. On failure returns -1, appends one line per
+// problem to `err` ("file:line: path: message"), and leaves `spec` empty.
 int SpecLoad(const char* path, cJSON* sets, Spec* spec, Buffer* err);
 
 // Frees a loaded spec.

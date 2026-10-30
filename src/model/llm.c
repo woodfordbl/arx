@@ -1,9 +1,7 @@
 // llm.c: builds the request, runs curl, classifies the outcome and retries.
-// The API key is passed to curl in a 0600 header file, never on the command
-// line, so it does not show up in process listings.
+// Credentials and request headers come from auth.c.
 
 #include <errno.h>
-#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -58,70 +56,18 @@ static char* RequestBody(struct Agent* a, cJSON* messages, cJSON* tools) {
   return text;
 }
 
-// Writes the request headers to a private file for `curl -H @file`.
-static char* WriteHeaders(struct Agent* a) {
-  cJSON* root = a->spec.root;
-  Buffer h = {0};
-  BufferAppendStr(&h, "Content-Type: application/json\n");
-  BufferAppendStr(&h, "Accept: text/event-stream\n");
-  const char* key =
-      getenv(JsonStr(root, "endpoint.api_key_env", "OPENAI_API_KEY"));
-  if (key && *key) BufferPrintf(&h, "Authorization: Bearer %s\n", key);
-  cJSON* header;
-  cJSON_ArrayForEach(header, JsonGet(root, "endpoint.headers")) {
-    if (cJSON_IsString(header)) {
-      BufferPrintf(&h, "%s: %s\n", header->string, header->valuestring);
-    }
-  }
-  char* path = XAsprintf("%s/.request-headers", a->session.dir);
-  int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
-  if (fd >= 0) {
-    WriteAll(fd, h.data, h.len);
-    close(fd);
-  }
-  BufferFree(&h);
-  return path;
-}
-
-// Reads the last HTTP status and any Retry-After (in seconds) that curl
-// wrote with -D.
-static void ReadResponseHeaders(const char* path, int* status,
-                                double* retry_after) {
-  char* text = ReadFile(path, NULL);
-  *status = 0;
-  *retry_after = -1;
-  for (char* line = text; line && *line;) {
-    char* nl = strchr(line, '\n');
-    if (nl) *nl = 0;
-    if (!strncmp(line, "HTTP/", 5)) {
-      const char* space = strchr(line, ' ');
-      *status = space ? atoi(space + 1) : 0;
-    } else if (!strncasecmp(line, "retry-after:", 12)) {
-      char* end;
-      double secs = strtod(line + 12, &end);
-      if (end != line + 12) *retry_after = secs;
-    }
-    line = nl ? nl + 1 : NULL;
-  }
-  free(text);
-}
-
 // One request: runs curl and parses the streamed reply into `s`.
 static void Attempt(struct Agent* a, const char* body, double timeout,
                     Stream* s, ProcResult* r, Buffer* curl_err, int* status,
                     double* retry_after) {
   cJSON* root = a->spec.root;
-  const char* base = JsonStr(root, "endpoint.base_url", "");
-  size_t base_len = strlen(base);
-  while (base_len && base[base_len - 1] == '/') base_len--;
-  char* url = XAsprintf("%.*s/chat/completions", (int)base_len, base);
-  char* headers = WriteHeaders(a);
+  char* url = EndpointUrl(root, "/chat/completions");
+  char* headers = WriteRequestHeaders(root, a->session.dir, 1);
   char* header_arg = XAsprintf("@%s", headers);
   char* response = XAsprintf("%s/.response-headers", a->session.dir);
   char max_time[32];
   snprintf(max_time, sizeof(max_time), "%.0f", timeout);
-  const char* curl = getenv("ARX_CURL") ? getenv("ARX_CURL") : "curl";
-  char* argv[] = {(char*)JsonStr(root, "endpoint.curl", curl),
+  char* argv[] = {(char*)CurlPath(root),
                   "-sS",
                   "-N",
                   "--max-time",

@@ -264,6 +264,16 @@ char* DirName(const char* path) {
   return XStrndup(path, (size_t)(slash - path));
 }
 
+// $ARX_CONFIG_DIR, $XDG_CONFIG_HOME/arx or ~/.config/arx.
+char* ConfigDir(void) {
+  const char* dir = getenv("ARX_CONFIG_DIR");
+  if (dir && *dir) return XStrdup(dir);
+  const char* xdg = getenv("XDG_CONFIG_HOME");
+  if (xdg && *xdg) return XAsprintf("%s/arx", xdg);
+  const char* home = getenv("HOME");
+  return XAsprintf("%s/.config/arx", home ? home : ".");
+}
+
 // Finds our own executable so subagents run the same binary.
 char* SelfPath(const char* argv0) {
   char tmp[4096];

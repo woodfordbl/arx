@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# arx-models: list your endpoint's models, with prices when it gives them
+set -u
+
+if [ "${1:-}" = -h ] || [ "${1:-}" = --help ]; then
+  cat <<'EOF'
+usage: arx models [FILTER] [--json]
+  FILTER   only models whose id contains it (case-insensitive), e.g. haiku
+  --json   print the endpoint's raw JSON
+Prices are USD per million input/output tokens. * marks your default model.
+EOF
+  exit 0
+fi
+arx=${ARX_BIN:-arx}
+filter="" json=0
+for arg in "$@"; do
+  case "$arg" in
+    --json) json=1 ;;
+    *) filter=$arg ;;
+  esac
+done
+
+body=$("$arx" request /models) || exit $?
+if [ "$json" -eq 1 ]; then
+  printf '%s\n' "$body"
+  exit 0
+fi
+current=$("$arx" check 2>/dev/null | sed -n 's/.*(model \(.*\) at .*/\1/p')
+printf '%s' "$body" | jq -r --arg f "$filter" --arg cur "$current" '
+  def per_million: if . == null then "-" else (tonumber * 1e9 | round / 1000 | tostring) end;
+  .data[] | select(.id | ascii_downcase | contains($f | ascii_downcase)) |
+  [ (if .id == $cur then "*" else " " end), .id,
+    (.pricing.input | per_million), (.pricing.output | per_million),
+    ((.context_window // "-") | tostring) ] | @tsv' |
+  awk -F'\t' 'BEGIN { printf "  %-45s %9s %9s %9s\n", "model", "in $/M", "out $/M", "context" }
+              { printf "%s %-45s %9s %9s %9s\n", $1, $2, $3, $4, $5 }'

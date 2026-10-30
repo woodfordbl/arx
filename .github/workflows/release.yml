@@ -1,0 +1,73 @@
+# Builds arx for macOS and Linux when a v* tag is pushed, and publishes
+# arx-<os>-<arch>.tar.gz (+ .sha256) and install.sh to a GitHub release.
+# `arx update` and install.sh download these.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    runs-on: macos-14
+    strategy:
+      matrix:
+        include:
+          - target: darwin-arm64
+            cc: cc
+          - target: darwin-x86_64
+            cc: cc -arch x86_64
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test
+        if: matrix.target == 'darwin-arm64'
+        run: make test
+      - name: Package
+        run: make clean dist CC="${{ matrix.cc }}" TARGET=${{ matrix.target }} VERSION=${GITHUB_REF_NAME#v}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/arx-*.tar.gz*
+
+  linux:
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: linux-x86_64
+          - runner: ubuntu-24.04-arm
+            target: linux-arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build, test and package (static musl, in Alpine)
+        run: |
+          docker run --rm -v "$PWD":/w -w /w alpine:3.20 sh -c '
+            apk add -q build-base bash python3 curl jq git &&
+            make arx CC="gcc -static" VERSION='"${GITHUB_REF_NAME#v}"' &&
+            ARX=./arx tests/run.sh && ARX=./arx tests/plugins.sh &&
+            ARX=./arx tests/cli.sh &&
+            make dist TARGET=${{ matrix.target }} VERSION='"${GITHUB_REF_NAME#v}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/arx-*.tar.gz*
+
+  publish:
+    needs: [macos, linux]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* install.sh \
+            --repo "$GITHUB_REPOSITORY" --title "arx $GITHUB_REF_NAME" --generate-notes

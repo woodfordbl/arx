@@ -2,6 +2,8 @@
 //   llm.c  one OpenAI-compatible Chat Completions request per call, sent by
 //          running curl (so the binary carries no TLS code), retried on
 //          transient errors
+//   auth.c credentials (env var, then macOS Keychain or a 0600 file, as fx
+//          does) and the request plumbing every call shares
 //   sse.c  parses the streamed reply (server-sent events) into one assistant
 //          message, tolerating provider differences; also accepts a reply
 //          that was not streamed
@@ -18,6 +20,34 @@
 
 // Defined in agent.h.
 struct Agent;
+
+// ---- auth.c ----
+
+// Returns the API key for the spec's endpoint, or NULL, in fx's order: for
+// Vercel AI Gateway, VERCEL_OIDC_TOKEN first; then the environment variable
+// named by endpoint.api_key_env (default OPENAI_API_KEY); then the key saved
+// by `arx setup` under that name, in the macOS Keychain (service "arx") or
+// ConfigDir()/credentials. Stored keys are looked up once per process.
+const char* ApiKey(cJSON* root);
+
+// Describes where the last ApiKey() call found the key, e.g. "the macOS
+// Keychain", without revealing it. NULL if it found none.
+const char* ApiKeySource(void);
+
+// Returns endpoint.base_url (trailing slashes removed) followed by `path`.
+char* EndpointUrl(cJSON* root, const char* path);
+
+// Returns the curl to run: endpoint.curl, else $ARX_CURL, else "curl".
+const char* CurlPath(cJSON* root);
+
+// Writes request headers, including the key, to a new 0600 file in `dir`
+// for `curl -H @file`, and returns its path; delete it after the call.
+// `streaming` adds "Accept: text/event-stream".
+char* WriteRequestHeaders(cJSON* root, const char* dir, int streaming);
+
+// Reads the last HTTP status and any Retry-After (seconds, else -1) from a
+// headers file written by `curl -D`.
+void ReadResponseHeaders(const char* path, int* status, double* retry_after);
 
 // ---- llm.c ----
 
