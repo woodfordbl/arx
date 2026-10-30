@@ -1,4 +1,5 @@
-# Builds arx for macOS and Linux when a v* tag is pushed, and publishes
+# Builds, tests and benchmarks arx for macOS and Linux when a v* tag is
+# pushed (a slow or oversized build fails the release), and publishes
 # arx-<os>-<arch>.tar.gz (+ .sha256) and install.sh to a GitHub release.
 # `arx update` and install.sh download these.
 name: release
@@ -27,6 +28,9 @@ jobs:
       - name: Test
         if: matrix.target == 'darwin-arm64'
         run: make test
+      - name: Benchmark (size, startup, memory, reload)
+        if: matrix.target == 'darwin-arm64'
+        run: make bench
       - name: Package
         run: make clean dist CC="${{ matrix.cc }}" TARGET=${{ matrix.target }} VERSION=${GITHUB_REF_NAME#v}
       - uses: actions/upload-artifact@v4
@@ -45,13 +49,13 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
-      - name: Build, test and package (static musl, in Alpine)
+      - name: Build, test, benchmark and package (static musl, in Alpine)
         run: |
           docker run --rm -v "$PWD":/w -w /w alpine:3.20 sh -c '
             apk add -q build-base bash python3 curl jq git &&
             make arx CC="gcc -static" VERSION='"${GITHUB_REF_NAME#v}"' &&
             ARX=./arx tests/run.sh && ARX=./arx tests/plugins.sh &&
-            ARX=./arx tests/cli.sh &&
+            ARX=./arx tests/cli.sh && tests/bench.sh &&
             make dist TARGET=${{ matrix.target }} VERSION='"${GITHUB_REF_NAME#v}"
       - uses: actions/upload-artifact@v4
         with:

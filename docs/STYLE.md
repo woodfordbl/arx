@@ -1,8 +1,16 @@
 # Style for the arx sources
 
-These rules apply to the C code in `src/`. `make lint` checks them. They are for
-building `arx` itself: they are not part of the binary, and harness files that an
-agent writes at run time (`tools/`, `hooks/`, prompts, specs) are not linted.
+These rules apply to the C code in `src/`. `make lint` checks them, and CI runs
+it on every push and pull request. They are for building `arx` itself: they are
+not part of the binary, and harness files that an agent writes at run time
+(`tools/`, `hooks/`, prompts, specs) are not linted.
+
+**Tool versions:**
+- **clang-format:** `make lint` requires major version 23, because formatting
+  can change between majors. Homebrew's `clang-format` is fine. CI pins
+  `clang-format==23.1.3`, which formats identically to 23.1.4.
+- **cpplint:** CI pins `cpplint==2.0.2`. Locally, `make lint` uses `cpplint`
+  from PATH, or runs it through `uvx`.
 
 ## Rules
 

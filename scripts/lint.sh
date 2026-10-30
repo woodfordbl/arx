@@ -16,8 +16,18 @@ shopt -s nullglob
 src=(src/*.c src/*/*.c src/*/*.h)
 fail=0
 
+# Formatting can differ between clang-format major versions, so everyone
+# (and CI) uses the same one. CI installs it with pip; see ci.yml.
+clang_format_major=23
 if ! command -v clang-format >/dev/null; then
-  echo "lint: clang-format is missing (brew install clang-format)" >&2
+  echo "lint: clang-format $clang_format_major is missing" \
+    "(brew install clang-format, or pip install clang-format==23.1.3)" >&2
+  exit 2
+fi
+major=$(clang-format --version | sed -n 's/.*version \([0-9]*\)\..*/\1/p')
+if [ "$major" != "$clang_format_major" ]; then
+  echo "lint: clang-format $clang_format_major is needed, found $major" \
+    "(pip install clang-format==23.1.3)" >&2
   exit 2
 fi
 
@@ -25,7 +35,11 @@ echo "== clang-format (Google style)"
 clang-format --dry-run --Werror "${src[@]}" || fail=1
 
 echo "== cpplint"
-uvx --quiet cpplint --quiet "${src[@]}" || fail=1
+if command -v cpplint >/dev/null; then
+  cpplint --quiet "${src[@]}" || fail=1
+else
+  uvx --quiet cpplint --quiet "${src[@]}" || fail=1
+fi
 
 echo "== file length (max 400 lines)"
 for f in "${src[@]}" scripts/* tests/*.sh tests/fake-curl commands/* install.sh Makefile; do

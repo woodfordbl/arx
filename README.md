@@ -201,6 +201,16 @@ Each session lives in `.arx/sessions/<id>/`:
 | `make install`        | install arx and its commands into ~/.local (PREFIX=...)                                                            |
 | `make dist`           | the release tarball and checksum for this platform, as CI builds them                                               |
 
+**CI** (GitHub Actions) runs on every push to `main` and every pull request:
+- **lint**, with clang-format 23.1.3 and cpplint 2.0.2 pinned;
+- **all 108 tests and the four performance budgets**, against a static Linux
+  build.
+
+**Releases** run the tests and budgets on macOS and Linux before publishing,
+so a slow or oversized build fails the release. Startup timing is measured
+against `true` on the same machine, and re-measured once before it fails,
+because shared CI machines are noisy.
+
 
 The sources in `src/` have one folder per layer, and one header per folder.
 Each layer only uses the layers below it.
