@@ -1,25 +1,10 @@
-# One example of every plugin kind, wired into one spec. Check it with:
+# A demo harness that uses every plugin in the arx marketplace (../../plugins,
+# linked here as ./plugins), plus a stop hook of its own. Check it with:
 #   arx check --spec examples/plugins/agent.yaml
-# Each file is explained in docs/plugins.md.
+# Each plugin is explained in docs/plugins.md.
 name: plugin-demo
 model: your/model-id
 endpoint: {base_url: "https://openrouter.ai/api/v1", api_key_env: OPENROUTER_API_KEY}
 
-tools:
-  word_count: {timeout: 10s}             # tools/word_count (Python)
-  # tools/now (shell) needs no entry: every executable in tools/ is a tool.
-  reviewer:                              # a subagent: arx runs itself again
-    agent: subagents/reviewer.yaml
-    description: Ask a reviewer to critique files. Give it the paths and what to look for.
-
-hooks:
-  before_tool: {fail: closed}            # if the guard itself breaks, deny the call
-
-# keep_last runs whenever the prompt passes trigger x context_window.
-compaction: {strategy: compactors/keep_last.py, trigger: 0.7}
-
-skills: skills
-
-# Observers run from the working directory; $ARX_SPEC_DIR finds files next to
-# this spec.
-observers: ["$ARX_SPEC_DIR/observers/notify.sh"]
+# keep_last comes from the keep-last plugin.
+compaction: {strategy: keep_last, trigger: 0.7}

@@ -56,9 +56,9 @@ static char* CaptureText(const Capture* c, const char* path) {
 }
 
 // ARX_* variables so tools and hooks know where they run.
-char** ToolEnv(Agent* a) {
+char** ToolEnv(Agent* a, const char* plugin_dir) {
   char cwd[4096];
-  char** env = XMalloc(9 * sizeof(*env));
+  char** env = XMalloc(10 * sizeof(*env));
   env[0] = XAsprintf("ARX_SESSION=%s", a->session.id);
   env[1] = XAsprintf("ARX_SESSION_DIR=%s", a->session.dir);
   env[2] = XAsprintf("ARX_TURN=%d", a->session.turns);
@@ -67,7 +67,8 @@ char** ToolEnv(Agent* a) {
   env[5] = XAsprintf("ARX_SPEC_DIR=%s", a->spec.dir);
   env[6] = XAsprintf("ARX_DEPTH=%d", a->depth);
   env[7] = XAsprintf("ARX_BIN=%s", g_self);
-  env[8] = NULL;
+  env[8] = plugin_dir ? XAsprintf("ARX_PLUGIN_DIR=%s", plugin_dir) : NULL;
+  env[9] = NULL;
   return env;
 }
 
@@ -253,7 +254,7 @@ static char* RunProcessTool(Agent* a, Tool* t, cJSON* args, const char* raw,
   Capture cap = {.head_max = JsonSize(a->spec.root, "tool_output.head", 2048),
                  .tail_max = JsonSize(a->spec.root, "tool_output.tail", 6144)};
   cap.fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
-  char** env = ToolEnv(a);
+  char** env = ToolEnv(a, t->plugin_dir);
   Buffer out = {0};
   ProcResult r;
   char* text;

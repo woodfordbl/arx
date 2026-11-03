@@ -11,10 +11,10 @@ plugin: an executable in any language.
 
 | Measured                   | macOS (arm64)       | Linux (static, musl)   |
 | -------------------------- | ------------------- | ---------------------- |
-| Binary                     | 167 KB              | 258 KB, libc included  |
+| Binary                     | 183 KB              | 258 KB, libc included  |
 | Startup                    | 0.6 ms above `true` | within noise of `true` |
 | Peak memory over 500 turns | 4 MB                | 7 MB                   |
-| Harness edit to live       | 0.06 ms             | 0.05 ms                |
+| Harness edit to live       | 0.10 ms             | 0.05 ms                |
 
 
 `make bench` checks these budgets and fails the build if one is missed. On
@@ -114,8 +114,22 @@ and the spec cannot raise them.
 All plugins are executables, in any language. **[docs/plugins.md](docs/plugins.md)**
 is the full guide: the exact input and output of each kind, the `ARX_*`
 variables they all get, every event type, and the session files.
-[examples/plugins/](examples/plugins) has one working example of each kind,
-and `make test` runs them all.
+
+The agent's own plugins live next to its spec. Plugins you install are
+folders with a `plugin.yaml`, loaded in place below the agent's own, so a
+tool the agent writes always wins. [plugins/](plugins) is the arx
+marketplace, one plugin of each kind; the release leaves it out, so the
+install stays bare:
+
+```sh
+arx plugin add guard                 # plugins/guard, at the tag of your arx
+arx plugin add acme/tools/lint       # a plugin folder in any GitHub repo
+arx plugin add --link ./plugins/notify   # develop one in place
+arx plugin list
+```
+
+`make test` checks every marketplace plugin against the arx of the same
+commit.
 
 
 | Kind      | Where                                               | Contract                                                                                                                                                             |
@@ -123,7 +137,7 @@ and `make test` runs them all.
 | Tool      | `tools/<name>`                                      | `--schema` prints `{"description", "parameters"}`. A call gets its arguments as JSON on stdin; stdout and stderr are the result; a non-zero exit marks an error.     |
 | Subagent  | `tools: {name: {agent: spec.yaml}}`                 | `arx` runs itself one level deeper. The child's events appear in the parent's stream.                                                                                |
 | Hook      | `hooks/<point>`                                     | JSON on stdin; optional JSON decision on stdout. `session_start` adds context; `before_tool` can deny; `after_tool` adds a note; `stop` can `continue` or `restart`. |
-| Compactor | `compaction.strategy: <path>`                       | `{"messages", "usage", "context_window"}` in, `{"messages"}` out.                                                                                                    |
+| Compactor | `compaction.strategy: <name or path>`               | `{"messages", "usage", "context_window"}` in, `{"messages"}` out.                                                                                                    |
 | Observer  | `observers:`, or anything that reads `events.jsonl` | One JSON event per line. A slow observer loses events; the run never waits for it.                                                                                   |
 | Driver    | anything that runs `arx -p … --json --events fd:3`  | Exit code, a JSON result, and the event stream. A supervisor is just a driver.                                                                                       |
 
@@ -142,18 +156,19 @@ Built-in compaction strategies:
 1. ~~Plugin guide and example plugins~~ (done:
   [docs/plugins.md](docs/plugins.md)).
 2. ~~External commands~~ (done: `arx foo` runs `arx-foo`; `setup`, `init`,
-  `doctor`, `models`, `sessions` and `update` are built this way). Still to
-  do: **plugin packs**, where `plugins: [dir, ...]` in the spec merges a
-  folder of tools, hooks, skills, observers and MCP servers into the harness.
-3. `arx acp`**:** an [Agent Client Protocol](https://agentclientprotocol.com)
+  `doctor`, `models`, `sessions` and `update` are built this way).
+3. ~~Plugin folders and the marketplace~~ (done: `plugin.yaml`, layers,
+  `arx plugin`, [plugins/](plugins)). Still to do: `arx plugin update`,
+  `search` and `eject`, named marketplaces, and MCP servers in `plugin.yaml`.
+4. `arx acp`**:** an [Agent Client Protocol](https://agentclientprotocol.com)
   server over stdio, for editors and custom front-ends. It shares one small
    JSON-RPC module with the MCP client.
-4. `arx-tui`**:** a terminal front-end built with
-  [OpenTUI](https://opentui.com) that talks to `arx acp`. It is a separate
-   package, so it adds nothing to the binary.
-5. **MCP client:** MCP servers in the spec become tools. Their schemas load
+5. **A TUI plugin:** a terminal front-end built with
+  [OpenTUI](https://opentui.com) that talks to `arx acp`. It is a plugin, so
+   it adds nothing to the binary.
+6. **MCP client:** MCP servers in the spec become tools. Their schemas load
   lazily through two built-in tools, `mcp_search` and `mcp_select`.
-6. `arx climb`**:** a keep/revert driver that runs the official eval outside
+7. `arx climb`**:** a keep/revert driver that runs the official eval outside
   the agent's reach.
 
 
@@ -169,6 +184,7 @@ arx doctor [--live]       check the install, spec, key and endpoint
 arx models [FILTER]       the endpoint's models, with prices
 arx sessions              the sessions in this folder
 arx update [--check]      update to the latest release
+arx plugin add|rm|ls|new  install and manage plugins (`arx add` for short)
 arx check | tools | schema | request PATH | watch | ctl | version | help
 options: --spec --set K=V --cap K=V --resume ID|last --json --events PATH|-|fd:N --quiet
 exit codes: 0 done, 1 error, 2 usage, 3 cap reached, 4 auth, 130 interrupted
@@ -194,7 +210,7 @@ Each session lives in `.arx/sessions/<id>/`:
 |                       |                                                                                                                    |
 | --------------------- | ------------------------------------------------------------------------------------------------------------------ |
 | `make` / `make debug` | release build / AddressSanitizer + UBSan build                                                                     |
-| `make test`           | 108 end-to-end checks against `tests/fake-curl` (47 core, 20 example plugins, 41 CLI); no network or API key needed |
+| `make test`           | 180 end-to-end checks against `tests/fake-curl` (47 core, 30 marketplace plugins, 46 plugin loading, 57 CLI); no network or API key needed |
 | `make bench`          | the performance budgets above                                                                                      |
 | `make lint`           | Google style (clang-format, cpplint), files of 400 lines or fewer, doc comments ([docs/STYLE.md](docs/STYLE.md))   |
 | `make static`         | static Linux binary, built in Docker                                                                               |
@@ -203,7 +219,7 @@ Each session lives in `.arx/sessions/<id>/`:
 
 **CI** (GitHub Actions) runs on every push to `main` and every pull request:
 - **lint**, with clang-format 23.1.3 and cpplint 2.0.2 pinned;
-- **all 108 tests and the four performance budgets**, against a static Linux
+- **all 180 tests and the four performance budgets**, against a static Linux
   build.
 
 **Releases** run the tests and budgets on macOS and Linux before publishing,

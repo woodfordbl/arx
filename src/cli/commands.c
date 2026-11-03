@@ -27,15 +27,54 @@ static int LoadSpec(Agent* a) {
 static void PrintHooks(Agent* a) {
   printf("\nhooks:");
   for (const char* const* p = kHookPoints; *p; p++) {
-    char* path = XAsprintf("%s/hooks/%s", a->spec.dir, *p);
-    if (!access(path, X_OK)) printf(" %s", *p);
-    free(path);
+    Buffer from = {0};
+    int found = 0;
+    for (int l = 0; l < a->spec.layer_count; l++) {
+      const Layer* layer = &a->spec.layers[l];
+      char* path = XAsprintf("%s/hooks/%s", layer->dir, *p);
+      if (!access(path, X_OK)) {
+        found = 1;
+        if (layer->plugin) {
+          BufferPrintf(&from, "%s%s", from.len ? "," : "", layer->plugin);
+        }
+      }
+      free(path);
+    }
+    if (found) printf(" %s", *p);
+    if (from.len) printf("(%s)", from.data);
+    BufferFree(&from);
   }
   printf("\n");
 }
 
+// Prints the plugins in use, if there are any.
+static void PrintPlugins(Agent* a) {
+  int any = 0;
+  for (int l = 0; l < a->spec.layer_count; l++) {
+    const Layer* layer = &a->spec.layers[l];
+    if (!layer->plugin) continue;
+    printf("%s%s", any ? " " : "plugins: ", layer->plugin);
+    any = 1;
+  }
+  if (any) printf("\n");
+}
+
+// `arx check --plugin DIR`: checks a plugin without loading it, and prints
+// key=value lines for scripts such as `arx plugin`.
+static int CheckPlugin(const char* dir) {
+  Buffer out = {0}, err = {0};
+  int rc = PluginDescribe(dir, &out, &err);
+  fputs(rc ? err.data : out.data, rc ? stderr : stdout);
+  BufferFree(&out);
+  BufferFree(&err);
+  return rc ? kExitUsage : kExitDone;
+}
+
 // `arx check` and `arx tools`: load the harness without starting a session.
 static int CheckOrTools(int argc, char** argv, Agent* a) {
+  if (argc == 4 && argv[1][0] == 'c' && !strcmp(argv[2], "--plugin")) {
+    return CheckPlugin(argv[3]);
+  }
   int code = ParseOptions(argc, argv, 2, a);
   if (code || (code = LoadSpec(a))) return code;
   ToolsBuild(a);
@@ -57,6 +96,7 @@ static int CheckOrTools(int argc, char** argv, Agent* a) {
       printf(" %s", a->tools.items[i].name);
     }
     PrintHooks(a);
+    PrintPlugins(a);
     if (a->notes.len) printf("problems:\n%s", a->notes.data);
   }
   ToolsFree(&a->tools);
@@ -226,7 +266,8 @@ static int RequestCommand(int argc, char** argv, Agent* a) {
 }
 
 const Command kCommands[] = {
-    {"check", "[--spec P]", "validate the spec, tools and hooks", CheckOrTools},
+    {"check", "[--spec P] | --plugin DIR",
+     "validate the spec, tools and hooks, or one plugin", CheckOrTools},
     {"tools", "[--spec P]", "print the tools as the model sees them",
      CheckOrTools},
     {"schema", "", "print the JSON Schema of agent.yaml", SchemaCommand},

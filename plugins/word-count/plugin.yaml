@@ -1,0 +1,5 @@
+name: word-count
+version: 0.1.0
+description: A word_count tool that counts the lines, words and bytes of a file.
+requires: [python3]
+tools: {word_count: {timeout: 10s}}

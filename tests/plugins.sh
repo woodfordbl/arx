@@ -1,14 +1,23 @@
 #!/usr/bin/env bash
-# plugins.sh: runs every example in examples/plugins/ against fake-curl, so
-# the plugin guide (docs/plugins.md) stays true. Run with `make test`.
+# plugins.sh: checks every plugin in the arx marketplace (plugins/), then
+# runs them together in the demo harness in examples/plugins/ against
+# fake-curl, so the plugin guide (docs/plugins.md) stays true. Run with
+# `make test`.
 set -u
 . "$(dirname "$0")/lib.sh"
 
-# Starts a test in a temp workspace holding a copy of the examples.
+# Starts a test in a temp workspace holding a copy of the demo harness, with
+# the marketplace copied in as its plugins/.
 begin_examples() {
   begin "$1"
-  cp -R "$ROOT/examples/plugins/." .
+  cp -RL "$ROOT/examples/plugins/." .
 }
+
+# Each plugin is valid on its own, the way `arx plugin add` checks it.
+begin "marketplace"
+for dir in "$ROOT"/plugins/*/; do
+  check "$(basename "$dir") passes check --plugin" "$ARX" check --plugin "$dir"
+done
 
 # The spec, tools, subagent and hooks load.
 begin_examples "check"
@@ -17,7 +26,8 @@ check "spec is valid" has check.txt 'ok:'
 check "python tool found" has check.txt 'word_count'
 check "shell tool found" has check.txt ' now'
 check "subagent found" has check.txt 'reviewer'
-check "all four hooks found" has check.txt 'session_start before_tool after_tool stop'
+check "all four hooks found" has check.txt 'session_start(git-context) before_tool(guard) after_tool(fail-hint) stop'
+check "every plugin loads" has check.txt 'plugins: clock fail-hint git-context guard keep-last notify plugin-authoring reviewer word-count'
 
 # Tools, every hook, and the observer in one session.
 begin_examples "tools, hooks, observer"
@@ -48,7 +58,7 @@ sse_text "done" | reply 18 "200 OK"
 run "go" --set context_window=1500
 unset PROMPT_TOKENS
 check "exits 0" exited 0
-check "compactor ran" has .arx/sessions/last/events.jsonl '"strategy":"compactors/keep_last.py"'
+check "compactor ran" has .arx/sessions/last/events.jsonl '"strategy":"keep_last"'
 check "old messages dropped" has fake/req-18.json 'earlier messages were dropped'
 
 # The subagent runs with its own spec and answers the parent.

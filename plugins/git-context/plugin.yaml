@@ -1,0 +1,4 @@
+name: git-context
+version: 0.1.0
+description: A session_start hook that gives the agent the git status up front.
+requires: [git]
