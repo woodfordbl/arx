@@ -1,8 +1,8 @@
-// tools.c: builds the tool set. Executable tools are found by path and
-// described by `--schema`; the answers are cached by modification time and
-// size, so a reload only re-runs tools that changed.
+// tools.c: builds the tool set from the tools/ folder of every layer.
+// Executable tools are found by path and described by `--schema`; the
+// answers are cached by modification time and size, so a reload only re-runs
+// tools that changed.
 
-#include <dirent.h>
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
@@ -113,6 +113,7 @@ static void Add(ToolSet* t, ToolKind kind, const char* name, const char* desc,
       params_json ? cJSON_Duplicate(params_json, 1) : cJSON_Parse(params);
   tool->path = path ? XStrdup(path) : NULL;
   tool->timeout = timeout;
+  tool->plugin_dir = NULL;
 }
 
 // True for the names of built-in tools.
@@ -120,26 +121,12 @@ static int IsBuiltin(const char* name) {
   return !strcmp(name, "bash") || !strcmp(name, "edit");
 }
 
-// qsort comparator for file names.
-static int CompareNames(const void* a, const void* b) {
-  return strcmp(*(char* const*)a, *(char* const*)b);
-}
-
-// Lists tools/ in sorted order, so the tool list (and the prompt cache)
-// stays stable between reloads. Returns the count; free each name.
-static int ListDir(const char* dir, char*** names) {
-  int n = 0;
-  DIR* d = opendir(dir);
-  struct dirent* e;
-  *names = NULL;
-  while (d && (e = readdir(d))) {
-    if (e->d_name[0] == '.') continue;
-    *names = XRealloc(*names, (size_t)(n + 1) * sizeof(**names));
-    (*names)[n++] = XStrdup(e->d_name);
+// True when the set already has a tool called `name`.
+static int HasTool(const ToolSet* t, const char* name) {
+  for (int i = 0; i < t->count; i++) {
+    if (!strcmp(t->items[i].name, name)) return 1;
   }
-  if (d) closedir(d);
-  if (n) qsort(*names, (size_t)n, sizeof(**names), CompareNames);
-  return n;
+  return 0;
 }
 
 // Adds the built-in tools unless the spec disables them.
@@ -165,35 +152,78 @@ static void AddBuiltins(struct Agent* a) {
   }
 }
 
-// Adds one executable from tools/, or explains in `notes` why it is skipped.
-static void AddExecutable(struct Agent* a, const char* dir, const char* name,
-                          Buffer* notes) {
+// Adds one executable from a layer's tools/, or explains in `notes` why it
+// is skipped. `where` names the layer in notes ("" for the spec folder).
+static void AddExecutable(struct Agent* a, const Layer* layer,
+                          const char* where, const char* name, Buffer* notes) {
   char key[160];
-  char* path = XAsprintf("%s/%s", dir, name);
+  char* path = XAsprintf("%s/tools/%s", layer->dir, name);
   struct stat st;
   snprintf(key, sizeof(key), "tools.%s.enabled", name);
   if (stat(path, &st) || !S_ISREG(st.st_mode)) {
     // Directories and broken links are not tools.
   } else if (access(path, X_OK)) {
-    BufferPrintf(notes, "- tools/%s is not executable (chmod +x it)\n", name);
+    BufferPrintf(notes, "- %stools/%s is not executable (chmod +x it)\n", where,
+                 name);
   } else if (IsBuiltin(name) || strspn(name, kNameChars) != strlen(name)) {
     BufferPrintf(notes,
-                 "- tools/%s skipped: use letters, digits, _ and -, "
+                 "- %stools/%s skipped: use letters, digits, _ and -, "
                  "and not bash or edit\n",
-                 name);
+                 where, name);
   } else if (JsonBool(a->spec.root, key, 1)) {
     SchemaEntry* s = SchemaFor(path);
     snprintf(key, sizeof(key), "tools.%s.timeout", name);
     if (!s) {
-      BufferPrintf(notes, "- tools/%s skipped: too many tools\n", name);
+      BufferPrintf(notes, "- %stools/%s skipped: too many tools\n", where,
+                   name);
     } else if (s->error) {
-      BufferPrintf(notes, "- tools/%s skipped: %s\n", name, s->error);
+      BufferPrintf(notes, "- %stools/%s skipped: %s\n", where, name, s->error);
     } else {
       Add(&a->tools, kToolExec, name, s->description, NULL, s->params, path,
           JsonDuration(a->spec.root, key, 120));
+      if (layer->plugin) {
+        a->tools.items[a->tools.count - 1].plugin_dir = XStrdup(layer->dir);
+      }
     }
   }
   free(path);
+}
+
+// How notes name a layer: "" for the spec folder, "plugin <name>: " for a
+// plugin, and the folder for the user's config folder.
+static char* LayerName(const Layer* layer, int index) {
+  if (index == 0) return XStrdup("");
+  if (layer->plugin) return XAsprintf("plugin %s: ", layer->plugin);
+  return XAsprintf("%s/", layer->dir);
+}
+
+// Adds the executables of every layer; the first working tool with a name
+// wins. Collects every file name in `names` (for AddConfigured) and returns
+// how many there are.
+static int AddLayers(struct Agent* a, char*** names, Buffer* notes) {
+  int total = 0;
+  *names = NULL;
+  for (int l = 0; l < a->spec.layer_count; l++) {
+    const Layer* layer = &a->spec.layers[l];
+    char* dir = PathJoin(layer->dir, "tools");
+    char* where = LayerName(layer, l);
+    char** found;
+    int n = ListNames(dir, &found);
+    for (int i = 0; i < n; i++) {
+      if (!HasTool(&a->tools, found[i])) {
+        AddExecutable(a, layer, where, found[i], notes);
+      } else if (!IsBuiltin(found[i])) {
+        BufferPrintf(notes, "- %stools/%s is hidden by a tool above it\n",
+                     where, found[i]);
+      }
+      *names = XRealloc(*names, (size_t)(total + 1) * sizeof(**names));
+      (*names)[total++] = found[i];
+    }
+    free(found);
+    free(where);
+    free(dir);
+  }
+  return total;
 }
 
 // Adds subagent tools and flags spec entries that match nothing.
@@ -231,15 +261,13 @@ static void AddConfigured(struct Agent* a, char** names, int n, Buffer* notes) {
 void ToolsBuild(struct Agent* a) {
   Buffer notes = {0};
   char** names;
-  char* dir = PathJoin(a->spec.dir, "tools");
   ToolsFree(&a->tools);
+  if (a->spec.problems.len) BufferAppendStr(&notes, a->spec.problems.data);
   AddBuiltins(a);
-  int n = ListDir(dir, &names);
-  for (int i = 0; i < n; i++) AddExecutable(a, dir, names[i], &notes);
+  int n = AddLayers(a, &names, &notes);
   AddConfigured(a, names, n, &notes);
   for (int i = 0; i < n; i++) free(names[i]);
   free(names);
-  free(dir);
   // Tell the agent about problems once, not again on every reload.
   uint64_t h = 1469598103934665603ULL;
   for (size_t i = 0; i < notes.len; i++) {
@@ -258,6 +286,7 @@ void ToolsFree(ToolSet* tools) {
     free(tools->items[i].name);
     free(tools->items[i].description);
     free(tools->items[i].path);
+    free(tools->items[i].plugin_dir);
     cJSON_Delete(tools->items[i].params);
   }
   free(tools->items);

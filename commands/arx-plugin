@@ -1,0 +1,281 @@
+#!/usr/bin/env bash
+# arx-plugin: add, remove, list and start plugins
+#
+# A plugin is a folder with a plugin.yaml, plus any of tools/, hooks/,
+# skills/ and commands/ (docs/plugins.md). A marketplace is any repo with
+# plugins/<name>/, and the arx repo is the default one. A user plugin goes
+# in ~/.config/arx/plugins/<name>/ and is on in every harness; --project
+# puts it in ./plugins/<name>/, next to ./agent.yaml. arx loads plugins from
+# where they are, so `remove` deletes one folder and nothing else.
+set -u
+
+usage() {
+  cat <<'EOF'
+usage: arx plugin add REF [--project] [--link] [--force] [--yes]
+       arx plugin remove NAME [--project] [--yes]
+       arx plugin list
+       arx plugin new NAME [DIR]
+REF is one of:
+  NAME[@REF]             plugins/NAME in the arx repo, at the tag of this
+                         arx (or at REF: a tag, branch or commit)
+  OWNER/REPO/PATH[@REF]  a plugin folder in any GitHub repo
+  ./PATH, DIR/PATH, /PATH  a plugin folder on this machine
+  FILE.tar.gz            a tarball with one plugin folder in it
+  --project   use ./plugins/ (next to ./agent.yaml), for this harness only
+  --link      use a local folder where it is, for development
+  --force     replace a plugin that is already installed
+  --yes       do not ask before a change
+EOF
+}
+
+arx=${ARX_BIN:-arx}
+repo_default=${ARX_PLUGIN_REPO:-woodfordbl/arx}
+die() { echo "arx plugin: $*" >&2; exit 1; }
+
+# The same lookup as ConfigDir() in arx.
+if [ -n "${ARX_CONFIG_DIR:-}" ]; then
+  config_dir=$ARX_CONFIG_DIR
+elif [ -n "${XDG_CONFIG_HOME:-}" ]; then
+  config_dir=$XDG_CONFIG_HOME/arx
+else
+  config_dir=$HOME/.config/arx
+fi
+
+# Shows a path with ~ for the home folder.
+pretty() { case "$1" in "$HOME"/*) echo "~${1#"$HOME"}" ;; *) echo "$1" ;; esac; }
+
+# Asks a yes/no question. Without a terminal, only --yes says yes.
+confirm() {
+  [ "$yes" -eq 1 ] && return 0
+  if [ ! -t 0 ]; then
+    echo "arx plugin: not a terminal, so nothing changed; add --yes to go ahead" >&2
+    exit 1
+  fi
+  local answer
+  read -r -p "$1 [y/N] " answer
+  case "$answer" in y | Y | yes) return 0 ;; *) echo "Nothing changed."; exit 1 ;; esac
+}
+
+# The plugins folder for the chosen scope.
+plugins_dir() {
+  if [ "$project" -eq 1 ]; then
+    [ -f agent.yaml ] || die "no agent.yaml here; --project needs a harness folder (\`arx init\` makes one)"
+    echo "$PWD/plugins"
+  else
+    echo "$config_dir/plugins"
+  fi
+}
+
+# Reads `arx check --plugin DIR` into p_<key> variables. Fails if the
+# plugin is not valid.
+describe() {
+  local info key value
+  info=$("$arx" check --plugin "$1") || exit 1
+  p_name="" p_version="" p_description="" p_requires="" p_missing=""
+  p_tools="" p_hooks="" p_skills="" p_commands=""
+  while IFS='=' read -r key value; do
+    case "$key" in
+      name | version | description | requires | missing | tools | hooks | skills | commands)
+        eval "p_$key=\$value" ;;
+    esac
+  done <<<"$info"
+}
+
+# The ref for the arx repo: the tag of this arx, or main for a build that
+# is not a release.
+core_ref() {
+  local version
+  version=$("$arx" version 2>/dev/null | awk '{print $2}')
+  if echo "$version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+    echo "v$version"
+  else
+    echo "arx plugin: arx $version is not a release, so this uses main" >&2
+    echo main
+  fi
+}
+
+# Downloads repo $1 at ref $2 and unpacks it into $3. ARX_PLUGIN_MIRROR (a
+# folder of OWNER/REPO/REF.tar.gz files) replaces GitHub, for tests.
+fetch() {
+  local tarball=$3/repo.tar.gz
+  if [ -n "${ARX_PLUGIN_MIRROR:-}" ]; then
+    cp "$ARX_PLUGIN_MIRROR/$1/$2.tar.gz" "$tarball" 2>/dev/null
+  elif command -v gh >/dev/null && gh auth status >/dev/null 2>&1; then
+    gh api "repos/$1/tarball/$2" >"$tarball"
+  else
+    curl -fsSL -o "$tarball" "https://codeload.github.com/$1/tar.gz/$2"
+  fi || die "cannot download $1 at $2"
+  mkdir "$3/repo" && tar -xzf "$tarball" -C "$3/repo" || die "cannot unpack $1 at $2"
+}
+
+# Finds the folder for REF $1 and sets src, source and commit. Remote
+# sources are unpacked into $tmp.
+resolve() {
+  local ref=$1 name path repo at top
+  commit=""
+  # A folder needs a path (./demo, plugins/demo); a bare name is a plugin
+  # in the arx repo, even when a folder here has the same name.
+  case "$ref" in
+    */*) if [ -d "$ref" ]; then src=$(cd "$ref" && pwd -P) source=$src; return; fi ;;
+  esac
+  case "$ref" in
+    *.tar.gz | *.tgz)
+      [ -f "$ref" ] || die "no such file: $ref"
+      [ "$link" -eq 0 ] || die "--link needs a folder on this machine"
+      mkdir "$tmp/repo" && tar -xzf "$ref" -C "$tmp/repo" || die "cannot unpack $ref"
+      path=$(find "$tmp/repo" -maxdepth 3 -name plugin.yaml | head -1)
+      [ -n "$path" ] || die "$ref has no plugin.yaml"
+      src=$(dirname "$path") source=$(cd "$(dirname "$ref")" && pwd -P)/$(basename "$ref")
+      return ;;
+    ./* | ../* | /*) die "no such folder: $ref" ;;
+  esac
+  [ "$link" -eq 0 ] || die "--link needs a folder on this machine"
+  name=${ref#github:} at=""
+  case "$name" in *@*) at=${name##*@} name=${name%@*} ;; esac
+  case "$name" in
+    */*/*) repo=${name%%/*}/$(echo "$name" | cut -d/ -f2) path=$(echo "$name" | cut -d/ -f3-) ;;
+    */*) die "use OWNER/REPO/PATH for a plugin in another repo" ;;
+    *) repo=$repo_default path=plugins/$name ;;
+  esac
+  [ -n "$at" ] || if [ "$repo" = "$repo_default" ]; then at=$(core_ref); else at=HEAD; fi
+  fetch "$repo" "$at" "$tmp"
+  top=$(ls "$tmp/repo" | head -1)
+  src=$tmp/repo/$top/$path
+  [ -d "$src" ] || die "$repo at $at has no $path"
+  source="$repo/$path@$at" commit=$top
+}
+
+cmd_add() {
+  local ref="" dest parent where
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --project) project=1 ;; --link) link=1 ;; --force) force=1 ;; --yes) yes=1 ;;
+      -h | --help) usage; exit 0 ;;
+      -*) echo "arx plugin: unknown option $1" >&2; usage >&2; exit 2 ;;
+      *) [ -z "$ref" ] || { usage >&2; exit 2; }; ref=$1 ;;
+    esac
+    shift
+  done
+  [ -n "$ref" ] || { usage >&2; exit 2; }
+  tmp=$(mktemp -d) && trap 'rm -rf "$tmp"' EXIT
+  resolve "$ref"
+  describe "$src"
+  parent=$(plugins_dir) || exit 1
+  dest=$parent/$p_name
+  if [ -e "$dest" ] || [ -L "$dest" ]; then
+    [ "$force" -eq 1 ] || die "$p_name is already in $(pretty "$parent"); add --force to replace it"
+  fi
+  [ "$project" -eq 1 ] && where="this harness" || where="every harness"
+  echo "Plugin $p_name${p_version:+ $p_version}${p_description:+: $p_description}"
+  echo "  from      $source"
+  echo "  to        $(pretty "$dest") ($where)$([ "$link" -eq 1 ] && echo ", as a link")"
+  [ -z "$p_tools" ] || echo "  tools     $p_tools"
+  [ -z "$p_hooks" ] || echo "  hooks     $p_hooks"
+  [ -z "$p_skills" ] || echo "  skills    $p_skills"
+  [ -z "$p_commands" ] || echo "  commands  $p_commands"
+  [ -z "$p_requires" ] || echo "  needs     $p_requires${p_missing:+ (not found: $p_missing)}"
+  confirm "Plugins run with your permissions. Install it?"
+  mkdir -p "$parent" || die "cannot create $parent"
+  if [ "$link" -eq 1 ]; then
+    rm -rf "$dest" && ln -s "$src" "$dest" || die "cannot link $dest"
+  else
+    # Copy next to the target, then swap, so a failed copy changes nothing.
+    rm -rf "$parent/.$p_name.new" && cp -R "$src" "$parent/.$p_name.new" || die "cannot copy to $parent"
+    printf 'source=%s\ncommit=%s\ninstalled=%s\n' "$source" "$commit" \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$parent/.$p_name.new/.arx-source"
+    rm -rf "$dest" && mv "$parent/.$p_name.new" "$dest" || die "cannot install $dest"
+  fi
+  echo "Installed $p_name. It is on in $where from the next turn."
+  [ -z "$p_missing" ] || echo "Install these first, or its parts that need them will fail: $p_missing"
+}
+
+cmd_remove() {
+  local name="" dest parent
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --project) project=1 ;; --yes) yes=1 ;;
+      -*) echo "arx plugin: unknown option $1" >&2; usage >&2; exit 2 ;;
+      *) name=$1 ;;
+    esac
+    shift
+  done
+  case "$name" in "" | */* | .*) usage >&2; exit 2 ;; esac
+  parent=$(plugins_dir) || exit 1
+  dest=$parent/$name
+  [ -e "$dest" ] || [ -L "$dest" ] || die "$name is not installed in $(pretty "$parent")"
+  if [ -L "$dest" ]; then
+    confirm "Remove the link $(pretty "$dest")? (Its folder stays.)"
+    rm "$dest" || die "cannot remove $dest"
+  else
+    confirm "Delete $(pretty "$dest") and everything in it?"
+    rm -rf "$dest" || die "cannot remove $dest"
+  fi
+  echo "Removed $name."
+}
+
+# Prints one row of `list` for each plugin folder in $1.
+list_dir() {
+  local scope=$1 dir=$2 d name version from
+  for d in "$dir"/*/; do
+    [ -f "$d/plugin.yaml" ] || continue
+    d=${d%/} name=$(basename "$d")
+    if describe_quiet "$d"; then version=${p_version:--}; else version="(broken)"; fi
+    if [ -L "$d" ]; then
+      from="link to $(pretty "$(cd "$d" && pwd -P)")"
+    else
+      from=$(sed -n 's/^source=//p' "$d/.arx-source" 2>/dev/null)
+    fi
+    printf '%-20s %-10s %-8s %s\n' "$name" "$version" "$scope" "${from:-(copied by hand)}"
+  done
+}
+
+# describe, without stopping when the plugin is broken.
+describe_quiet() { (describe "$1" >/dev/null 2>&1) && describe "$1" 2>/dev/null; }
+
+cmd_list() {
+  printf '%-20s %-10s %-8s %s\n' NAME VERSION SCOPE SOURCE
+  [ -f agent.yaml ] && list_dir project "$PWD/plugins"
+  list_dir user "$config_dir/plugins"
+}
+
+cmd_new() {
+  local name=${1:-} dir=${2:-} tool
+  echo "$name" | grep -qE '^[A-Za-z0-9_-]+$' || { usage >&2; exit 2; }
+  if [ -z "$dir" ]; then
+    if [ -d plugins ]; then dir=plugins/$name; else dir=$name; fi
+  fi
+  [ ! -e "$dir" ] || die "$dir already exists"
+  tool=$(echo "$name" | tr - _)
+  mkdir -p "$dir/tools" || die "cannot create $dir"
+  cat >"$dir/plugin.yaml" <<EOF
+# The plugin $name. Every key: docs/plugins.md.
+name: $name
+version: 0.1.0
+description: What $name adds, in one line.
+EOF
+  cat >"$dir/tools/$tool" <<'EOF'
+#!/bin/sh
+# An example tool: prints its arguments. `--schema` describes it to the model.
+if [ "${1:-}" = --schema ]; then
+  echo '{"description": "Echo the arguments back.", "parameters": {"type": "object", "properties": {"text": {"type": "string"}}}}'
+  exit 0
+fi
+cat
+EOF
+  chmod +x "$dir/tools/$tool"
+  printf '# %s\n\nWhat it adds, and what it needs.\n' "$name" >"$dir/README.md"
+  case "$dir" in /*) ;; *) dir=./$dir ;; esac
+  echo "Made $dir. Try it in every harness with: arx plugin add --link $dir"
+}
+
+project=0 link=0 force=0 yes=0
+command=${1:-}
+[ $# -gt 0 ] && shift
+case "$command" in
+  add) cmd_add "$@" ;;
+  remove | rm) cmd_remove "$@" ;;
+  list | ls) cmd_list "$@" ;;
+  new) cmd_new "$@" ;;
+  -h | --help | help) usage ;;
+  *) usage >&2; exit 2 ;;
+esac

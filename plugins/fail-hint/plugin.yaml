@@ -1,0 +1,4 @@
+name: fail-hint
+version: 0.1.0
+description: An after_tool hook that adds a reminder when a tool fails.
+requires: [python3]

@@ -1,6 +1,8 @@
 // external.c: `arx foo` runs `arx-foo`, the way git runs git-foo. Commands
 // like setup and update are small scripts, so the binary stays small and
-// anyone can add a command by putting an executable on PATH.
+// anyone can add a command: in ~/.config/arx/commands/, in a plugin's
+// commands/, or on PATH. The first match wins, and arx's own commands come
+// first, so a plugin can add a command but not replace one.
 
 #include <dirent.h>
 #include <errno.h>
@@ -13,29 +15,57 @@
 #include "src/agent/agent.h"
 #include "src/base/base.h"
 #include "src/cli/cli.h"
+#include "src/harness/harness.h"
 
 // The most external commands `arx help` lists.
 #define ARX_MAX_LISTED 64
 
-// Returns the directories to search, in order, NULL-terminated. Free each
-// entry and the array.
+// Returns the directories to search, in order, NULL-terminated: arx's own
+// commands, the user's, each user plugin's, then PATH. Free each entry and
+// the array.
 static char** SearchDirs(void) {
   const char* path = getenv("PATH") ? getenv("PATH") : "";
-  size_t n = 3;
+  char* config = ConfigDir();
+  char* plugins = XAsprintf("%s/plugins", config);
+  char** names;
+  int n_plugins = ListNames(plugins, &names);
+  size_t n = 4 + (size_t)n_plugins;
   for (const char* p = path; *p; p++) n += *p == ':';
   char** dirs = XMalloc((n + 1) * sizeof(*dirs));
   char* bin = DirName(g_self);
   size_t k = 0;
   dirs[k++] = XAsprintf("%s/../libexec/arx", bin);  // installed
   dirs[k++] = XAsprintf("%s/commands", bin);        // source checkout
+  dirs[k++] = XAsprintf("%s/commands", config);
+  for (int i = 0; i < n_plugins; i++) {
+    dirs[k++] = XAsprintf("%s/%s/commands", plugins, names[i]);
+    free(names[i]);
+  }
   for (const char* p = path; *p;) {
     size_t len = strcspn(p, ":");
     if (len) dirs[k++] = XStrndup(p, len);
     p += len + (p[len] == ':');
   }
   dirs[k] = NULL;
+  free(names);
+  free(plugins);
+  free(config);
   free(bin);
   return dirs;
+}
+
+// Sets ARX_PLUGIN_DIR when the command in `dir` belongs to a user plugin
+// (~/.config/arx/plugins/<name>/commands).
+static void SetPluginDir(const char* dir) {
+  char* plugin = DirName(dir);
+  char* parent = DirName(plugin);
+  char* config = ConfigDir();
+  char* plugins = XAsprintf("%s/plugins", config);
+  if (!strcmp(parent, plugins)) setenv("ARX_PLUGIN_DIR", plugin, 1);
+  free(plugins);
+  free(config);
+  free(parent);
+  free(plugin);
 }
 
 // Frees a list from SearchDirs.
@@ -73,6 +103,7 @@ int RunExternal(const char* name, int argc, char** argv) {
   char* dir = DirName(path);
   setenv("ARX_BIN", g_self, 1);
   setenv("ARX_LIBEXEC", dir, 1);
+  SetPluginDir(dir);
   char** args = XMalloc((size_t)argc * sizeof(*args));
   args[0] = path;
   for (int i = 2; i < argc; i++) args[i - 1] = argv[i];

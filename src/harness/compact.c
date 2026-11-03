@@ -217,9 +217,13 @@ static int External(struct Agent* a, const char* strategy) {
   cJSON_AddNumberToObject(in, "context_window",
                           JsonNum(a->spec.root, "context_window", 128000));
   char* text = cJSON_PrintUnformatted(in);
-  char* path = PathJoin(a->spec.dir, strategy);
+  cJSON* named = cJSON_GetObjectItemCaseSensitive(
+      JsonGet(a->spec.root, "compactors"), strategy);
+  char* path = PathJoin(a->spec.dir,
+                        cJSON_IsString(named) ? named->valuestring : strategy);
   char* argv[] = {path, NULL};
-  char** env = ToolEnv(a);  // the same ARX_* variables tools and hooks get
+  char** env =
+      ToolEnv(a, NULL);  // the same ARX_* variables tools and hooks get
   Buffer out = {0};
   Proc p = {.argv = argv,
             .in = text,

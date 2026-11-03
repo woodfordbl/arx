@@ -131,7 +131,7 @@ static char* BeforeTool(Agent* a, const char* name, const char* args) {
   cJSON* out = NULL;
   int rc = HookRun(a, "before_tool", in, &out);
   char* denial = NULL;
-  if (rc < 0 && HookFailsClosed(a, "before_tool")) {
+  if (rc < 0) {
     denial = XStrdup("denied: the before_tool hook failed (fail: closed)");
   } else if (!strcmp(JsonStr(out, "decision", ""), "deny")) {
     denial = XAsprintf("denied by the before_tool hook: %s",

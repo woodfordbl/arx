@@ -48,7 +48,8 @@ static const Field kHook[] = {
     {NULL, 0, NULL, NULL}};
 
 static const Field kCompaction[] = {
-    {"strategy", kString, NULL, "mask, summarize, hybrid, restart or a path"},
+    {"strategy", kString, NULL,
+     "mask, summarize, hybrid, restart, a compactors name or a path"},
     {"trigger", kNumber, NULL, "Fraction of context_window (default 0.7)"},
     {"keep", kInteger, NULL, "Recent outputs or turns kept intact (5)"},
     {"exclude_tools", kStringList, NULL, "Tools whose outputs stay"},
@@ -83,6 +84,22 @@ const Field kTopFields[] = {
     {"limits", kMap, kLimits, "Per-session limits"},
     {"observers", kStringList, NULL, "Commands fed the event stream on stdin"},
     {"prices", kMap, kPrices, "Token prices for cost tracking"},
+    {"plugins", kStringList, NULL,
+     "The only plugins to use (default: all installed); [] for none"},
+    {"compactors", kAnyMap, NULL, "Named compaction programs: name -> path"},
+    {NULL, 0, NULL, NULL}};
+
+// The keys of plugin.yaml.
+static const Field kPluginFields[] = {
+    {"name", kString, NULL, "Must match the plugin's folder name"},
+    {"version", kString, NULL, "The plugin's version"},
+    {"description", kString, NULL, "One line about what it adds"},
+    {"arx", kString, NULL, "The arx versions it works with, e.g. \">=0.2\""},
+    {"requires", kStringList, NULL, "Programs that must be on PATH"},
+    {"tools", kDict, kTool, "Options for its tools, or subagent tools"},
+    {"hooks", kDict, kHook, "Options for its hooks"},
+    {"observers", kStringList, NULL, "Commands fed the event stream"},
+    {"compactors", kAnyMap, NULL, "Named compaction programs: name -> path"},
     {NULL, 0, NULL, NULL}};
 
 // Edit distance between two short strings, for "did you mean" hints.
@@ -305,6 +322,22 @@ static void ValidateNames(const Spec* spec, Buffer* err) {
   }
 }
 
+// Each compactors entry names an executable, relative to the spec.
+static void ValidateCompactors(const Spec* spec, Buffer* err) {
+  cJSON* c;
+  cJSON_ArrayForEach(c, JsonGet(spec->root, "compactors")) {
+    char* where = XAsprintf("compactors.%s", c->string);
+    char* path = cJSON_IsString(c) ? PathJoin(spec->dir, c->valuestring) : NULL;
+    if (!path) {
+      Problem(spec, err, where, "must be the path of an executable");
+    } else if (access(path, X_OK)) {
+      Problem(spec, err, where, "%s is not executable", path);
+    }
+    free(path);
+    free(where);
+  }
+}
+
 // Rules the table cannot express: required keys, ranges and templates.
 static void ValidateRules(const Spec* spec, Buffer* err) {
   cJSON* root = spec->root;
@@ -312,8 +345,11 @@ static void ValidateRules(const Spec* spec, Buffer* err) {
   if (!JsonStr(root, "endpoint.base_url", NULL)) {
     Problem(spec, err, "endpoint.base_url", "required");
   }
+  ValidateCompactors(spec, err);
   const char* strategy = JsonStr(root, "compaction.strategy", NULL);
-  if (strategy && !InList(kStrategies, strategy)) {
+  cJSON* named = cJSON_GetObjectItemCaseSensitive(JsonGet(root, "compactors"),
+                                                  strategy ? strategy : "");
+  if (strategy && !named && !InList(kStrategies, strategy)) {
     char* path = PathJoin(spec->dir, strategy);
     if (access(path, X_OK)) {
       Problem(spec, err, "compaction.strategy",
@@ -342,4 +378,19 @@ void SpecValidate(const Spec* spec, Buffer* err) {
   ValidateNode(spec, spec->root, kTopFields, "", err);
   ValidateNames(spec, err);
   ValidateRules(spec, err);
+}
+
+// Validates a plugin.yaml; see harness.h.
+void PluginValidate(const Spec* plugin, Buffer* err) {
+  if (!cJSON_IsObject(plugin->root)) {
+    BufferPrintf(err, "%s: plugin.yaml must be a YAML mapping\n", plugin->path);
+    return;
+  }
+  ValidateNode(plugin, plugin->root, kPluginFields, "", err);
+  ValidateNames(plugin, err);
+  ValidateCompactors(plugin, err);
+  const char* name = JsonStr(plugin->root, "name", "x");
+  if (!*name || strspn(name, kNameChars) != strlen(name)) {
+    Problem(plugin, err, "name", "use letters, digits, _ and -");
+  }
 }

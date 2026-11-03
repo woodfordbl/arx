@@ -32,4 +32,5 @@ jobs:
             apk add -q build-base bash python3 curl jq git &&
             make arx CC="gcc -static" VERSION=ci &&
             ARX=./arx tests/run.sh && ARX=./arx tests/plugins.sh &&
-            ARX=./arx tests/cli.sh && tests/bench.sh'
+            ARX=./arx tests/layers.sh && ARX=./arx tests/cli.sh &&
+            tests/bench.sh'

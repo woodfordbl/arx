@@ -1,0 +1,8 @@
+name: reviewer
+version: 0.1.0
+description: A reviewer subagent that reads files and reports the three worst problems.
+tools:
+  reviewer:
+    agent: subagents/reviewer.yaml
+    description: Ask a reviewer to critique files. Give it the paths and what to look for.
+    timeout: 30m
