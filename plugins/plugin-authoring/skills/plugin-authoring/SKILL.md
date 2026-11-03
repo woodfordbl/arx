@@ -16,6 +16,9 @@ Everything here lives next to your spec and takes effect on your next turn.
   JSON decision.
 - **Observer**: add a shell command to `observers:` in the spec. It reads
   one JSON event per line on stdin.
+- **Plugins** add tools, hooks and skills below yours; `{{harness}}` lists
+  the ones in use. A tool of yours with the same name wins. To share
+  something you made, `"$ARX_BIN" plugin new <name>` starts a plugin folder.
 
 Check your work before relying on it:
 

@@ -1,13 +1,12 @@
 // spec.c: loads agent.yaml with libyaml into a cJSON tree (remembering the
-// line of every key), applies --set overrides, and fingerprints the harness
-// files for hot reload. Validation lives in spec_schema.c.
+// line of every key), merges the user's defaults, and applies --set
+// overrides. Validation lives in validate.c; plugins and the fingerprint for
+// hot reload live in plugins.c.
 
-#include <dirent.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 #include <unistd.h>
 
 #include "vendor/libyaml/include/yaml.h"
@@ -95,8 +94,8 @@ static cJSON* ConvertNode(yaml_document_t* doc, yaml_node_t* node, Buffer* path,
   }
 }
 
-// Parses the YAML file into spec->root and spec->lines. Returns 0 or -1.
-static int ParseYaml(const char* path, Spec* spec, Buffer* err) {
+// Parses a YAML file without validating it; see harness.h.
+int SpecParse(const char* path, Spec* spec, Buffer* err) {
   FILE* f = fopen(path, "rb");
   if (!f) {
     BufferPrintf(err, "%s: %s\n", path, strerror(errno));
@@ -161,6 +160,13 @@ static void MergeDefaults(cJSON* target, cJSON* defaults, const char* path,
   }
 }
 
+// Merges `from` under `spec`; see harness.h.
+void SpecMergeUnder(Spec* spec, Spec* from) {
+  if (cJSON_IsObject(spec->root) && cJSON_IsObject(from->root)) {
+    MergeDefaults(spec->root, from->root, "", spec, from);
+  }
+}
+
 // Reads the user's defaults (config.yaml in ConfigDir) into `config`.
 // Returns 1 if they exist, 0 if not, and -1 on a YAML error.
 static int LoadDefaults(Spec* config, Buffer* err) {
@@ -168,7 +174,7 @@ static int LoadDefaults(Spec* config, Buffer* err) {
   char* path = XAsprintf("%s/config.yaml", dir);
   memset(config, 0, sizeof(*config));
   int found = access(path, R_OK) == 0;
-  if (found && ParseYaml(path, config, err)) found = -1;
+  if (found && SpecParse(path, config, err)) found = -1;
   if (found > 0) {
     config->path = path;
     config->dir = dir;
@@ -196,7 +202,7 @@ int SpecLoad(const char* path, cJSON* sets, Spec* spec, Buffer* err) {
   if (!path) {
     *spec = config;  // the defaults are the whole spec
     spec->config = XStrdup(spec->path);
-  } else if (ParseYaml(path, spec, err)) {
+  } else if (SpecParse(path, spec, err)) {
     SpecFree(&config);
     return -1;
   } else {
@@ -213,6 +219,7 @@ int SpecLoad(const char* path, cJSON* sets, Spec* spec, Buffer* err) {
     for (cJSON* kv = sets ? sets->child : NULL; kv; kv = kv->next) {
       JsonSet(spec->root, kv->string, cJSON_Duplicate(kv, 1));
     }
+    PluginsLoad(spec);
   }
   SpecValidate(spec, err);
   spec->sig = SpecSignature(spec);
@@ -230,6 +237,8 @@ void SpecFree(Spec* spec) {
   free(spec->path);
   free(spec->dir);
   free(spec->config);
+  LayersFree(spec);
+  BufferFree(&spec->problems);
   memset(spec, 0, sizeof(*spec));
 }
 
@@ -238,8 +247,10 @@ int SpecAddSet(cJSON* sets, const char* key_value) {
   const char* eq = strchr(key_value, '=');
   if (!eq || eq == key_value) return -1;
   char* key = XStrndup(key_value, (size_t)(eq - key_value));
+  const char* value = eq + 1;
+  cJSON* json = *value == '[' || *value == '{' ? cJSON_Parse(value) : NULL;
   cJSON_DeleteItemFromObjectCaseSensitive(sets, key);
-  cJSON_AddItemToObject(sets, key, JsonScalar(eq + 1, 1));
+  cJSON_AddItemToObject(sets, key, json ? json : JsonScalar(value, 1));
   free(key);
   return 0;
 }
@@ -269,75 +280,4 @@ char* SpecText(const Spec* spec, cJSON* node, Buffer* err) {
   }
   free(path);
   return text;
-}
-
-// Mixes bytes into an FNV-1a hash.
-static void Fnv(uint64_t* h, const void* p, size_t n) {
-  const unsigned char* c = p;
-  for (size_t i = 0; i < n; i++) {
-    *h ^= c[i];
-    *h *= 1099511628211ULL;
-  }
-}
-
-// Mixes a file's path, modification time and size into the hash.
-static void HashFile(uint64_t* h, const char* path) {
-  int64_t size, mtime = MtimeNs(path, &size);
-  Fnv(h, path, strlen(path));
-  Fnv(h, &mtime, sizeof(mtime));
-  Fnv(h, &size, sizeof(size));
-}
-
-// Hashes every entry of `dir` (or `dir/<entry>/<inner>` when `inner` is set),
-// including file modes so a chmod +x counts as a change.
-static void HashDir(uint64_t* h, const char* dir, const char* inner) {
-  DIR* d = opendir(dir);
-  if (!d) return;
-  struct dirent* e;
-  while ((e = readdir(d))) {
-    if (e->d_name[0] == '.') continue;
-    char* path = inner ? XAsprintf("%s/%s/%s", dir, e->d_name, inner)
-                       : XAsprintf("%s/%s", dir, e->d_name);
-    struct stat st;
-    HashFile(h, path);
-    if (!inner && stat(path, &st) == 0) Fnv(h, &st.st_mode, sizeof(st.st_mode));
-    free(path);
-  }
-  closedir(d);
-}
-
-// Hashes the files that a text node points at.
-static void HashTextFiles(uint64_t* h, const Spec* spec, cJSON* node) {
-  if (cJSON_IsArray(node)) {
-    for (cJSON* c = node->child; c; c = c->next) HashTextFiles(h, spec, c);
-    return;
-  }
-  const char* file = JsonStr(node, "file", NULL);
-  if (!file) return;
-  char* path = PathJoin(spec->dir, file);
-  HashFile(h, path);
-  free(path);
-}
-
-// Fingerprints every file that makes up the harness.
-uint64_t SpecSignature(const Spec* spec) {
-  uint64_t h = 1469598103934665603ULL;
-  HashFile(&h, spec->path);
-  if (spec->config) HashFile(&h, spec->config);
-  HashTextFiles(&h, spec, JsonGet(spec->root, "instructions"));
-  HashTextFiles(&h, spec, JsonGet(spec->root, "first_message"));
-  HashTextFiles(&h, spec, JsonGet(spec->root, "compaction.prompt"));
-  char* dir = PathJoin(spec->dir, "tools");
-  HashDir(&h, dir, NULL);
-  free(dir);
-  dir = PathJoin(spec->dir, "hooks");
-  HashDir(&h, dir, NULL);
-  free(dir);
-  const char* skills = JsonStr(spec->root, "skills", NULL);
-  if (skills) {
-    dir = PathJoin(spec->dir, skills);
-    HashDir(&h, dir, "SKILL.md");
-    free(dir);
-  }
-  return h;
 }

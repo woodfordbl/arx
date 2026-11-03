@@ -1,0 +1,3 @@
+#!/bin/sh
+# arx-add: install a plugin (short for `arx plugin add`)
+exec "${ARX_LIBEXEC:-$(dirname "$0")}/arx-plugin" add "$@"

@@ -4,7 +4,6 @@
 
 #include "src/agent/agent.h"
 
-#include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -83,28 +82,64 @@ static void FrontMatter(char* text, const char** name, const char** desc) {
   }
 }
 
-// Lists skills as "- name: description (path)", one per line.
-static void SkillsIndex(Agent* a, Buffer* out) {
-  const char* rel = JsonStr(a->spec.root, "skills", NULL);
-  char* dir = rel ? PathJoin(a->spec.dir, rel) : NULL;
-  DIR* d = dir ? opendir(dir) : NULL;
-  size_t before = out->len;
-  struct dirent* e;
-  while (d && (e = readdir(d))) {
-    if (e->d_name[0] == '.') continue;
-    char* path = XAsprintf("%s/%s/SKILL.md", dir, e->d_name);
-    char* text = ReadFile(path, NULL);
-    if (text) {
-      const char *name = e->d_name, *desc = "";
-      FrontMatter(text, &name, &desc);
-      BufferPrintf(out, "- %s: %s (%s)\n", name, desc, path);
-    }
-    free(text);
-    free(path);
+// True when `seen` already holds the skill folder `name`.
+static int Listed(char** seen, int n, const char* name) {
+  for (int i = 0; i < n; i++) {
+    if (!strcmp(seen[i], name)) return 1;
   }
-  if (d) closedir(d);
+  return 0;
+}
+
+// Lists skills as "- name: description (path)", one per line, from every
+// layer; the first folder with a name wins.
+static void SkillsIndex(Agent* a, Buffer* out) {
+  size_t before = out->len;
+  char** seen = NULL;
+  int n_seen = 0;
+  for (int l = 0; l < a->spec.layer_count; l++) {
+    const char* dir = a->spec.layers[l].skills;
+    char** names;
+    int n = dir ? ListNames(dir, &names) : 0;
+    for (int i = 0; i < n; i++) {
+      char* path = XAsprintf("%s/%s/SKILL.md", dir, names[i]);
+      char* text = Listed(seen, n_seen, names[i]) ? NULL : ReadFile(path, NULL);
+      if (text) {
+        const char *name = names[i], *desc = "";
+        FrontMatter(text, &name, &desc);
+        BufferPrintf(out, "- %s: %s (%s)\n", name, desc, path);
+        seen = XRealloc(seen, (size_t)(n_seen + 1) * sizeof(*seen));
+        seen[n_seen++] = XStrdup(names[i]);
+      }
+      free(text);
+      free(path);
+      free(names[i]);
+    }
+    if (n) free(names);
+  }
+  for (int i = 0; i < n_seen; i++) free(seen[i]);
+  free(seen);
   if (out->len == before) BufferAppendStr(out, "(no skills yet)");
-  free(dir);
+}
+
+// Appends a line about the plugins in use, if there are any.
+static void PluginsText(Agent* a, Buffer* out) {
+  size_t before = out->len;
+  for (int l = 0; l < a->spec.layer_count; l++) {
+    const Layer* layer = &a->spec.layers[l];
+    if (!layer->plugin) continue;
+    BufferPrintf(out, "%s%s (%s)", out->len == before ? "" : ", ",
+                 layer->plugin, layer->dir);
+  }
+  if (out->len == before) return;
+  char* list = XStrdup(out->data + before);
+  out->len = before;
+  out->data[before] = 0;
+  BufferPrintf(out,
+               "\n- Plugins add tools, hooks and skills below yours: %s. A "
+               "tool of yours with the same name wins; hooks all run, yours "
+               "first.",
+               list);
+  free(list);
 }
 
 // Tells the agent where its harness lives and how to change it.
@@ -128,6 +163,7 @@ static void HarnessText(Agent* a, Buffer* out) {
       a->spec.path, g_self, a->spec.path, a->spec.dir, a->spec.dir,
       skills ? skills : "(set `skills:` in the spec) ", skills ? "/" : "",
       a->session.dir ? a->session.dir : "(none)");
+  PluginsText(a, out);
 }
 
 // {{file:PATH}}, {{file:PATH:tail=N}} or {{file:PATH:max=SIZE}}.

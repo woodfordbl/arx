@@ -1,0 +1,5 @@
+name: notify
+version: 0.1.0
+description: An observer that reports when a session ends, to ntfy.sh if NTFY_TOPIC is set.
+# Observers run from the working directory; $ARX_PLUGIN_DIR finds this folder.
+observers: ['"$ARX_PLUGIN_DIR/observers/notify.sh"']

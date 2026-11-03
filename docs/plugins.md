@@ -4,34 +4,117 @@ Everything outside the core is a plugin, and every plugin is an executable in
 any language: a shell script, a Python file, a compiled program. arx starts it,
 gives it JSON, and reads what it prints. Nothing is linked into the binary.
 
-People write plugins, and so does the agent itself. Plugins live next to the
-spec, and arx reloads them before every model call, so a tool the agent writes
-during a turn is available on its next turn.
+People write plugins, and so does the agent itself. The agent's own plugins
+live next to the spec, and arx reloads them before every model call, so a tool
+the agent writes during a turn is available on its next turn. Plugins you
+install live in their own folders and load the same way
+([Plugin folders](#plugin-folders)).
 
-[`examples/plugins/`](../examples/plugins) has one working example of each
-kind, wired together in one spec, and `make test` runs every one of them.
+[`plugins/`](../plugins) is the arx marketplace: one working plugin of each
+kind, each in its own folder. [`examples/plugins/`](../examples/plugins) is a
+demo harness that uses all of them, and `make test` runs every one.
 
-| Kind | Where it lives | When it runs | Example |
+| Kind | Where it lives | When it runs | In the marketplace |
 |---|---|---|---|
-| [Tool](#tools) | `tools/<name>` | when the model calls it | `tools/word_count`, `tools/now` |
-| [Subagent](#subagents) | `tools: {name: {agent: spec.yaml}}` | when the model calls it | `subagents/reviewer.yaml` |
-| [Hook](#hooks) | `hooks/<point>` | at fixed points of the loop | `hooks/before_tool`, `after_tool`, `stop`, `session_start` |
-| [Compactor](#compactors) | `compaction.strategy: <path>` | when the prompt passes the trigger | `compactors/keep_last.py` |
-| [Observer](#observers) | `observers: [command]` | for the whole session | `observers/notify.sh` |
-| [Driver](#drivers) | anywhere: it runs `arx` | whenever you run it | `drivers/resume_on_cap.sh` |
-| [Command](#commands) | `arx-<name>` on PATH or next to arx | when you type `arx <name>` | `commands/arx-setup`, `arx-update` |
-| [Skill](#skills) | `<skills dir>/<name>/SKILL.md` | read by the agent when needed | `skills/plugin-authoring` |
+| [Tool](#tools) | `tools/<name>` | when the model calls it | `word-count`, `clock` |
+| [Subagent](#subagents) | `tools: {name: {agent: spec.yaml}}` | when the model calls it | `reviewer` |
+| [Hook](#hooks) | `hooks/<point>` | at fixed points of the loop | `guard`, `git-context`, `fail-hint` |
+| [Compactor](#compactors) | `compaction.strategy: <name or path>` | when the prompt passes the trigger | `keep-last` |
+| [Observer](#observers) | `observers: [command]` | for the whole session | `notify` |
+| [Driver](#drivers) | anywhere: it runs `arx` | whenever you run it | `examples/plugins/drivers/resume_on_cap.sh` |
+| [Command](#commands) | `arx-<name>` in a command folder | when you type `arx <name>` | `commands/arx-setup`, `arx-update` |
+| [Skill](#skills) | `<skills dir>/<name>/SKILL.md` | read by the agent when needed | `plugin-authoring` |
 
 Paths are relative to the directory of the spec (`--spec`, default
 `./agent.yaml`). Check a harness with `arx check` and list its tools with
 `arx tools`.
 
 **With no `./agent.yaml`:** arx uses your defaults from `arx setup`, which are
-`config.yaml` in `~/.config/arx/`, or `$ARX_CONFIG_DIR` if you set it. In that
-case the spec directory is that folder, so tools and hooks you put in
-`~/.config/arx/tools/` and `~/.config/arx/hooks/` work everywhere. When a
+`config.yaml` in `~/.config/arx/`, or `$ARX_CONFIG_DIR` if you set it. When a
 project does have an `agent.yaml`, it is merged over your defaults key by key,
-and the project wins.
+and the project wins. Tools, hooks and skills you put in `~/.config/arx/`
+work in every harness, below the project's own.
+
+## Plugin folders
+
+A plugin you install is a folder with a `plugin.yaml`, plus any of `tools/`,
+`hooks/`, `skills/` and `commands/`, with the same contracts as below:
+
+```
+notify/
+  plugin.yaml            # required
+  tools/  hooks/  skills/  commands/
+  observers/notify.sh    # any other files that plugin.yaml names
+```
+
+```yaml
+name: notify                 # must match the folder name
+version: 0.1.0
+description: Reports when a session ends.
+arx: ">=0.2"                 # optional: the arx versions it works with
+requires: [curl]             # optional: programs it needs on PATH
+# The rest merges under the spec, and the spec wins.
+observers: ['"$ARX_PLUGIN_DIR/observers/notify.sh"']
+tools: {word_count: {timeout: 10s}}
+compactors: {keep_last: compactors/keep_last.py}   # compaction.strategy: keep_last
+hooks: {before_tool: {fail: closed}}               # options for its own hooks
+```
+
+Paths in `plugin.yaml` are relative to the plugin folder. arx checks it with
+the same validator as the spec; a plugin that is broken, or that needs a newer
+arx, is skipped and the agent is told why, so it cannot stop the harness.
+
+**Where arx looks (the layers), in order:**
+1. the spec folder: `tools/`, `hooks/` and the `skills:` folder;
+2. project plugins: `<spec folder>/plugins/<name>/`;
+3. your config folder: `~/.config/arx/tools/`, `hooks/` and `skills/`;
+4. user plugins: `~/.config/arx/plugins/<name>/`.
+
+Layers 3 and 4 are skipped when the spec folder is the config folder.
+
+- **Tools:** the first layer with a working tool of a name wins. A tool the
+  agent writes in the spec folder always wins over a plugin's, and the agent
+  is told about the tool it hides.
+- **Hooks:** each layer's hook for a point runs, in layer order. For
+  `before_tool`, the first deny stops the call. `session_start` contexts and
+  `after_tool` notes are joined. For `stop`, the first decision wins.
+- **Skills and observers:** all of them. `{{skills}}` lists every layer's.
+- **Commands:** user plugins only (see [Commands](#commands)).
+- **On or off:** every installed plugin is on. `plugins: [notify, guard]` in a
+  spec names the only ones to use, and `plugins: []` (or `--set plugins=[]`)
+  turns them all off. A list also leaves out layer 3, so the harness is
+  exactly the spec folder and the plugins it names. Use a list in experiment
+  harnesses, so that something a user adds later cannot change a run.
+
+**Installing:** `arx plugin` (or `arx add` for short) manages them:
+
+| Command | What it does |
+|---|---|
+| `arx plugin add NAME[@REF]` | `plugins/NAME` from the arx repo, at the tag of your arx (or REF) |
+| `arx plugin add OWNER/REPO/PATH[@REF]` | a plugin folder in any GitHub repo |
+| `arx plugin add ./PATH` | a folder on this machine; `--link` uses it where it is |
+| `arx plugin remove NAME` | deletes the plugin folder (only the link, for `--link`) |
+| `arx plugin list` | the installed plugins, their versions and sources |
+| `arx plugin new NAME` | a new plugin folder with an example tool |
+
+`add` shows what the plugin adds and asks first; `--yes` skips the question,
+and without a terminal it is required. `--project` installs into
+`./plugins/` next to `./agent.yaml`, for that harness only. A copied plugin
+records where it came from in `.arx-source`. `arx check --plugin DIR` checks a
+plugin without installing it.
+
+**A marketplace** is any repo with `plugins/<name>/`. This repo is the default
+one, and its plugins are not in the arx release: the release is only the
+binary and its commands.
+
+**Developing a plugin:** link it, then change it. A linked plugin's changes
+work on the agent's next turn, the same as its own files:
+
+```sh
+arx plugin new lint                  # or work in ./plugins/<name> in this repo
+arx plugin add --link ./lint
+arx check                            # lists it under plugins:, with any problems
+```
 
 ## What every plugin gets
 
@@ -50,6 +133,7 @@ variables:
 | `ARX_SPEC`, `ARX_SPEC_DIR` | the spec file and its directory |
 | `ARX_DEPTH` | 0 for the top-level agent, 1 for a subagent, ... |
 | `ARX_BIN` | the arx binary, for `"$ARX_BIN" ctl "$ARX_SESSION" note ...` |
+| `ARX_PLUGIN_DIR` | the plugin's folder, for the tools, hooks, observers and commands of a plugin |
 
 **Limits:**
 - **Process group:** every plugin runs in its own process group.
@@ -96,7 +180,8 @@ tools:
 - **Result:** the subagent's final answer. If it stopped at a cap, the result
   says so.
 - **Its harness:** the subagent uses its own spec, and its own `tools/` and
-  `hooks/` next to that spec. The parent's hooks do not apply to it.
+  `hooks/` next to that spec. The parent's hooks do not apply to it, but your
+  user plugins and `~/.config/arx/` do, unless its spec has a `plugins:` list.
 - **Limits:** the parent's `--cap` values are passed down. `--cap depth=N`
   (default 4) limits nesting.
 - **Events:** the subagent's events appear in the parent's event stream with
@@ -119,7 +204,10 @@ An executable at `hooks/<point>`. It gets a JSON object on stdin, with `point`,
   - `continue` sends `message` to the agent and keeps going. This is how "never
     stop" loops are built.
   - `restart` clears the context first, Ralph-style.
-- **Timeout:** `hooks.<point>.timeout` (default 10s).
+- **Timeout:** `hooks.<point>.timeout` (default 10s). A plugin sets the
+  options of its own hooks in its `plugin.yaml`.
+- **More than one:** each [layer](#plugin-folders) can have a hook for a
+  point, and they all run in layer order.
 - **Failures:** a hook that exits non-zero, times out or prints something that
   is not a JSON object is reported as a `hook` event with an `error`, then
   ignored, so a broken hook cannot stop the agent. Set
@@ -129,7 +217,8 @@ An executable at `hooks/<point>`. It gets a JSON object on stdin, with `point`,
 ## Compactors
 
 `compaction.strategy` is `mask` (the default), `summarize`, `hybrid`,
-`restart`, or a path to an executable.
+`restart`, a name from `compactors:` (`compactors: {mine: path}` in the spec,
+or a plugin's), or a path to an executable.
 
 - **When it runs:** when the prompt passes `compaction.trigger ×
   context_window`.
@@ -195,12 +284,16 @@ the way `git foo` runs `git-foo`. `arx setup`, `init`, `doctor`, `models`,
 `sessions` and `update` are commands like this, written as short scripts in
 [`commands/`](../commands).
 
-- **Where arx looks, in order:**
+- **Where arx looks, in order:** the first match wins, so a plugin can add a
+  command but cannot replace one of arx's own.
   1. `../libexec/arx/` next to the binary (installed copies);
   2. `commands/` next to the binary (a source checkout);
-  3. your PATH.
+  3. `~/.config/arx/commands/` (yours; `arx update` never touches it);
+  4. `~/.config/arx/plugins/<name>/commands/` (user plugins);
+  5. your PATH.
 - **Environment:** the command gets `ARX_BIN` (the arx binary) and
-  `ARX_LIBEXEC` (the folder it was found in).
+  `ARX_LIBEXEC` (the folder it was found in), and a plugin's command also gets
+  `ARX_PLUGIN_DIR`.
 - **Help:** a line `# arx-<name>: one-line summary` near the top makes it show
   up in `arx help`. `arx help <name>` runs `arx-<name> --help`.
 - **Endpoint access:** use `"$ARX_BIN" request /models`, or any other path. It
@@ -245,7 +338,7 @@ changing `v`.
 | `model.retry` | `attempt`, `status` (HTTP), `curl_exit`, `wait_s`, `error` |
 | `tool.start` | `id`, `name`, `preview` |
 | `tool.end` | `id`, `name`, `error`, `preview`. Process tools add `exit`, `secs`, `bytes` and `path` |
-| `hook` | `point`, `secs`, and either `decision` or `error` |
+| `hook` | `point`, `secs`, `plugin` (for a plugin's hook), and either `decision` or `error` |
 | `harness.reload` | `ok`, `ms`; then `tools` (count) or `errors` |
 | `compact` | `strategy`, `tokens_before`, `tokens_after` |
 | `note` | `text` (harness notes, caps reached) |
@@ -269,17 +362,17 @@ session:
 
 These extend the contracts above; see the roadmap in the README.
 
-1. **Plugin packs:** `plugins: [dir, ...]` in the spec merges a folder of
-   `tools/`, `hooks/` and `skills/`, plus a `plugin.yaml` with observers and MCP
-   servers, into the harness.
-2. **ACP server (`arx acp`):** the Agent Client Protocol over stdio, for
+1. **ACP server (`arx acp`):** the Agent Client Protocol over stdio, for
    editors and custom front-ends:
    - `session/new` and `session/load` map to a new session and `--resume`;
    - `session/prompt` runs the turn loop;
    - `session/cancel` is the Ctrl-C path;
    - events become `session/update` messages;
    - `permissions: ask` sends `session/request_permission` before tool calls.
-3. **OpenTUI front-end (`arx-tui`):** a terminal UI that talks to `arx acp`.
-4. **MCP client:** MCP servers declared in the spec become tools. Only two
+2. **OpenTUI front-end:** a terminal UI plugin that talks to `arx acp`.
+3. **MCP client:** MCP servers declared in the spec become tools. Only two
    built-in tools sit in the prompt: `mcp_search` finds a tool, and
    `mcp_select` adds its full schema on the next turn.
+4. **More of `arx plugin`:** `update`, `search`, `eject` (copy a plugin into
+   the spec folder so the agent owns it), other marketplaces by name
+   (`@acme/lint`), and a `setup:` command that runs once after an install.

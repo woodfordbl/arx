@@ -65,7 +65,8 @@ static int Start(Agent* a) {
   int code = OpenSession(a);
   if (code) return code;
   cJSON* observer;
-  char** env = ToolEnv(a);  // observers get the same ARX_* variables as tools
+  char** env =
+      ToolEnv(a, NULL);  // observers get the same ARX_* variables as tools
   cJSON_ArrayForEach(observer, JsonGet(a->spec.root, "observers")) {
     if (cJSON_IsString(observer)) EventsAddObserver(observer->valuestring, env);
   }

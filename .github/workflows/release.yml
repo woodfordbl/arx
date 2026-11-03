@@ -55,7 +55,8 @@ jobs:
             apk add -q build-base bash python3 curl jq git &&
             make arx CC="gcc -static" VERSION='"${GITHUB_REF_NAME#v}"' &&
             ARX=./arx tests/run.sh && ARX=./arx tests/plugins.sh &&
-            ARX=./arx tests/cli.sh && tests/bench.sh &&
+            ARX=./arx tests/layers.sh && ARX=./arx tests/cli.sh &&
+            tests/bench.sh &&
             make dist TARGET=${{ matrix.target }} VERSION='"${GITHUB_REF_NAME#v}"
       - uses: actions/upload-artifact@v4
         with:

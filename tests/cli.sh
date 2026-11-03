@@ -153,4 +153,45 @@ echo v9.9.10 >release/latest
 ARX_UPDATE_DIR=$PWD/release ARX_BIN=$PWD/prefix/bin/arx "$ROOT/commands/arx-update" >bad.txt 2>&1
 check "a bad checksum changes nothing" has bad.txt 'checksum mismatch'
 
+begin "arx plugin"
+plugins=$ARX_CONFIG_DIR/plugins
+"$ARX" plugin new demo >new.txt 2>&1
+check "new makes a plugin" "$ARX" check --plugin demo
+"$ARX" plugin add ./demo </dev/null >add.txt 2>&1
+code=$?
+check "add without a terminal asks for --yes" has add.txt 'add --yes'
+check "and changes nothing" test ! -e "$plugins/demo"
+"$ARX" plugin add ./demo --yes </dev/null >add.txt 2>&1
+check "add --yes copies the folder" test -x "$plugins/demo/tools/demo"
+check "it records the source" has "$plugins/demo/.arx-source" "source=$(pwd -P)/demo"
+"$ARX" check >check.txt 2>&1
+check "the harness uses it" has check.txt 'plugins: demo'
+"$ARX" plugin add ./demo --yes </dev/null >add.txt 2>&1
+code=$?
+check "a second add needs --force" exited 1
+"$ARX" plugin list >list.txt 2>&1
+check "list shows it" grep -qE '^demo +0\.1\.0 +user' list.txt
+"$ARX" plugin remove demo --yes </dev/null >/dev/null 2>&1
+check "remove deletes it" test ! -e "$plugins/demo"
+"$ARX" add --link ./demo --yes </dev/null >/dev/null 2>&1
+check "arx add --link makes a link" test -L "$plugins/demo"
+"$ARX" plugin remove demo --yes </dev/null >/dev/null 2>&1
+check "removing a link keeps the folder" test -f demo/plugin.yaml
+mkdir -p repo/arx-abc1234/plugins mirror/woodfordbl/arx mirror/acme/kit
+cp -R demo repo/arx-abc1234/plugins/
+tar -czf mirror/woodfordbl/arx/v1.2.3.tar.gz -C repo arx-abc1234
+tar -czf mirror/acme/kit/HEAD.tar.gz -C repo arx-abc1234
+export ARX_PLUGIN_MIRROR=$PWD/mirror
+"$ARX" plugin add demo@v1.2.3 --yes </dev/null >add.txt 2>&1
+check "a bare name comes from the arx repo" has "$plugins/demo/.arx-source" 'source=woodfordbl/arx/plugins/demo@v1.2.3'
+check "with the commit it came from" has "$plugins/demo/.arx-source" 'commit=arx-abc1234'
+"$ARX" plugin add acme/kit/plugins/demo --force --yes </dev/null >add.txt 2>&1
+check "OWNER/REPO/PATH comes from that repo" has "$plugins/demo/.arx-source" 'source=acme/kit/plugins/demo@HEAD'
+"$ARX" plugin add nosuch@v1.2.3 --yes </dev/null >add.txt 2>&1
+check "a missing plugin is explained" has add.txt 'has no plugins/nosuch'
+unset ARX_PLUGIN_MIRROR
+"$ARX" plugin add ./demo --project --yes </dev/null >add.txt 2>&1
+check "--project installs next to agent.yaml" test -f plugins/demo/plugin.yaml
+rm -rf "$plugins"
+
 summary

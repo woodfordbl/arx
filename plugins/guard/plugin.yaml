@@ -1,0 +1,5 @@
+name: guard
+version: 0.1.0
+description: A before_tool hook that denies a few destructive shell commands.
+# If the guard itself breaks, deny the call instead of letting it through.
+hooks: {before_tool: {fail: closed}}

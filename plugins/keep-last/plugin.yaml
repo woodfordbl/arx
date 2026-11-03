@@ -1,0 +1,6 @@
+name: keep-last
+version: 0.1.0
+description: A keep_last compactor that keeps the first messages and the most recent ones.
+requires: [python3]
+# Use it with `compaction: {strategy: keep_last}` in a spec.
+compactors: {keep_last: compactors/keep_last.py}
