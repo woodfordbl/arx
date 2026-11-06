@@ -360,7 +360,7 @@ session:
 
 ## Planned, not built yet
 
-These extend the contracts above; see the roadmap in the README.
+These extend the contracts above; see the [roadmap](roadmap.md).
 
 1. **ACP server (`arx acp`):** the Agent Client Protocol over stdio, for
    editors and custom front-ends:
