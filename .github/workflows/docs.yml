@@ -4,7 +4,7 @@ name: docs
 on:
   push:
     branches: [main]
-    paths: ["docs/**"]
+    paths: ["docs/**", "install.sh"]
   workflow_dispatch:
 jobs:
   deploy:
