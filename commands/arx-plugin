@@ -94,12 +94,16 @@ core_ref() {
   fi
 }
 
-# Downloads repo $1 at ref $2 and unpacks it into $3. ARX_PLUGIN_MIRROR (a
-# folder of OWNER/REPO/REF.tar.gz files) replaces GitHub, for tests.
+# Downloads repo $1 at ref $2 and unpacks it into $3. The arx repo comes
+# from the arx site (ARX_DOWNLOAD_URL replaces it) at a tag, main or a
+# commit; other repos and refs from GitHub. ARX_PLUGIN_MIRROR (a folder of
+# OWNER/REPO/REF.tar.gz files) replaces both, for tests.
 fetch() {
-  local tarball=$3/repo.tar.gz
+  local tarball=$3/repo.tar.gz site=${ARX_DOWNLOAD_URL:-https://arx-documentation.vercel.app}
   if [ -n "${ARX_PLUGIN_MIRROR:-}" ]; then
     cp "$ARX_PLUGIN_MIRROR/$1/$2.tar.gz" "$tarball" 2>/dev/null
+  elif [ "$1" = woodfordbl/arx ] && echo "$2" | grep -Eq '^(v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?|main|[0-9a-f]{7,40})$'; then
+    curl -fsSL -o "$tarball" "${site%/}/archive/$2.tar.gz"
   elif command -v gh >/dev/null && gh auth status >/dev/null 2>&1; then
     gh api "repos/$1/tarball/$2" >"$tarball"
   else
