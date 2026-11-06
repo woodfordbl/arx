@@ -1,0 +1,21 @@
+# Rebuilds the docs site (woodfordbl/arx-docs on Vercel) when docs/ changes.
+# Needs the repo secret VERCEL_DOCS_DEPLOY_HOOK: a Vercel deploy hook URL.
+name: docs
+on:
+  push:
+    branches: [main]
+    paths: ["docs/**"]
+  workflow_dispatch:
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger the Vercel deploy hook
+        env:
+          HOOK: ${{ secrets.VERCEL_DOCS_DEPLOY_HOOK }}
+        run: |
+          if [ -z "$HOOK" ]; then
+            echo "VERCEL_DOCS_DEPLOY_HOOK is not set; skipping."
+            exit 0
+          fi
+          curl -fsS -X POST "$HOOK"
