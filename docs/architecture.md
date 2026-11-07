@@ -38,14 +38,19 @@ takes 0.2 ms.
 `src/` has one folder per layer and one header per folder. A layer only uses
 the layers below it.
 
-```
-main.c                the entry point
-  └─ cli/             options, built-in and external commands   cli.h
-       └─ agent/      the loop, session lifecycle, prompts      agent.h
-            ├─ harness/   what the agent can change             harness.h
-            ├─ model/     model calls through curl              model.h
-            └─ io/        sessions, events, terminal view       io.h
-                 └─ base/   buffers, files, JSON, processes     base.h
+```mermaid
+flowchart TD
+  accTitle: Source layout
+  main["<b>main.c</b><br>the entry point"]
+  cli["cli.h<br><b>cli/</b><br>options, built-in and<br>external commands"]
+  agent["agent.h<br><b>agent/</b><br>the loop, session<br>lifecycle, prompts"]
+  harness["harness.h<br><b>harness/</b><br>what the agent<br>can change"]
+  model["model.h<br><b>model/</b><br>model calls<br>through curl"]
+  io["io.h<br><b>io/</b><br>sessions, events,<br>terminal view"]
+  base["base.h<br><b>base/</b><br>buffers, files, JSON, processes"]
+  main --> cli --> agent
+  agent --> harness & model & io
+  io --> base
 ```
 
 | Folder | File | What it holds |
