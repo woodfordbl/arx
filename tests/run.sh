@@ -106,7 +106,8 @@ run "go" --set model=other-model --cap turns=1
 check "model overridden" has fake/req-01.json '"model":"other-model"'
 check "cap exits 3" exited 3
 
-# Hooks: stop continues once; before_tool denies; a crashing hook is ignored.
+# Hooks: stop continues once; before_tool denies; a crashing after_tool hook
+# (which runs only for calls that before_tool lets through) is ignored.
 begin "hooks"
 script hooks/stop <<'EOF'
 #!/bin/sh
@@ -125,11 +126,12 @@ exit 1
 EOF
 sse_text "first" | reply 1 "200 OK"
 sse_tool bash '{\"command\":\"rm -rf x\"}' | reply 2 "200 OK"
-sse_text "second" | reply 3 "200 OK"
+sse_tool bash '{\"command\":\"true\"}' | reply 3 "200 OK"
+sse_text "second" | reply 4 "200 OK"
 run "go"
 check "exits 0" exited 0
 check "stop hook continued" has fake/req-02.json 'keep going'
-check "before_tool denied" has fake/req-03.json 'denied by the before_tool hook'
+check "before_tool denied" has fake/req-03.json 'denied: no deleting'
 check "failed hook reported" has .arx/sessions/last/events.jsonl '"point":"after_tool","secs"'
 
 # Restart via the stop hook drops the history.

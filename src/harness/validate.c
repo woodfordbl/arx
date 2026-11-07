@@ -11,8 +11,9 @@
 #include "src/base/base.h"
 #include "src/harness/harness.h"
 
-const char* const kHookPoints[] = {"session_start", "before_tool", "after_tool",
-                                   "stop", NULL};
+const char* const kHookPoints[] = {
+    "session_start", "before_model", "after_model", "before_tool",
+    "after_tool",    "stop",         NULL};
 const char kNameChars[] =
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-";
 static const char* const kStrategies[] = {"mask", "summarize", "hybrid",
@@ -308,8 +309,8 @@ static void ValidateNames(const Spec* spec, Buffer* err) {
     if (InList(kHookPoints, c->string)) continue;
     char* path = XAsprintf("hooks.%s", c->string);
     Problem(spec, err, path,
-            "unknown hook point (known: session_start, before_tool, "
-            "after_tool, stop)");
+            "unknown hook point (known: session_start, before_model, "
+            "after_model, before_tool, after_tool, stop)");
     free(path);
   }
   cJSON_ArrayForEach(c, JsonGet(spec->root, "tools")) {
