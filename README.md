@@ -2,7 +2,7 @@
 
 <p align="center">
   <b>A minimal agent harness that improves itself while it works.</b><br>
-  One 183 KB C binary. Every plugin is an executable, in any language.
+  One 377 KB Zig binary. Every plugin is an executable, in any language.
 </p>
 
 <p align="center">
@@ -60,10 +60,10 @@ next turn.</sub>
 
 | Measured | macOS (arm64) | Linux (static, musl) |
 |---|---|---|
-| Binary | 183 KB | 258 KB, libc included |
-| Startup | 0.6 ms above `true` | within noise of `true` |
-| Peak memory over 500 turns | 4 MB | 7 MB |
-| Harness edit to live | 0.10 ms | 0.05 ms |
+| Binary | 377 KB | 416 KB, libc included |
+| Startup | 0.8 ms above `true` | within noise of `true` |
+| Peak memory over 500 turns | 5 MB | 7 MB |
+| Harness edit to live | 0.11 ms | 0.06 ms |
 
 ## Quick start
 
@@ -105,7 +105,7 @@ the [self-improving runs guide](docs/autoresearch.md).
 An agent is a **spec** (`agent.yaml`) plus the `tools/`, `hooks/`, prompts and
 skills next to it. Together they are the **harness**, and the agent may change
 any of it. Your defaults from `arx setup` fill in what the spec leaves out, so
-a project's spec only needs what differs. The core, one C binary, only runs
+a project's spec only needs what differs. The core, one Zig binary, only runs
 the loop. Read [How arx works](docs/concepts.md) for the details.
 
 ```yaml
@@ -172,9 +172,9 @@ when `docs/` changes on `main`.
 ## Development
 
 ```sh
-make test     # 180 end-to-end checks, offline, under ASan + UBSan
+make test     # Zig unit tests, then 180 end-to-end checks, offline, on the debug build
 make bench    # the performance budgets
-make lint     # Google style, 400-line files, doc comments
+make lint     # zig fmt, 400-line files, doc comments
 ```
 
 CI runs lint, the tests and the budgets on every push and pull request.

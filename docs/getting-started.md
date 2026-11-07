@@ -18,15 +18,16 @@ arx site, which serves arx's GitHub releases, checks its sha256, and installs `a
 `--version vX.Y.Z` for a given release. If `~/.local/bin` is not on your
 `PATH`, the installer says how to add it.
 
-**From source** (needs a C compiler and `make`):
+**From source** (needs [Zig 0.17.0](https://ziglang.org/download/), exactly
+that release, and `make`):
 
 ```sh
 git clone https://github.com/woodfordbl/arx.git && cd arx
 make install                 # arx into ~/.local/bin (PREFIX=... to change)
 ```
 
-On Linux, `make static` builds a fully static binary (musl, in Docker) that
-runs on any x86_64 or arm64 machine.
+`make static` builds fully static Linux binaries (musl) for x86_64 and
+arm64. Zig cross-compiles, so this works from macOS too, without Docker.
 
 `arx update` installs the newest release later, from the same place and with
 the same checksum check.

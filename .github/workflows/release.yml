@@ -2,6 +2,10 @@
 # pushed (a slow or oversized build fails the release), and publishes
 # arx-<os>-<arch>.tar.gz (+ .sha256) and install.sh to a GitHub release.
 # `arx update` and install.sh download these.
+#
+# Zig cross-compiles, so the macOS runner also builds darwin-x86_64; the
+# tests and budgets run on each runner's own architecture. Linux binaries
+# link musl statically. Every job uses the pinned Zig release.
 name: release
 
 on:
@@ -11,31 +15,31 @@ on:
 permissions:
   contents: write
 
+env:
+  ZIG_VERSION: 0.17.0
+
 jobs:
   macos:
     # macos-latest tracks GitHub's current image; macos-14 was retired in
     # November 2026 (https://github.com/actions/runner-images/issues/13518).
     runs-on: macos-latest
-    strategy:
-      matrix:
-        include:
-          - target: darwin-arm64
-            cc: cc
-          - target: darwin-x86_64
-            cc: cc -arch x86_64
     steps:
       - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
       - name: Test
-        if: matrix.target == 'darwin-arm64'
         run: make test
       - name: Benchmark (size, startup, memory, reload)
-        if: matrix.target == 'darwin-arm64'
         run: make bench
       - name: Package
-        run: make clean dist CC="${{ matrix.cc }}" TARGET=${{ matrix.target }} VERSION=${GITHUB_REF_NAME#v}
+        run: |
+          for target in darwin-arm64 darwin-x86_64; do
+            make clean-bin dist TARGET=$target VERSION=${GITHUB_REF_NAME#v}
+          done
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.target }}
+          name: darwin
           path: dist/arx-*.tar.gz*
 
   linux:
@@ -49,15 +53,15 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
-      - name: Build, test, benchmark and package (static musl, in Alpine)
-        run: |
-          docker run --rm -v "$PWD":/w -w /w alpine:3.20 sh -c '
-            apk add -q build-base bash python3 curl jq git &&
-            make arx CC="gcc -static" VERSION='"${GITHUB_REF_NAME#v}"' &&
-            ARX=./arx tests/run.sh && ARX=./arx tests/plugins.sh &&
-            ARX=./arx tests/layers.sh && ARX=./arx tests/cli.sh &&
-            tests/bench.sh &&
-            make dist TARGET=${{ matrix.target }} VERSION='"${GITHUB_REF_NAME#v}"
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: Test
+        run: make test VERSION=${GITHUB_REF_NAME#v}
+      - name: Benchmark (static musl release build)
+        run: make bench VERSION=${GITHUB_REF_NAME#v}
+      - name: Package
+        run: make dist TARGET=${{ matrix.target }} VERSION=${GITHUB_REF_NAME#v}
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}

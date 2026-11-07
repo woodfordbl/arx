@@ -8,7 +8,7 @@ in. This page explains the parts and how they fit together.
 
 | Part | What it is | Who changes it |
 |---|---|---|
-| **The core** | one C binary: the turn loop, model calls, sessions, events | nobody at run time |
+| **The core** | one Zig binary: the turn loop, model calls, sessions, events | nobody at run time |
 | **The harness** | the spec (`agent.yaml`), its prompts, and the `tools/`, `hooks/` and skills next to it, over your defaults and installed plugins | you, and the agent itself |
 | **The work** | the directory arx runs in: the code, data and files the task is about | the agent, through its tools |
 
