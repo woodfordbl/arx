@@ -44,14 +44,19 @@ takes 0.3 ms.
 `src/` has one folder per layer. A layer only uses the layers below it; the
 one exception is that harness and model code take the `Agent` they work for.
 
-```
-main.zig              the entry point
-  └─ cli/             options, built-in and external commands
-       └─ agent/      the loop, session lifecycle, prompts
-            ├─ harness/   what the agent can change
-            ├─ model/     model calls through curl
-            └─ io/        sessions, events, terminal view
-                 └─ base/   files, JSON, processes
+```mermaid
+flowchart TD
+  accTitle: Source layout
+  main["<b>main.zig</b><br>the entry point"]
+  cli["<b>cli/</b><br>options, built-in and<br>external commands"]
+  agent["<b>agent/</b><br>the loop, session<br>lifecycle, prompts"]
+  harness["<b>harness/</b><br>what the agent<br>can change"]
+  model["<b>model/</b><br>model calls<br>through curl"]
+  io["<b>io/</b><br>sessions, events,<br>terminal view"]
+  base["<b>base/</b><br>files, JSON, processes"]
+  main --> cli --> agent
+  agent --> harness & model & io
+  io --> base
 ```
 
 | Folder | File | What it holds |
