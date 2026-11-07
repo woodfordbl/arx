@@ -126,20 +126,24 @@ JSON Schema for editor completion.
 
 ## Plugins
 
+A plugin is a folder with a `plugin.yaml` and its parts: tools, hooks,
+skills, commands. Each part except a skill is an executable in any language.
+arx starts it, gives it JSON, and reads what it prints.
+
 | Kind | Where | Contract |
 |---|---|---|
-| Tool | `tools/<name>` | `--schema` prints `{"description", "parameters"}`; a call gets JSON on stdin; stdout is the result. |
-| Subagent | `tools: {name: {agent: spec.yaml}}` | arx runs itself one level deeper. |
-| Hook | `hooks/<point>` | `session_start`, `before_tool`, `after_tool`, `stop`: JSON in, optional decision out. |
-| Compactor | `compaction.strategy: <name or path>` | `{"messages", ...}` in, `{"messages"}` out. |
-| Observer | `observers: [command]` | the event stream on stdin, one JSON object per line. |
-| Driver | anything that runs `arx -p … --json` | exit code, JSON result, event stream. |
-| Command | `arx-<name>` | `arx <name>` runs it, git-style. |
+| [Tool](docs/plugins/tools.md) | `tools/<name>` | `--schema` prints `{"description", "parameters"}`; a call gets JSON on stdin; stdout is the result. |
+| [Subagent](docs/plugins/subagents.md) | `tools: {name: {agent: spec.yaml}}` | arx runs itself one level deeper. |
+| [Hook](docs/plugins/hooks.md) | `hooks/<point>` | `session_start`, `before_tool`, `after_tool`, `stop`: JSON in, optional decision out. |
+| [Compactor](docs/plugins/compactors.md) | `compaction.strategy: <name or path>` | `{"messages", ...}` in, `{"messages"}` out. |
+| [Observer](docs/plugins/observers.md) | `observers: [command]` | the event stream on stdin, one JSON object per line. |
+| [Driver](docs/plugins/drivers.md) | anything that runs `arx -p … --json` | exit code, JSON result, event stream. |
+| [Command](docs/plugins/commands.md) | `arx-<name>` | `arx <name>` runs it, git-style. |
+| [Skill](docs/plugins/skills.md) | `skills/<name>/SKILL.md` | the agent reads it when it needs it. |
 
-The agent's own plugins live next to its spec. Plugins you install are folders
-with a `plugin.yaml`, loaded below the agent's own, so a tool the agent writes
-always wins. [`plugins/`](plugins) is the arx marketplace, one plugin of each
-kind:
+The agent's own parts live next to its spec. Plugins you install load below
+them, so a tool the agent writes always wins. [`plugins/`](plugins) is the
+arx marketplace, with one plugin of each kind:
 
 ```sh
 arx plugin add guard                     # plugins/guard, at the tag of your arx
@@ -148,8 +152,10 @@ arx plugin add --link ./plugins/notify   # develop one in place
 arx plugin list
 ```
 
-The [plugin guide](docs/plugins.md) has the exact contracts, plugin folders and
-layers, the `ARX_*` environment, every event type and the session files.
+To write one, start with the [plugin quickstart](docs/plugins/quickstart.md):
+a tool and a hook in five minutes, with no API key. The
+[plugin guide](docs/plugins.md) has the concepts, one page per kind, and the
+reference.
 
 ## Documentation
 

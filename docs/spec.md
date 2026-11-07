@@ -81,7 +81,7 @@ prices: {input: 3, output: 15}
 | `limits` | map | | Per-session limits. See [limits](#limits). |
 | `observers` | string list | | Shell commands fed the event stream on stdin. |
 | `prices` | map | | Token prices for cost tracking. See [prices](#prices). |
-| `plugins` | string list | all installed | The only installed plugins to use; `[]` for none. See [Plugin folders](plugins.md#plugin-folders). |
+| `plugins` | string list | all installed | The only installed plugins to use; `[]` for none. See [Plugin folders](plugins/concepts.md#layer). |
 | `compactors` | map | | Named compaction programs, `name: path`, for `compaction.strategy`. |
 
 ### endpoint
