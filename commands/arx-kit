@@ -1,0 +1,229 @@
+#!/usr/bin/env bash
+# arx-kit: add, list and remove kits
+#
+# A kit is a folder with a kit.yaml, prompts/ and init/, and no code: it
+# chooses the plugins of a run, in order, with their settings and the
+# prompt. A marketplace holds kits in kits/<name>/ next to plugins/<name>/.
+# `arx kit add` installs a kit in ~/.config/arx/kits/<name>/ and each plugin
+# it names in ~/.config/arx/plugins/. Use a kit with `arx --kit NAME`,
+# `kit: NAME` in agent.yaml, `arx init NAME`, or as the default (--default).
+set -u
+
+usage() {
+  cat <<'EOF'
+usage: arx kit add REF [--default] [--link] [--force] [--yes]
+       arx kit list
+       arx kit remove NAME [--yes]
+REF is one of:
+  NAME[@REF]             kits/NAME from the kits that came with arx, else
+                         from the arx repo at the tag of this arx (or REF)
+  OWNER/REPO/PATH[@REF]  a kit folder in any GitHub repo
+  ./PATH, DIR/PATH, /PATH  a kit folder on this machine; when it is in
+                         <marketplace>/kits/, its plugins come from
+                         <marketplace>/plugins/
+  --default   make it the default kit (kit: in config.yaml)
+  --link      use local folders where they are, for development
+  --force     replace a kit that is already installed
+  --yes       do not ask before a change
+EOF
+}
+
+arx=${ARX_BIN:-arx}
+die() { echo "arx kit: $*" >&2; exit 1; }
+
+# The same lookup as ConfigDir() in arx.
+if [ -n "${ARX_CONFIG_DIR:-}" ]; then
+  config_dir=$ARX_CONFIG_DIR
+elif [ -n "${XDG_CONFIG_HOME:-}" ]; then
+  config_dir=$XDG_CONFIG_HOME/arx
+else
+  config_dir=$HOME/.config/arx
+fi
+kits_dir=$config_dir/kits
+
+# Shows a path with ~ for the home folder.
+pretty() { case "$1" in "$HOME"/*) echo "~${1#"$HOME"}" ;; *) echo "$1" ;; esac; }
+
+# Asks a yes/no question. Without a terminal, only --yes says yes.
+confirm() {
+  [ "$yes" -eq 1 ] && return 0
+  if [ ! -t 0 ]; then
+    echo "arx kit: not a terminal, so nothing changed; add --yes to go ahead" >&2
+    exit 1
+  fi
+  local answer
+  read -r -p "$1 [y/N] " answer
+  case "$answer" in y | Y | yes) return 0 ;; *) echo "Nothing changed."; exit 1 ;; esac
+}
+
+# Reads `arx check --kit-dir DIR` into k_<key> variables.
+describe() {
+  local info key value
+  info=$("$arx" check --kit-dir "$1") || exit 1
+  k_name="" k_version="" k_description="" k_extends="" k_plugins="" k_enable=""
+  while IFS='=' read -r key value; do
+    case "$key" in
+      name | version | description | extends | plugins | enable) eval "k_$key=\$value" ;;
+    esac
+  done <<<"$info"
+}
+
+# The kits that came with arx: libexec/arx/kits, or kits/ in a checkout.
+shipped() {
+  local dir
+  for dir in "${ARX_LIBEXEC:-/nonexistent}" "${ARX_LIBEXEC:-/nonexistent}/.."; do
+    if [ -f "$dir/kits/$1/kit.yaml" ]; then (cd "$dir" && pwd -P); return 0; fi
+  done
+  return 1
+}
+
+# Finds the kit for REF $1. Sets src, source, commit and where its bare
+# plugin names come from: market (a local folder) or repo and ref.
+resolve() {
+  local ref=$1 info key value
+  market="" repo="" at="" link_parts=$link
+  case "$ref" in
+    */* | *@*) ;;
+    *) if market=$(shipped "$ref"); then
+         src=$market/kits/$ref source=$src commit="" link_parts=1
+         return
+       fi ;;
+  esac
+  info=$("$arx" plugin fetch --kits "$ref" "$tmp" $([ "$link" -eq 1 ] && echo --link)) || exit 1
+  while IFS='=' read -r key value; do
+    case "$key" in src | source | commit | repo) eval "$key=\$value" ;; ref) at=$value ;; esac
+  done <<<"$info"
+  # A local kit in <marketplace>/kits/<name> takes its plugins from there.
+  if [ -z "$repo" ] && [ "$(basename "$(dirname "$src")")" = kits ] &&
+    [ -d "$(dirname "$(dirname "$src")")/plugins" ]; then
+    market=$(cd "$(dirname "$(dirname "$src")")" && pwd -P)
+  fi
+}
+
+# The `arx plugin add` reference for a plugin entry of the kit.
+plugin_ref() {
+  local entry=$1 name=${1%%@*} pin=""
+  case "$entry" in *@*) pin=${entry#*@} ;; esac
+  case "$entry" in
+    */*) echo "$entry" ;;
+    *) if [ -n "$market" ] && [ -z "$pin" ]; then echo "$market/plugins/$name"
+       elif [ -n "$repo" ]; then echo "$repo/plugins/$name@${pin:-$at}"
+       else echo "$entry"; fi ;;
+  esac
+}
+
+cmd_add() {
+  local ref="" entry name pref dest parent_ref todo=() refs=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --default) make_default=1 ;; --link) link=1 ;; --force) force=1 ;; --yes) yes=1 ;;
+      -h | --help) usage; exit 0 ;;
+      -*) echo "arx kit: unknown option $1" >&2; usage >&2; exit 2 ;;
+      *) [ -z "$ref" ] || { usage >&2; exit 2; }; ref=$1 ;;
+    esac
+    shift
+  done
+  [ -n "$ref" ] || { usage >&2; exit 2; }
+  tmp=$(mktemp -d) && trap 'rm -rf "$tmp"' EXIT
+  resolve "$ref"
+  describe "$src"
+  dest=$kits_dir/$k_name
+  if [ -e "$dest" ] || [ -L "$dest" ]; then
+    [ "$force" -eq 1 ] || die "kit $k_name is already installed in $(pretty "$kits_dir"); add --force to replace it"
+  fi
+  echo "Kit $k_name${k_version:+ $k_version}${k_description:+: $k_description}"
+  echo "  from      $source"
+  echo "  to        $(pretty "$dest")$([ "$link_parts" -eq 1 ] && [ -n "$market" ] && echo ", as a link")"
+  [ -z "$k_extends" ] || echo "  extends   $k_extends"
+  for entry in $k_plugins $k_enable; do
+    name=${entry##*/} name=${name%%@*}
+    if [ -e "$config_dir/plugins/$name" ]; then
+      echo "  plugin    $name (installed)"
+    else
+      pref=$(plugin_ref "$entry")
+      echo "  plugin    $name from $pref"
+      todo+=("$name") refs+=("$pref")
+    fi
+  done
+  [ "$make_default" -eq 0 ] || echo "  default   yes: kit: $k_name in $(pretty "$config_dir/config.yaml")"
+  confirm "Plugins run with your permissions. Install the kit and its plugins?"
+  if [ -n "$k_extends" ] && [ ! -e "$kits_dir/$k_extends" ]; then
+    if [ -n "$market" ]; then parent_ref=$market/kits/$k_extends
+    elif [ -n "$repo" ]; then parent_ref=$repo/kits/$k_extends@$at
+    else parent_ref=$k_extends; fi
+    "$arx" kit add "$parent_ref" --yes $([ "$link" -eq 1 ] && echo --link) || die "cannot add the kit it extends, $k_extends"
+  fi
+  local i=0
+  while [ "$i" -lt "${#todo[@]}" ]; do
+    "$arx" plugin add "${refs[$i]}" --yes --no-enable \
+      $([ "$link_parts" -eq 1 ] && [ -d "${refs[$i]}" ] && echo --link) >/dev/null ||
+      die "cannot add the plugin ${todo[$i]} (${refs[$i]})"
+    echo "Installed the plugin ${todo[$i]}."
+    i=$((i + 1))
+  done
+  mkdir -p "$kits_dir" || die "cannot create $kits_dir"
+  if [ "$link_parts" -eq 1 ] && [ -z "$repo" ]; then
+    rm -rf "$dest" && ln -s "$src" "$dest" || die "cannot link $dest"
+  else
+    rm -rf "$kits_dir/.$k_name.new" && cp -R "$src" "$kits_dir/.$k_name.new" || die "cannot copy to $kits_dir"
+    printf 'source=%s\ncommit=%s\ninstalled=%s\n' "$source" "$commit" \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$kits_dir/.$k_name.new/.arx-source"
+    rm -rf "$dest" && mv "$kits_dir/.$k_name.new" "$dest" || die "cannot install $dest"
+  fi
+  if [ "$make_default" -eq 1 ]; then
+    "$arx" config set kit "$k_name" --global || die "cannot set the default kit"
+    echo "Installed kit $k_name. It is your default kit: every run uses it."
+  else
+    echo "Installed kit $k_name. Use it with \`arx --kit $k_name\`, \`kit: $k_name\` in agent.yaml, or \`arx init $k_name\`."
+  fi
+}
+
+cmd_list() {
+  local d name version default from
+  default=$("$arx" config get kit --global)
+  printf '%-16s %-9s %-8s %s\n' KIT VERSION DEFAULT SOURCE
+  for d in "$kits_dir"/*/; do
+    [ -f "$d/kit.yaml" ] || continue
+    d=${d%/} name=$(basename "$d")
+    version=$(sed -n 's/^version: *//p' "$d/kit.yaml" | head -1 | tr -d '"'\')
+    if [ -L "$d" ]; then
+      from="link to $(pretty "$(cd "$d" && pwd -P)")"
+    else
+      from=$(sed -n 's/^source=//p' "$d/.arx-source" 2>/dev/null)
+    fi
+    printf '%-16s %-9s %-8s %s\n' "$name" "${version:--}" "$([ "$name" = "$default" ] && echo yes || echo -)" "${from:-(copied by hand)}"
+  done
+}
+
+cmd_remove() {
+  local name="" dest
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --yes) yes=1 ;;
+      -*) echo "arx kit: unknown option $1" >&2; usage >&2; exit 2 ;;
+      *) name=$1 ;;
+    esac
+    shift
+  done
+  case "$name" in "" | */* | .*) usage >&2; exit 2 ;; esac
+  dest=$kits_dir/$name
+  [ -e "$dest" ] || [ -L "$dest" ] || die "kit $name is not installed in $(pretty "$kits_dir")"
+  confirm "Remove the kit $(pretty "$dest")? (Its plugins stay.)"
+  if [ -L "$dest" ]; then rm "$dest"; else rm -rf "$dest"; fi || die "cannot remove $dest"
+  if [ "$("$arx" config get kit --global)" = "$name" ]; then
+    "$arx" config unset kit --global
+    echo "It was your default kit, so there is no default kit now."
+  fi
+  echo "Removed kit $name."
+}
+
+link=0 force=0 yes=0 make_default=0
+command=${1:-}
+[ $# -gt 0 ] && shift
+case "$command" in
+  add) cmd_add "$@" ;;
+  remove | rm) cmd_remove "$@" ;;
+  list | ls) cmd_list "$@" ;;
+  -h | --help | help) usage ;;
+  *) usage >&2; exit 2 ;;
+esac

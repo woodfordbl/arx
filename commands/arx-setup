@@ -80,6 +80,11 @@ base_url=${base_url:-$url}
 [ -n "$base_url" ] || base_url=$(ask "Base URL (ending in /v1)" "http://localhost:8000/v1")
 key_env=${key_env:-$env}
 
+# The keys that choose plugins (kit:, plugins:, enable:, disable:), which
+# `arx kit add --default` and `arx plugin enable --global` write: kept.
+keep=$(awk '/^(kit|plugins|enable|disable):/ {k = 1; print; next}
+  k && /^[ \t-]/ {print; next} {k = 0}' "$config_dir/config.yaml" 2>/dev/null)
+
 # Writes config.yaml; the previous one is kept as config.yaml.bak.
 write_config() {
   [ -f "$config_dir/config.yaml" ] && cp "$config_dir/config.yaml" "$config_dir/config.yaml.bak"
@@ -93,6 +98,7 @@ write_config() {
       echo "endpoint: {base_url: \"$base_url\"}"
     fi
     if [ -n "${2:-}" ]; then echo "$2"; fi
+    if [ -n "$keep" ]; then echo "$keep"; fi
   } >"$config_dir/config.yaml"
 }
 write_config "${model:-$def}"
