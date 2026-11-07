@@ -107,6 +107,42 @@ except OSError as e:
     sys.exit(1)
 ```
 
+## Keys
+
+The calls of one reply can run at the same time. Each call has a list of
+**keys**, and a key works as a lock:
+
+| Keys | Effect |
+|---|---|
+| `["*"]` | the call runs alone; this is the default for a tool that declares no keys |
+| `[]` | the call runs with any other call; this is the default for a subagent |
+| `["file:{path}"]` | calls with the same key run one at a time; calls with different keys run together |
+
+- **Declare them** in the schema (the schema file or `--schema`):
+
+  ```json
+  {"description": "...", "parameters": {...}, "keys": ["file:{path}"]}
+  ```
+
+- **`{arg}`** puts in the value of the top-level argument `arg`: a string as
+  it is, any other value as JSON, and nothing when it is missing.
+- **`host:`** at the start of a key keeps only the host of each value: no
+  scheme, user, port or path, in lower case. `["host:{url}"]` gives one
+  request to each host at a time.
+- **A key list must be a list of strings.** If not, the tool is skipped.
+- **Examples:** `edit` declares `["file:{path}"]`, so edits to different
+  files run together. `bash` declares none, so it runs alone, because a shell
+  can change anything. A read-only search tool can declare `[]`.
+- **A `before_tool` hook** sees the keys in the call and can print new ones,
+  for example `[]` for `git status`, or one key for `./a.py` and `a.py`. If
+  a hook changes the name or the arguments but not the keys, arx computes
+  the keys again for the new call.
+- **The results** go to the model in call order, so the transcript is the
+  same as when the calls run one at a time.
+
+The [built-in scheduler](schedulers.md) starts calls by their keys. A
+scheduler plugin can replace it.
+
 ## bash and edit
 
 `bash` and `edit` come from the [`shell`](../../plugins/shell) plugin. Their
@@ -141,9 +177,11 @@ plugins/shell/
 - **Settings:** `tools.bash.timeout`, `tools.edit.timeout` and
   `enabled: false` work as for any tool.
 - **Replacing them:** put your own `bash` or `edit` in a higher layer, such
-  as the spec folder or `./plugins/`. The first tool with a name wins, and
-  `arx check` notes that the shell plugin's tool is hidden. Use this to run
-  the tools somewhere else, such as in a sandbox.
+  as the spec folder or a plugin before `shell` in the active list. The first
+  tool with a name wins. When a plugin hides another plugin's tool,
+  `arx check` warns, unless the plugin says so with `replaces: [bash]` in its
+  `plugin.yaml`. Use this to run the tools somewhere else, such as in a
+  sandbox.
 
 ## Names
 
@@ -164,7 +202,8 @@ plugins/shell/
 | The tool reads a path relative to its own file | it runs in the work folder, so the path is wrong | use `$ARX_PLUGIN_DIR` (in a plugin) or `$ARX_SPEC_DIR` |
 | The tool prints a large file | the model sees only the head and tail | print a summary, and the path of the details |
 | `tools.x` in the spec, but no `tools/x` file | `tools.x is configured but tools/x is missing` | add the file, or remove the entry |
-| A `plugins:` list without `shell` | the agent has no `bash` or `edit` | add `shell` to the list |
+| A `plugins:` list or a kit without `shell` | the agent has no `bash` or `edit` | add `shell` to the list |
+| A tool that writes files declares `[]` | two calls can write the same file at the same time | declare a key per file, such as `["file:{path}"]`, or none |
 
 arx tells the agent about each skipped tool in a "Tool problems" note, once.
 `arx check` lists the same problems under `problems:`. It still exits 0, so
@@ -172,6 +211,6 @@ read that list.
 
 ## Planned
 
-Tools will declare **keys** in their schema, so that calls that do not share
-a key can run at the same time. A sandbox plugin will read a `sandbox:` value
-from the spec. See [Planned changes](planned.md#tool-runtime).
+A `sandbox:` value in the spec, which arx gives to each tool as
+`ARX_SANDBOX`, so that a sandbox plugin's `bash` and `edit` know where to
+run. See [Planned changes](planned.md).

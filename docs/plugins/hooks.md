@@ -16,12 +16,13 @@ start and the end of a run, a hook can add context or keep the agent working.
    gets.
 2. **The model** replies, with or without tool calls.
 3. **`after_model`** gets the reply, and can change it or remove tool calls.
-4. For each tool call, one at a time:
-   1. **`before_tool`** gets the call. It can let it run, change it, or give
-      a result in place of the run.
-   2. **The tool** runs.
-   3. **`after_tool`** gets the result, and can change it.
-5. **The results** go to the model in the order of the calls.
+4. **`before_tool`** runs for each call, in call order. It can let the call
+   run, change it and its keys, or give a result in place of the run.
+5. **The tool runtime** starts the allowed calls by their
+   [keys](tools.md#keys), or as a [scheduler plugin](schedulers.md) says.
+   Many calls can run at the same time.
+6. **`after_tool`** runs as each call ends, and can change its result.
+7. **The results** go to the model in the order of the calls.
 
 `session_start` runs once before the first turn, and `stop` runs when the
 model replies without calling a tool.
@@ -39,7 +40,9 @@ name is exactly the point name, with no extension.
   answer, and shows it in the `hook` event when the hook fails.
 - **Working directory:** the folder `arx` runs in.
 - **Environment:** the [`ARX_*` variables](reference.md#environment). A hook
-  in a plugin also gets `ARX_PLUGIN_DIR`.
+  in a plugin also gets `ARX_PLUGIN_DIR`, and its
+  [settings](kits.md#the-active-list) as JSON in `ARX_PLUGIN_SETTINGS` (`{}`
+  when it has none).
 - **Timeout:** 10 seconds by default.
 
 ### Points with a raw object
@@ -52,8 +55,8 @@ column are ignored.
 |---|---|---|
 | `before_model` | `{"messages", "tools", "model", "settings", "reason"}` | any of `messages`, `tools`, `model`, `settings` |
 | `after_model` | `{"reply", "usage", "finish"}` | `reply` |
-| `before_tool` | `{"id", "name", "args"}` | any of `name`, `args`; or `result` to skip the tool |
-| `after_tool` | `{"call": {"id", "name", "args"}, "result", "is_error"}` | `result` |
+| `before_tool` | `{"id", "name", "args", "keys"}` | any of `name`, `args`, `keys`; or `result` to skip the tool |
+| `after_tool` | `{"call": {"id", "name", "args"}, "result", "is_error"}` | `result`, `backoff` |
 
 - **`before_model`:**
   - `messages` is the history, in OpenAI Chat Completions format (see
@@ -76,10 +79,15 @@ column are ignored.
     When the name changed, the line starts with the new name.
   - A printed `result` (a string) is the tool result. The tool does not run,
     `after_tool` does not run, and the later `before_tool` hooks do not run.
+  - `keys` is the call's [keys](tools.md#keys), from the tool's schema. A
+    printed `keys` (a list of strings) replaces them.
 - **`after_tool`:** `result` is the text the model will see (after the head
   and tail cut of long output). `is_error` is true after a non-zero exit, a
   timeout or an unknown tool. `after_tool` runs for every call that
   `before_tool` let through, also after an error, a timeout or Ctrl-C.
+  - A printed `backoff`, such as `{"key": "host:api.github.com", "secs": 30}`,
+    goes to a [scheduler plugin](schedulers.md), which can wait before it
+    starts another call with that key.
 
 **Older outputs still work:**
 
@@ -119,6 +127,8 @@ hooks:
 | Option | Default | Meaning |
 |---|---|---|
 | `timeout` | `10s` | At the timeout, arx stops the hook's process group, and the hook fails. |
+| `band` | `normal` | `policy`, `normal` or `final`. See [Bands](#bands). |
+| `changes` | | The fields this hook changes, such as `[result]`, for the `arx check` warnings. |
 | `fail` | `open` | `open` ignores a failed hook. `closed` stops the hooks after it at that point, and a failed `before_tool` hook then denies the call with `denied: the before_tool hook failed (fail: closed)`. |
 
 **Failures:** a hook fails when it cannot start, exits non-zero, times out,
@@ -130,8 +140,10 @@ agent wrote, cannot stop the run.
 
 ## More than one hook
 
-Each layer can have a hook for a point. They run in layer order: the spec
-folder first, then project plugins, your config folder and user plugins.
+Each layer can have a hook for a point. They run by [band](#bands), and
+within a band in layer order: the spec folder first, then the plugins in the
+order of the active list. Without a kit or a list, that is the project
+plugins, your config folder and your user plugins.
 
 | Point | Rule |
 |---|---|
@@ -141,6 +153,34 @@ folder first, then project plugins, your config folder and user plugins.
 
 Each `hook` event lists the fields that hook changed, such as
 `"changed":["args"]`, so you can see which plugin changed what.
+
+## Bands
+
+The hooks at one point are a pipeline, so their order matters: a guard must
+decide first, and redaction must run last. Each hook runs in one of three
+bands, set with `band:` in its options:
+
+| Band | Runs | For |
+|---|---|---|
+| `policy` | first | guards and approval: a `result` it sets is final |
+| `normal` | after `policy`; the default | rewrites, compaction, keys |
+| `final` | last, just before the model or the tool gets the object | cache breakpoints, redaction, logs |
+
+```yaml
+# plugin.yaml of a guard
+hooks: {before_tool: {band: policy, fail: closed, changes: [result]}}
+```
+
+- **Inside a band,** hooks run in layer order, which is the order of the
+  active list. There are no priority numbers.
+- **A policy result is final:** when a `policy` hook sets `result`, a later
+  hook's `result`, `note` or deny is dropped, and its `hook` event says
+  `"ignored":"result: a policy hook set it, so it is final"`.
+- **`changes:`** says which fields a hook changes. When two hooks at one
+  point say they change the same field, `arx check` warns and shows the order
+  they run in:
+  `after_tool: 2 hooks change result; they run in this order: plugin guard (policy), plugin fail-hint (normal)`.
+- The `hook` event of a hook outside the `normal` band has `"band"`.
 `arx check` shows each point that has a hook, and the plugins it comes from:
 `hooks: before_tool(guard) after_tool(fail-hint) stop`.
 
@@ -244,13 +284,13 @@ echo '{"decision": "continue", "message": "Not done yet. When the task is comple
 | The pattern expects spaces, such as `"name": "bash"` | arx sends compact JSON, `"name":"bash"`, so the pattern never matches | match the compact form, or parse the JSON |
 | A plugin's hook options are in the spec | they apply only to hooks in the spec folder and the config folder | put them in the plugin's `plugin.yaml` under `hooks:` |
 | A guard hook can fail open | if it crashes, every call goes through | set `fail: closed` for `before_tool` |
-| The agent can turn off a plugin's guard | it can edit `plugins:` in `agent.yaml` | pin it from the command line: `--set 'plugins=["shell","guard"]'` |
+| The agent can turn off a plugin's guard | it can edit `plugins:` or `kit:` in `agent.yaml` | pin it from the command line: `--kit NAME`, or `--set 'plugins=["guard","shell"]'` |
+| A guard runs in the `normal` band | a hook after it can change its result | set `band: policy` for the guard's hook |
 | A `stop` hook always continues | the run ends only at a cap | give the agent a clear way to finish, such as a `DONE` file |
 
 ## Planned
 
-Hooks will run in bands (`policy`, `normal`, `final`) and then in the order of
-the active list. `before_tool` will get and set the call's `keys` for the tool
-runtime, and `after_tool` will be able to print a `backoff`. A hook will be
-able to start once per session and read one JSON line per call. See
+A hook will be able to start once per session and read one JSON line per
+call. The `before_tool` hooks of different calls will run at the same time,
+so a hook that waits for a person does not hold up the other calls. See
 [Planned changes](planned.md).

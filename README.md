@@ -140,10 +140,22 @@ arx starts it, gives it JSON, and reads what it prints.
 | [Driver](docs/plugins/drivers.md) | anything that runs `arx -p … --json` | exit code, JSON result, event stream. |
 | [Command](docs/plugins/commands.md) | `arx-<name>` | `arx <name>` runs it, git-style. |
 | [Skill](docs/plugins/skills.md) | `skills/<name>/SKILL.md` | the agent reads it when it needs it. |
+| [Scheduler](docs/plugins/schedulers.md) | `scheduler` at the top of a layer | the queued tool calls in, which to start out, one JSON line each. |
 
-The agent's own parts live next to its spec. Plugins you install load below
-them, so a tool the agent writes always wins. [`plugins/`](plugins) is the
-arx marketplace, with one plugin of each kind:
+The agent's own parts live next to its spec. Plugins load below them, so a
+tool the agent writes always wins. Tool calls run at the same time when their
+keys allow it.
+
+A [kit](docs/plugins/kits.md) has no code: it chooses the plugins of a run,
+in order, with their settings and the prompt. arx ships three in
+[`kits/`](kits): `coding`, `explorer` and `research`.
+
+```sh
+arx kit add coding --default            # the coding kit and its plugins, for every run
+arx --kit explorer -p "Where is the config parsed?"
+```
+
+[`plugins/`](plugins) is the arx marketplace, with one plugin of each kind:
 
 ```sh
 arx plugin add guard                     # plugins/guard, at the tag of your arx

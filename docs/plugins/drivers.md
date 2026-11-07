@@ -18,6 +18,7 @@ line, the exit code, the JSON result and the event stream.
 | `--resume ID` or `--resume last` | continue a session with its history |
 | `--cap turns=N`, `tokens=N`, `usd=N`, `wall=8h`, `depth=N` | hard limits that the spec cannot raise |
 | `--set key.path=value` | set a spec value for this run; it stays in force after every reload |
+| `--kit NAME` | use an installed [kit](kits.md) for this run; the same as `--set kit=NAME`, so the agent cannot change it |
 | `--spec PATH` | the spec to use, instead of `./agent.yaml` |
 
 **The JSON result** (`--json`):
@@ -78,10 +79,11 @@ The full version, with a limit on the rounds, is
 | The driver parses the terminal view | the format can change, and it has colors | use `--json` and `--quiet`, or `--events` |
 | A resumed run has the same turn cap | the turn count includes the turns before, so the cap stops it at once | raise `--cap turns` by the turns already used |
 | The driver uses `last` while other runs start in the same folder | `last` points at the newest session, which may be another one | read `session` from the JSON result and use the id |
-| The driver lets the agent choose its plugins | the agent can edit `plugins:` in its spec | pin them with `--set 'plugins=["shell","guard"]'`; keep `shell`, or the agent has no `bash` and `edit` |
+| The driver lets the agent choose its plugins | the agent can edit `kit:` and `plugins:` in its spec | pin them with `--kit NAME`, or `--set 'plugins=["guard","shell"]'`; keep `shell`, or the agent has no `bash` and `edit` |
+| A climb uses a kit that names plugins without versions | a later `arx kit add` can change a plugin between runs | pin versions in the kit (`guard@v0.2.0`), and keep the `kit.lock` that arx writes |
 | The driver trusts `final_output` as the score | the agent can write anything | measure the result with your own program |
 
 ## Planned
 
-`--kit NAME` will choose a kit for the run, and stay in force after reloads,
-like `--set`. See [Planned changes](planned.md#kits).
+A policy folder (`--policy DIR`) that loads first and that the spec cannot
+remove. See [Planned changes](planned.md#trust).

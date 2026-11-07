@@ -200,6 +200,33 @@ file to `tools/`, or delete the hook, and the next turn uses the new version.
 A tool the agent writes for itself loads the same way. There is no restart
 and no registration.
 
+## 6. Put it in a kit
+
+A kit chooses the plugins of a run, in order, and has no code. A kit in
+`kits/` next to `agent.yaml` is found without an install step:
+
+```sh
+mkdir -p kits/greeter
+cat > kits/greeter/kit.yaml <<'EOF'
+name: greeter
+version: 0.1.0
+description: An agent that greets people.
+plugins: [hello]
+EOF
+arx check --kit greeter
+```
+
+```
+ok: agent.yaml (model test-model at http://fake.invalid/v1)
+kit: greeter (from --kit)
+tools: greet
+hooks: before_tool(hello)
+plugins: hello
+```
+
+Only the plugins the kit lists load. `arx --kit greeter` runs with it, and
+the agent cannot change the kit. See [Kits](kits.md).
+
 ## Next steps
 
 - **Use it in every harness:** `arx plugin add --link ./plugins/hello` links
@@ -210,5 +237,8 @@ and no registration.
 - **Go further:** [Concepts](concepts.md) explains layers and load order. The
   [tool](tools.md) and [hook](hooks.md) pages give the full contracts and the
   common mistakes.
-- **Use a real model:** run `arx setup`, then leave out `ARX_CURL`,
-  `ARX_CONFIG_DIR` and the `endpoint:` line.
+- **Use a real model:** open a new terminal, so the exports are gone, run
+  `arx setup`, and delete the `model:` and `endpoint:` lines of
+  `agent.yaml`.
+- **Use the shipped kits:** `arx kit add coding` installs the coding kit and
+  its plugins; `arx --kit coding` runs with it.

@@ -10,13 +10,15 @@ how arx finds and loads plugins. Each term is marked:
 
 | Term | Status | Meaning |
 |---|---|---|
-| [Kind](#kind) | Today | One of the eight contracts: tool, subagent, hook, compactor, observer, driver, command, skill. |
+| [Kind](#kind) | Today | One of the nine contracts: tool, subagent, hook, scheduler, compactor, observer, driver, command, skill. |
 | [Plugin](#plugin) | Today | A folder with a `plugin.yaml` that holds parts of one or more kinds. |
 | [Layer](#layer) | Today | A folder that arx reads `tools/`, `hooks/` and `skills/` from. Layers have a fixed order. |
 | [Hook point](#hook-point) | Today | A fixed place in the turn loop where hooks run. |
 | [Marketplace](#marketplace) | Today | A Git repository with plugin folders in `plugins/<name>/`. |
-| [Kit](#kit) | Planned | A folder with a `kit.yaml` and no code, that chooses plugins, their order and their settings. |
-| [Active list](#active-list) | Planned | The ordered list of plugins that one run uses. |
+| [Kit](#kit) | Today | A folder with a `kit.yaml` and no code, that chooses plugins, their order and their settings. |
+| [Active list](#active-list) | Today | The ordered list of plugins that one run uses. |
+| [Band](#band) | Today | The group a hook runs in at its point: `policy`, `normal` or `final`. |
+| [Key](#key) | Today | A lock on a tool call: calls that share a key run one at a time. |
 
 Three words from [How arx works](../concepts.md) also appear here:
 
@@ -30,13 +32,14 @@ Three words from [How arx works](../concepts.md) also appear here:
 ## Kind
 
 **Today.** A kind is a contract between arx and an executable: what arx gives
-it, when, and what it must print. There are eight kinds:
+it, when, and what it must print. There are nine kinds:
 
 | Kind | arx gives it | It prints |
 |---|---|---|
 | [Tool](tools.md) | the call's arguments as JSON | the result, as text |
 | [Subagent](subagents.md) | a task | its final answer (arx does this for it) |
 | [Hook](hooks.md) | the raw request, reply, call or result; or JSON about the moment | the fields it changes, or a decision |
+| [Scheduler](schedulers.md) | the queued tool calls, one JSON line each | which calls to start, one JSON line each |
 | [Compactor](compactors.md) | the history as JSON | a shorter history as JSON |
 | [Observer](observers.md) | the event stream, one JSON line per event | nothing |
 | [Driver](drivers.md) | nothing: it runs arx | anything |
@@ -77,59 +80,66 @@ unit you share and install. Every field is in the
 
 ## Layer
 
-**Today.** A layer is a folder that arx reads `tools/`, `hooks/` and skills
-from. arx builds the layers in this order:
+**Today.** A layer is a folder that arx reads `tools/`, `hooks/`, skills and
+a `scheduler` from. The spec folder is always the first layer. The rest
+depend on whether the run has an [active list](#active-list):
 
-| # | Layer | Folder |
+| # | With a kit or a `plugins:` list | With neither |
 |---|---|---|
-| 1 | the spec folder | the folder of `agent.yaml`; skills come from the folder that `skills:` names |
-| 2 | project plugins | `<spec folder>/plugins/<name>/`, in name order |
-| 3 | your config folder | `~/.config/arx/` (`tools/`, `hooks/`, `skills/`) |
-| 4 | user plugins | `~/.config/arx/plugins/<name>/`, in name order |
+| 1 | the spec folder | the spec folder |
+| 2 | each plugin of the active list, in list order, from `<spec folder>/plugins/<name>/` or else `~/.config/arx/plugins/<name>/` | project plugins: `<spec folder>/plugins/<name>/`, in name order |
+| 3 | — | your config folder: `~/.config/arx/` (`tools/`, `hooks/`, `skills/`) |
+| 4 | — | user plugins: `~/.config/arx/plugins/<name>/`, in name order |
 
-- Layers 3 and 4 are left out when the spec folder is the config folder.
+- In the spec folder, skills come from the folder that `skills:` names.
+- The config folder and user plugins are left out when the spec folder is
+  the config folder.
 - A folder in `plugins/` without a `plugin.yaml` is not a plugin. arx passes
   over it.
 - A project plugin hides a user plugin with the same name.
+- `disable: [name]` takes a plugin out in both cases.
 
 **How the order is used:**
 
 | Part | Rule |
 |---|---|
 | Tools | The first layer with a working tool of a name wins. arx tells the agent about each tool that a higher layer hides. |
-| Hooks | Every layer's hook for a point runs, in layer order. Around the model and tool calls, each hook gets the object as the hook before it left it. See [More than one hook](hooks.md#more-than-one-hook). |
+| Hooks | Every layer's hook for a point runs, by [band](#band), then in layer order. Around the model and tool calls, each hook gets the object as the hook before it left it. See [More than one hook](hooks.md#more-than-one-hook). |
+| Scheduler | The first layer with an executable `scheduler` at its top wins. |
 | Skills | `{{skills}}` lists the skills of every layer. When two layers have a skill folder with the same name, the first one wins. |
 | Observers | All of them run. |
 | Compactors | All names are available. When two places name the same compactor, the spec wins, then the first plugin. |
-| Commands | Only user plugins (layer 4) add commands. See [Commands](commands.md). |
+| Commands | Only user plugins add commands, whether or not they are in the active list. See [Commands](commands.md). |
 
 So a tool that the agent writes in its spec folder always wins over a
 plugin's tool with the same name.
 
-**On and off:** every installed plugin is on. A `plugins:` list in the spec
-names the only plugins to use:
+**On and off:** without a kit or a list, every installed plugin is on. A
+kit or a `plugins:` list names the only plugins to use, in order:
 
 ```yaml
-plugins: [shell, guard]    # only these two
+kit: coding                # the coding kit's plugins, in its order
+plugins: [guard, shell]    # only these two, in this order
 plugins: []                # no plugins at all, so no bash and edit either
+enable: [lint]             # add one to the kit or the list
+disable: [notify]          # leave one out
 ```
 
 `bash` and `edit` come from the `shell` plugin, so a list that leaves it out
-leaves the agent without them.
+leaves the agent without them. Use a kit or a list in experiment harnesses,
+so that a plugin you install later cannot change a run. See
+[The active list](kits.md#the-active-list).
 
-A list also leaves out layer 3, so the harness is exactly the spec folder and
-the plugins it names. Use a list in experiment harnesses, so that a plugin you
-install later cannot change a run.
-
-**Pinning:** the agent can edit `agent.yaml`, so it can also edit
+**Pinning:** the agent can edit `agent.yaml`, so it can also edit `kit:` and
 `plugins:`. A value you give on the command line stays in force after every
 reload:
 
 ```sh
-arx -p "..." --set 'plugins=["shell","guard"]'
+arx -p "..." --kit coding
+arx -p "..." --set 'plugins=["guard","shell"]'
 ```
 
-Write the list as JSON. `plugins=[guard]` is not valid.
+Write a `--set` list as JSON. `plugins=[guard]` is not valid.
 
 **Reload:** before every model call, arx checks the files of every layer,
 each `plugin.yaml`, and the `plugins/` folders. When something changed, it
@@ -154,45 +164,61 @@ There are six:
 
 A hook is the executable `hooks/<point>` in any layer. See [Hooks](hooks.md).
 
-**Planned:** hook bands (`policy`, `normal`, `final`) that order the hooks at
-one point. See [Hook bands](planned.md#hook-bands).
+Hooks at one point run by [band](#band) (`policy`, `normal`, `final`), then
+in layer order.
 
 ## Marketplace
 
 **Today.** A marketplace is a Git repository with plugin folders in
-`plugins/<name>/`. The arx repository is the default marketplace, and its
-[`plugins/`](../../plugins) folder has one working plugin of each kind. The
-arx release does not include these plugins: it is only the binary and its
-commands.
+`plugins/<name>/`, and kits in `kits/<name>/`. The arx repository is the
+default marketplace: its [`plugins/`](../../plugins) folder has one working
+plugin of each kind, and [`kits/`](../../kits) has three kits. The release
+ships both folders in `libexec/arx/`, next to the commands, so the shipped
+plugins and kits install without a download.
 
 ```sh
 arx plugin add guard                  # plugins/guard from the arx repo, at the tag of your arx
 arx plugin add acme/tools/lint        # a plugin folder in any GitHub repo
 arx plugin add guard@main             # at a branch, tag or commit
+arx kit add coding                    # kits/coding and each plugin it names
 ```
 
-See [`arx plugin`](reference.md#arx-plugin) for every command.
+See [`arx plugin`](reference.md#arx-plugin) and [`arx kit`](kits.md#commands)
+for every command.
 
-**Planned:** a marketplace can also hold kits in `kits/<name>/`, and an
-`index.yaml` that lists each plugin and kit with its versions.
+**Planned:** an `index.yaml` that lists each plugin and kit with its
+versions, for `arx plugin search`.
 
 ## Kit
 
-**Planned.** A kit is a folder with a `kit.yaml`, prompts and project files,
+**Today.** A kit is a folder with a `kit.yaml`, prompts and project files,
 and no executables. It chooses which plugins a run uses, in which order, with
 which settings and which prompt. A kit makes one kind of agent, such as a
-coding agent or a research agent.
+coding agent or a research agent. Use one with `kit: NAME` in `agent.yaml`,
+or `arx --kit NAME`.
 
 The rule: if something runs, it belongs in a plugin. If it only chooses or
-configures, it belongs in a kit. See [Kits](planned.md#kits).
+configures, it belongs in a kit. See [Kits](kits.md).
 
 ## Active list
 
-**Planned.** The active list is the ordered list of plugins that one run
-uses. Only plugins in the list load, and the position in the list is the
-priority. arx builds it from four sources, each one changing the list from the
-source before it: your config folder, the kit, `agent.yaml`, then `--kit` and
-`--set`.
+**Today.** The active list is the ordered list of plugins that one run uses.
+Only plugins in the list load, and the position in the list is the priority.
+arx builds it from four sources, each one changing the list from the source
+before it: `config.yaml`, the kit, `agent.yaml`, then `--kit` and `--set`.
+With no kit and no `plugins:` list in any source, every installed plugin is
+on. `arx plugin list` shows the list and why each plugin is on or off. See
+[The active list](kits.md#the-active-list).
 
-Today the closest thing is the `plugins:` list, which chooses plugins but not
-their order. See [The active list](planned.md#the-active-list).
+## Band
+
+**Today.** The hooks at one point run in three bands: `policy` first, then
+`normal` (the default), then `final`. Inside a band they run in layer order.
+A `result` that a `policy` hook sets is final. See [Bands](hooks.md#bands).
+
+## Key
+
+**Today.** Each tool call has a list of keys. Calls that share a key run one
+at a time; a call with `*` runs alone; a call with `[]` runs with anything.
+A tool declares its keys in its schema. See [Keys](tools.md#keys) and
+[Schedulers](schedulers.md).

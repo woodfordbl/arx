@@ -46,6 +46,10 @@ tools:
   list;
 - your defaults from `arx setup`, under its spec.
 
+**In parallel:** a subagent tool has no [keys](tools.md#keys) (`[]`), so
+several subagent calls of one reply run at the same time. Their events stay
+whole lines in the parent's stream.
+
 **Limits:** `--cap depth=N` limits nesting. The default is 4. A subagent gets
 the same caps as the parent, not what is left of them.
 
@@ -95,6 +99,6 @@ subagent's own harness.
 
 ## Planned
 
-Subagents will get no keys, so the tool runtime can run several at the same
-time. Later, a scheduler can return `started as c7` at once and send the real
-result later. See [Planned changes](planned.md#tool-runtime).
+Calls that do not block: a scheduler returns `started as c7` at once and
+sends the real result later, so the parent goes on working while a subagent
+runs. See [Planned changes](planned.md#calls-that-do-not-block).
