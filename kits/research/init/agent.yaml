@@ -1,0 +1,9 @@
+# An autoresearch harness: improve a score, keep what helps, never stop. The
+# research kit chooses the plugins and the prompt; the model and endpoint
+# come from `arx setup`. Describe the task in program.md.
+name: research
+kit: research
+first_message: {file: prompts/first.md}
+compaction: {strategy: restart, trigger: 0.6}
+skills: skills
+limits: {max_turns: 1000}

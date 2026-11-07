@@ -1,0 +1,12 @@
+# The explorer kit: reads and answers, and has no edit tool. bash can still
+# change files, so only a read-only sandbox makes sure it changes nothing.
+name: explorer
+version: 0.1.0
+description: Reads code and answers questions, with bash and without edit.
+plugins:
+  - guard
+  - shell: {tools: {edit: {enabled: false}}}
+  - git-context
+  - word-count
+  - clock
+prompt: prompts/system.md

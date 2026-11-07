@@ -1,0 +1,19 @@
+# The coding kit: a general coding agent. The order of plugins is their
+# priority; guard's before_tool hook also runs in the policy band, so its
+# denial is final. Add one with `enable: [name]` in agent.yaml, or leave one
+# out with `disable: [name]`.
+name: coding
+version: 0.1.0
+description: A general coding agent with bash and edit, a guard, git context and a reviewer.
+plugins:
+  - guard
+  - shell
+  - git-context
+  - fail-hint
+  - reviewer
+  - plugin-authoring
+  - keep-last
+  - word-count
+  - clock
+  - notify
+prompt: prompts/system.md
