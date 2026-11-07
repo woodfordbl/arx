@@ -134,6 +134,7 @@ file can steer a run.
 | the variable named by `endpoint.api_key_env` | the API key; wins over the key `arx setup` saved |
 | `ARX_CONFIG_DIR` | the config folder, instead of `~/.config/arx` |
 | `ARX_CURL` | the curl executable, when `endpoint.curl` is not set |
+| `ARX_DOWNLOAD_URL` | where `install.sh`, `arx update` and `arx plugin add` download from, instead of `https://arx-documentation.vercel.app` |
 
 **API keys** are found in this order: the environment variable named by
 `endpoint.api_key_env`, then the key `arx setup` saved under that name, in the

@@ -3,13 +3,14 @@
 #
 #   sh install.sh [--prefix DIR] [--version vX.Y.Z]     (default prefix ~/.local)
 #
-# It downloads arx-<os>-<arch>.tar.gz and its .sha256 from GitHub releases
-# (through gh while the repo is private), then runs the bundled arx-update to
-# verify and install it. From a source checkout, `make install` does the same
-# with your own build.
+# It downloads arx-<os>-<arch>.tar.gz and its .sha256 from the arx site,
+# which serves the GitHub release (ARX_DOWNLOAD_URL replaces it), then runs
+# the bundled arx-update to verify and install it. From a source checkout,
+# `make install` does the same with your own build.
 set -eu
 
-repo=${ARX_REPO:-woodfordbl/arx}
+site=${ARX_DOWNLOAD_URL:-https://arx-documentation.vercel.app}
+site=${site%/}
 prefix=$HOME/.local
 version=""
 while [ $# -gt 0 ]; do
@@ -26,18 +27,10 @@ asset=arx-$os-$arch.tar.gz
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-if command -v gh >/dev/null && gh auth status >/dev/null 2>&1; then
-  [ -n "$version" ] || version=$(gh release view --repo "$repo" --json tagName -q .tagName)
-  gh release download "$version" --repo "$repo" --pattern "$asset*" --dir "$tmp"
-else
-  base=https://github.com/$repo/releases
-  if [ -z "$version" ]; then
-    version=$(curl -fsSL "https://api.github.com/repos/$repo/releases/latest" |
-      sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p')
-  fi
-  curl -fsSL -o "$tmp/$asset" "$base/download/$version/$asset"
-  curl -fsSL -o "$tmp/$asset.sha256" "$base/download/$version/$asset.sha256"
-fi
+[ -n "$version" ] || version=$(curl -fsSL "$site/releases/latest")
+[ -n "$version" ] || { echo "install.sh: no release found at $site" >&2; exit 1; }
+curl -fsSL -o "$tmp/$asset" "$site/releases/download/$version/$asset"
+curl -fsSL -o "$tmp/$asset.sha256" "$site/releases/download/$version/$asset.sha256"
 echo "$version" >"$tmp/latest"
 
 # arx-update (inside the release) verifies the checksum and installs.

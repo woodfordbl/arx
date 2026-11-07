@@ -9,11 +9,11 @@ need `jq`.
 Install the latest release (macOS and Linux, x86_64 and arm64):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/woodfordbl/arx/main/install.sh | sh
+curl -fsSL https://arx-documentation.vercel.app/install.sh | sh
 ```
 
-The installer downloads the release for your OS and architecture, checks its
-sha256, and installs `arx` into `~/.local/bin` and its commands into
+The installer downloads the release for your OS and architecture from the
+arx site, which serves arx's GitHub releases, checks its sha256, and installs `arx` into `~/.local/bin` and its commands into
 `~/.local/libexec/arx`. Pass `--prefix DIR` to install somewhere else, or
 `--version vX.Y.Z` for a given release. If `~/.local/bin` is not on your
 `PATH`, the installer says how to add it.
@@ -28,7 +28,8 @@ make install                 # arx into ~/.local/bin (PREFIX=... to change)
 On Linux, `make static` builds a fully static binary (musl, in Docker) that
 runs on any x86_64 or arm64 machine.
 
-`arx update` installs the newest release later, with the same checksum check.
+`arx update` installs the newest release later, from the same place and with
+the same checksum check.
 
 ## Set up a provider
 

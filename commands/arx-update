@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# arx-update: update arx to the latest GitHub release
+# arx-update: update arx to the latest release
 #
 # Like fx upgrade: downloads arx-<os>-<arch>.tar.gz and its .sha256 from the
-# release, verifies the checksum, and swaps the new files in with renames, so
-# a running arx is never left half-written. While the repo is private, it
-# downloads through gh (your GitHub login).
+# arx site, which serves the GitHub release, verifies the checksum, and swaps
+# the new files in with renames, so a running arx is never left half-written.
+# ARX_DOWNLOAD_URL replaces the site, e.g. for a mirror.
 set -u
 
 usage() {
@@ -17,7 +17,8 @@ usage: arx update [--check] [--version vX.Y.Z] [--prefix DIR]
 EOF
 }
 
-repo=${ARX_REPO:-woodfordbl/arx}
+site=${ARX_DOWNLOAD_URL:-https://arx-documentation.vercel.app}
+site=${site%/}
 check=0 want="" prefix=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -35,14 +36,12 @@ asset=arx-$os-$arch.tar.gz
 current=$("${ARX_BIN:-arx}" version 2>/dev/null | awk '{print $2}')
 
 # The newest release tag. ARX_UPDATE_DIR (a folder with a `latest` file and
-# the assets) replaces GitHub, for tests and mirrors.
+# the assets) replaces the site, for tests.
 latest_tag() {
   if [ -n "${ARX_UPDATE_DIR:-}" ]; then
     cat "$ARX_UPDATE_DIR/latest"
-  elif command -v gh >/dev/null && gh auth status >/dev/null 2>&1; then
-    gh release view --repo "$repo" --json tagName -q .tagName
   else
-    curl -fsSL "https://api.github.com/repos/$repo/releases/latest" | jq -r .tag_name
+    curl -fsSL "$site/releases/latest"
   fi
 }
 
@@ -50,17 +49,15 @@ latest_tag() {
 download() {
   if [ -n "${ARX_UPDATE_DIR:-}" ]; then
     cp "$ARX_UPDATE_DIR/$asset" "$ARX_UPDATE_DIR/$asset.sha256" "$2/"
-  elif command -v gh >/dev/null && gh auth status >/dev/null 2>&1; then
-    gh release download "$1" --repo "$repo" --pattern "$asset*" --dir "$2"
   else
-    local base=https://github.com/$repo/releases/download/$1
+    local base=$site/releases/download/$1
     curl -fsSL -o "$2/$asset" "$base/$asset" &&
       curl -fsSL -o "$2/$asset.sha256" "$base/$asset.sha256"
   fi
 }
 
 tag=${want:-$(latest_tag)} || exit 1
-[ -n "$tag" ] && [ "$tag" != null ] || { echo "arx update: no release found for $repo" >&2; exit 1; }
+[ -n "$tag" ] && [ "$tag" != null ] || { echo "arx update: no release found at $site" >&2; exit 1; }
 if [ "${tag#v}" = "$current" ]; then
   echo "arx is up to date ($current)."
   exit 0
