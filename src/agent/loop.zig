@@ -101,13 +101,12 @@ fn readInbox(a: *Agent) Allocator.Error!void {
 /// Gives queued harness notes to the agent as one user message.
 fn flushNotes(a: *Agent) Allocator.Error!void {
     if (a.notes.items.len == 0) return;
-    const gpa = a.ctx.gpa;
-    const text = try std.mem.concat(gpa, u8, &.{ "[harness]\n", a.notes.items });
-    defer gpa.free(text);
-    try a.addMessage("user", text);
+    const header = "[harness]\n";
+    try a.notes.insertSlice(a.ctx.gpa, 0, header);
+    try a.addMessage("user", a.notes.items);
     var event = try a.events.begin("note");
     defer event.deinit();
-    try event.truncated("text", a.notes.items, 1000);
+    try event.truncated("text", a.notes.items[header.len..], 1000);
     try a.events.send(&event);
     a.notes.clearRetainingCapacity();
 }
@@ -124,16 +123,13 @@ fn preview(arena: Allocator, args: []const u8) Allocator.Error![]u8 {
 
 /// Runs the before_tool hook. Returns a denial message, or null to go on.
 fn beforeTool(a: *Agent, arena: Allocator, name: []const u8, args: []const u8) Allocator.Error!?[]const u8 {
-    var tool = json.object();
-    try json.putString(arena, &tool, "name", name);
+    // Arguments that are not valid JSON go to the hook as a string.
     const parsed = json.parse(arena, args) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
-        else => json.Value{ .string = try arena.dupe(u8, args) },
+        else => json.Value{ .string = args },
     };
-    try json.put(arena, &tool, "args", parsed);
-    var input = json.object();
-    try json.put(arena, &input, "tool", tool);
-    const outcome = try hooks.run(a, arena, "before_tool", input);
+    const fields = try arena.print("\"tool\":{{\"name\":{f},\"args\":{f}}}", .{ json.fmt(.{ .string = name }), json.fmt(parsed) });
+    const outcome = try hooks.run(a, arena, "before_tool", fields);
     if (outcome.status == .failed) return "denied: the before_tool hook failed (fail: closed)";
     if (std.mem.eql(u8, json.strOr(outcome.output, "decision", ""), "deny")) {
         return try arena.print("denied by the before_tool hook: {s}", .{json.strOr(outcome.output, "reason", "no reason given")});
@@ -143,87 +139,51 @@ fn beforeTool(a: *Agent, arena: Allocator, name: []const u8, args: []const u8) A
 
 /// Runs the after_tool hook. Returns a note to append, or null.
 fn afterTool(a: *Agent, arena: Allocator, name: []const u8, result: []const u8, is_error: bool) Allocator.Error!?[]const u8 {
-    var tool = json.object();
-    try json.putString(arena, &tool, "name", name);
-    var res = json.object();
-    try json.put(arena, &res, "text", .{ .string = try util.truncate(arena, result, 8192) });
-    try json.put(arena, &res, "error", .{ .bool = is_error });
-    var input = json.object();
-    try json.put(arena, &input, "tool", tool);
-    try json.put(arena, &input, "result", res);
-    const outcome = try hooks.run(a, arena, "after_tool", input);
+    const fields = try arena.print("\"tool\":{{\"name\":{f}}},\"result\":{{\"text\":{f},\"error\":{}}}", .{
+        json.fmt(.{ .string = name }), json.fmt(.{ .string = try util.truncate(arena, result, 8192) }), is_error,
+    });
+    const outcome = try hooks.run(a, arena, "after_tool", fields);
     return json.str(outcome.output, "note");
 }
 
-/// Runs one tool call with its hooks and sends `end` as soon as the tool
-/// finishes, before the after_tool hook. Returns the result (caller owns it).
-fn runOne(a: *Agent, id: []const u8, name: []const u8, args: []const u8, out_path: *?[]u8, end: *Event) ![]u8 {
-    const gpa = a.ctx.gpa;
-    var arena: std.heap.ArenaAllocator = .init(gpa);
+/// Runs one tool call with its hooks and records the result. `end` is sent
+/// as soon as the tool finishes, before the after_tool hook. A call after a
+/// Ctrl-C still gets a result, so the history stays valid.
+fn runToolCall(a: *Agent, call: json.Value) !void {
+    var arena: std.heap.ArenaAllocator = .init(a.ctx.gpa);
     defer arena.deinit();
     const t = arena.allocator();
-    {
+    const id = json.strOr(call, "id", "");
+    const name = json.strOr(call, "function.name", "");
+    const args = json.strOr(call, "function.arguments", "{}");
+    var end = try a.events.begin("tool.end");
+    defer end.deinit();
+    try end.str("id", id);
+    try end.str("name", name);
+    var outcome: tool_exec.Outcome = .{ .text = "[interrupted before this tool ran]" };
+    if (sys.isInterrupted()) {
+        try a.events.send(&end);
+    } else {
         var start = try a.events.begin("tool.start");
         defer start.deinit();
         try start.str("id", id);
         try start.str("name", name);
         try start.str("preview", try preview(t, args));
         try a.events.send(&start);
+        outcome = if (try beforeTool(a, t, name, args)) |denial| .{ .text = denial } else try tool_exec.call(a, t, name, args, &end);
+        try end.boolean("error", outcome.is_error);
+        try end.truncated("preview", outcome.text[0 .. std.mem.findScalar(u8, outcome.text, '\n') orelse outcome.text.len], 100);
+        try a.events.send(&end);
+        if (try afterTool(a, t, name, outcome.text, outcome.is_error)) |note| outcome.text = try t.print("{s}\n[after_tool] {s}", .{ outcome.text, note });
     }
-    var is_error = true;
-    var text: []u8 = undefined;
-    if (try beforeTool(a, t, name, args)) |denial| {
-        text = try gpa.dupe(u8, denial);
-    } else {
-        const outcome = try tool_exec.call(a, name, args, end);
-        text = outcome.text;
-        is_error = outcome.is_error;
-        out_path.* = outcome.output_path;
+    const m = try Message.text(a.ctx.gpa, "tool", outcome.text);
+    {
+        errdefer m.destroy(a.ctx.gpa);
+        try json.putString(m.allocator(), &m.value, "tool_call_id", id);
+        if (outcome.output_path) |p| try json.putString(m.allocator(), &m.value, "_out", p);
     }
-    errdefer gpa.free(text);
-    try end.boolean("error", is_error);
-    const first_line = text[0 .. std.mem.findScalar(u8, text, '\n') orelse text.len];
-    try end.truncated("preview", first_line, 100);
-    try a.events.send(end);
-    if (try afterTool(a, t, name, text, is_error)) |note| {
-        const joined = try std.mem.concat(gpa, u8, &.{ text, "\n[after_tool] ", note });
-        gpa.free(text);
-        text = joined;
-    }
-    return text;
-}
-
-/// Runs every tool call of an assistant message and records the results.
-/// Calls after a Ctrl-C still get a result, so the history stays valid.
-fn runToolCalls(a: *Agent, calls: []const json.Value) !void {
-    const gpa = a.ctx.gpa;
-    for (calls) |call| {
-        const id = json.strOr(call, "id", "");
-        const name = json.strOr(call, "function.name", "");
-        const args = json.strOr(call, "function.arguments", "{}");
-        var out_path: ?[]u8 = null;
-        defer if (out_path) |p| gpa.free(p);
-        var end = try a.events.begin("tool.end");
-        defer end.deinit();
-        try end.str("id", id);
-        try end.str("name", name);
-        const text = if (sys.isInterrupted()) blk: {
-            try a.events.send(&end);
-            break :blk try gpa.dupe(u8, "[interrupted before this tool ran]");
-        } else try runOne(a, id, name, args, &out_path, &end);
-        defer gpa.free(text);
-        const m = try Message.create(gpa);
-        {
-            errdefer m.destroy(gpa);
-            const ma = m.allocator();
-            try json.putString(ma, &m.value, "role", "tool");
-            try json.putString(ma, &m.value, "tool_call_id", id);
-            try json.putString(ma, &m.value, "content", text);
-            if (out_path) |p| try json.putString(ma, &m.value, "_out", p);
-        }
-        try a.messages.append(m);
-        try a.record(m);
-    }
+    try a.messages.append(m);
+    try a.record(m);
 }
 
 /// Asks the stop hook whether to go on. Returns true to keep going.
@@ -231,9 +191,8 @@ fn stopHook(a: *Agent) !bool {
     var arena: std.heap.ArenaAllocator = .init(a.ctx.gpa);
     defer arena.deinit();
     const t = arena.allocator();
-    var input = json.object();
-    try json.put(t, &input, "last_message", .{ .string = try util.truncate(t, a.final_output orelse "", 8192) });
-    const outcome = try hooks.run(a, t, "stop", input);
+    const fields = try t.print("\"last_message\":{f}", .{json.fmt(.{ .string = try util.truncate(t, a.final_output orelse "", 8192) })});
+    const outcome = try hooks.run(a, t, "stop", fields);
     const decision = json.strOr(outcome.output, "decision", "");
     if (std.mem.eql(u8, decision, "continue")) {
         try a.addMessage("user", json.strOr(outcome.output, "message", "Continue."));
@@ -318,9 +277,11 @@ pub fn runTurns(a: *Agent) !Exit {
         try a.record(reply.message);
         const calls = json.items(json.field(reply.message.value, "tool_calls"));
         if (calls.len > 0) {
-            try runToolCalls(a, calls);
+            for (calls) |call| try runToolCall(a, call);
         } else {
-            try a.setFinalOutput(json.strOr(reply.message.value, "content", ""));
+            const answer = try a.ctx.gpa.dupe(u8, json.strOr(reply.message.value, "content", ""));
+            if (a.final_output) |old| a.ctx.gpa.free(old);
+            a.final_output = answer;
             if (!try stopHook(a)) return .done;
         }
         try s.writeMeta(a.ctx, "running");

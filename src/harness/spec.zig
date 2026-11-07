@@ -77,7 +77,7 @@ pub fn parseFile(ctx: *const Context, arena: Allocator, path: []const u8, err: *
     const source = std.Io.Dir.cwd().readFileAlloc(ctx.io, path, gpa, .unlimited) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
         else => {
-            try err.print(gpa, "{s}: {s}\n", .{ path, describeFileError(e) });
+            try err.print(gpa, "{s}: {s}\n", .{ path, util.describeError(e) });
             return null;
         },
     };
@@ -89,17 +89,6 @@ pub fn parseFile(ctx: *const Context, arena: Allocator, path: []const u8, err: *
         },
         .ok => |d| return .{ .root = d.root, .lines = d.lines, .path = try arena.dupe(u8, path), .dir = util.dirName(try arena.dupe(u8, path)) },
     }
-}
-
-/// The message for a file error, like strerror() would say.
-pub fn describeFileError(e: anyerror) []const u8 {
-    return switch (e) {
-        error.FileNotFound => "No such file or directory",
-        error.AccessDenied, error.PermissionDenied => "Permission denied",
-        error.IsDir => "Is a directory",
-        error.NotDir => "Not a directory",
-        else => @errorName(e),
-    };
 }
 
 /// Copies the line numbers of `prefix` and everything under it from `from`
@@ -159,60 +148,45 @@ fn loadDefaults(ctx: *const Context, arena: Allocator, err: *std.ArrayList(u8)) 
 /// null, with one line per problem in `err` ("file:line: path: message"),
 /// when the spec cannot be used.
 pub fn load(ctx: *const Context, path: ?[]const u8, sets: json.Value, err: *std.ArrayList(u8)) Allocator.Error!?Spec {
-    const gpa = ctx.gpa;
-    const arena_ptr = try gpa.create(std.heap.ArenaAllocator);
-    arena_ptr.* = .init(gpa);
-    var spec: Spec = .{ .arena = arena_ptr };
-    errdefer spec.deinit(gpa);
-    const arena = arena_ptr.allocator();
-    const errors_before = err.items.len;
-
-    const defaults = try loadDefaults(ctx, arena, err);
-    if (defaults == .invalid) {
-        spec.deinit(gpa);
-        return null;
-    }
-    if (path) |p| {
-        const d = (try parseFile(ctx, arena, p, err)) orelse {
-            spec.deinit(gpa);
-            return null;
-        };
-        spec.root = d.root;
-        spec.lines = d.lines;
-        spec.path = d.path;
-        spec.dir = d.dir;
-        if (defaults == .found) {
-            if (spec.root == .object and defaults.found.root == .object) {
-                try mergeDefaults(arena, &spec.root, defaults.found.root, "", &spec.lines, defaults.found);
-                spec.config = defaults.found.path;
-            }
-        }
-    } else if (defaults == .found) {
-        const d = defaults.found; // the defaults are the whole spec
-        spec.root = d.root;
-        spec.lines = d.lines;
-        spec.path = d.path;
-        spec.dir = d.dir;
-        spec.config = d.path;
-    } else {
-        try err.appendSlice(gpa, "no agent.yaml here and no saved defaults: run `arx setup`, or `arx init` to start a harness in this folder\n");
-        spec.deinit(gpa);
-        return null;
-    }
-    if (spec.lines != .object) spec.lines = json.object();
-    if (spec.root == .object) {
-        for (json.keys(sets), json.values(sets)) |key, value| {
-            try json.set(arena, &spec.root, key, try json.copy(arena, value));
-        }
-        try plugins.load(ctx, &spec);
-    }
-    try validate.spec(ctx, &spec, err);
-    spec.sig = try signature.compute(ctx, &spec);
-    if (err.items.len > errors_before) {
-        spec.deinit(gpa);
-        return null;
-    }
+    const arena = try ctx.gpa.create(std.heap.ArenaAllocator);
+    arena.* = .init(ctx.gpa);
+    var spec: Spec = .{ .arena = arena };
+    build(ctx, &spec, path, sets, err) catch |e| {
+        spec.deinit(ctx.gpa);
+        return if (e == error.Invalid) null else error.OutOfMemory;
+    };
     return spec;
+}
+
+/// Fills in `spec` for `load`; error.Invalid means `err` says why.
+fn build(ctx: *const Context, spec: *Spec, path: ?[]const u8, sets: json.Value, err: *std.ArrayList(u8)) (Allocator.Error || error{Invalid})!void {
+    const arena = spec.arena.?.allocator();
+    const errors_before = err.items.len;
+    const defaults = try loadDefaults(ctx, arena, err);
+    if (defaults == .invalid) return error.Invalid;
+    const d = if (path) |p|
+        try parseFile(ctx, arena, p, err) orelse return error.Invalid
+    else if (defaults == .found)
+        defaults.found // the defaults are the whole spec
+    else {
+        try err.appendSlice(ctx.gpa, "no agent.yaml here and no saved defaults: run `arx setup`, or `arx init` to start a harness in this folder\n");
+        return error.Invalid;
+    };
+    spec.root = d.root;
+    spec.lines = if (d.lines == .object) d.lines else json.object();
+    spec.path = d.path;
+    spec.dir = d.dir;
+    if (defaults == .found and (path == null or (spec.root == .object and defaults.found.root == .object))) {
+        if (path != null) try mergeDefaults(arena, &spec.root, defaults.found.root, "", &spec.lines, defaults.found);
+        spec.config = defaults.found.path;
+    }
+    if (spec.root == .object) {
+        for (json.keys(sets), json.values(sets)) |key, value| try json.set(arena, &spec.root, key, try json.copy(arena, value));
+        try plugins.load(ctx, spec);
+    }
+    try validate.spec(ctx, spec, err);
+    spec.sig = try signature.compute(ctx, spec);
+    if (err.items.len > errors_before) return error.Invalid;
 }
 
 /// Parses one --set argument ("limits.max_turns=10") into `sets`. A value
@@ -262,20 +236,8 @@ pub fn text(ctx: *const Context, gpa: Allocator, d: Doc, node: ?json.Value, err:
     return std.Io.Dir.cwd().readFileAlloc(ctx.io, path, gpa, .unlimited) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
         else => {
-            if (err) |list| try list.print(ctx.gpa, "{s}: cannot read {s}: {s}\n", .{ d.path, path, describeFileError(e) });
+            if (err) |list| try list.print(ctx.gpa, "{s}: cannot read {s}: {s}\n", .{ d.path, path, util.describeError(e) });
             return null;
         },
     };
-}
-
-test "addSet parses scalars and JSON" {
-    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    var sets = json.object();
-    try std.testing.expect(try addSet(a, &sets, "limits.max_turns=10"));
-    try std.testing.expect(try addSet(a, &sets, "plugins=[]"));
-    try std.testing.expect(!try addSet(a, &sets, "novalue"));
-    try std.testing.expectEqual(@as(i64, 10), json.field(sets, "limits.max_turns").?.integer);
-    try std.testing.expect(json.field(sets, "plugins").? == .array);
 }

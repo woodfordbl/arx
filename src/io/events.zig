@@ -85,8 +85,6 @@ pub const Events = struct {
     delta_time: f64 = 0,
     observers: [max_observers]Observer = undefined,
     observer_count: usize = 0,
-    /// Events a slow observer missed.
-    dropped: i64 = 0,
 
     /// An event stream with no sinks yet.
     pub fn init(ctx: *const Context) Events {
@@ -206,11 +204,9 @@ pub const Events = struct {
 
     /// Serializes an event as one line and writes it.
     fn writeEvent(e: *Events, value: json.Value) Allocator.Error!void {
-        var out: std.Io.Writer.Allocating = .init(e.ctx.gpa);
-        defer out.deinit();
-        json.write(&out.writer, value, .compact) catch return error.OutOfMemory;
-        out.writer.writeByte('\n') catch return error.OutOfMemory;
-        e.writeLine(out.written());
+        const line = try e.ctx.gpa.print("{f}\n", .{json.fmt(value)});
+        defer e.ctx.gpa.free(line);
+        e.writeLine(line);
     }
 
     /// Writes one line to every sink.
@@ -219,12 +215,11 @@ pub const Events = struct {
         if (e.extra_fd >= 0) sys.writeAll(e.extra_fd, line) catch {};
         for (e.observers[0..e.observer_count]) |*o| {
             if (o.fd < 0) continue;
-            const written = sys.writeSome(o.fd, line) catch {
+            // A full pipe drops this event; a closed one drops the observer.
+            _ = sys.writeSome(o.fd, line) catch {
                 sys.close(o.fd);
                 o.fd = -1;
-                continue;
             };
-            if (written != line.len) e.dropped += 1;
         }
     }
 };
@@ -235,9 +230,7 @@ fn openTarget(where: []const u8) ?sys.fd_t {
     if (std.mem.eql(u8, where, "-")) return sys.dup(1);
     if (std.mem.startsWith(u8, where, "fd:")) {
         const fd = std.fmt.parseInt(sys.fd_t, where[3..], 10) catch return null;
-        if (fd < 0 or !sys.isOpen(fd)) return null;
-        sys.setCloexec(fd);
-        return fd;
+        return if (fd >= 0 and sys.setCloexec(fd)) fd else null;
     }
     return sys.openAppend(where) catch null;
 }

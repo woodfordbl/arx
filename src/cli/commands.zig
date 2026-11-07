@@ -56,18 +56,6 @@ pub fn run(a: *Agent, name: []const u8, args: []const []const u8) anyerror!?Exit
     return null;
 }
 
-/// A buffered stdout writer.
-const Stdout = struct {
-    buf: [4096]u8 = undefined,
-    file: Io.File.Writer = undefined,
-
-    /// Starts the writer; `s` must stay put while it is used.
-    fn init(s: *Stdout, io: Io) *Io.Writer {
-        s.file = Io.File.stdout().writerStreaming(io, &s.buf);
-        return &s.file.interface;
-    }
-};
-
 /// Loads the spec for a command and prints its problems.
 fn loadSpec(a: *Agent) Allocator.Error!?Exit {
     var err: std.ArrayList(u8) = .empty;
@@ -80,43 +68,16 @@ fn loadSpec(a: *Agent) Allocator.Error!?Exit {
     return null;
 }
 
-/// Prints the hooks found in the layers, naming the plugins they come from.
-fn printHooks(a: *Agent, out: *Io.Writer) !void {
-    try out.writeAll("\nhooks:");
-    for (validate.hook_points) |point| {
-        var found = false;
-        var from: std.ArrayList(u8) = .empty;
-        defer from.deinit(a.ctx.gpa);
-        for (a.spec.layers) |layer| {
-            const path = try std.mem.concat(a.ctx.gpa, u8, &.{ layer.dir, "/hooks/", point });
-            defer a.ctx.gpa.free(path);
-            if (!util.isExecutable(a.ctx.io, path)) continue;
-            found = true;
-            if (layer.plugin) |plugin| {
-                if (from.items.len > 0) try from.append(a.ctx.gpa, ',');
-                try from.appendSlice(a.ctx.gpa, plugin);
-            }
-        }
-        if (found) try out.print(" {s}", .{point});
-        if (from.items.len > 0) try out.print("({s})", .{from.items});
-    }
-    try out.writeByte('\n');
-}
-
 /// `arx check --plugin DIR`: checks a plugin without loading it, and prints
 /// key=value lines for scripts such as `arx plugin`.
 fn checkPlugin(a: *Agent, dir: []const u8) !Exit {
-    const gpa = a.ctx.gpa;
     var out: std.ArrayList(u8) = .empty;
-    defer out.deinit(gpa);
+    defer out.deinit(a.ctx.gpa);
     var err: std.ArrayList(u8) = .empty;
-    defer err.deinit(gpa);
-    if (!try plugins.describe(a.ctx, dir, &out, &err)) {
-        render.printErr(a.ctx.io, "{s}", .{err.items});
-        return .usage;
-    }
-    render.printOut(a.ctx.io, "{s}", .{out.items});
-    return .done;
+    defer err.deinit(a.ctx.gpa);
+    const ok = try plugins.describe(a.ctx, dir, &out, &err);
+    if (ok) render.printOut(a.ctx.io, "{s}", .{out.items}) else render.printErr(a.ctx.io, "{s}", .{err.items});
+    return if (ok) .done else .usage;
 }
 
 /// `arx check` and `arx tools`: load the harness without starting a session.
@@ -126,36 +87,46 @@ fn checkOrTools(a: *Agent, args: []const []const u8) !Exit {
     if (try options.parse(a, args, 2)) |code| return code;
     if (try loadSpec(a)) |code| return code;
     try tools.build(a);
-    var stdout: Stdout = .{};
-    const out = stdout.init(a.ctx.io);
+    var arena: std.heap.ArenaAllocator = .init(a.ctx.gpa);
+    defer arena.deinit();
+    const t = arena.allocator();
     if (!is_check) {
-        var arena: std.heap.ArenaAllocator = .init(a.ctx.gpa);
-        defer arena.deinit();
-        try json.write(out, try a.tools.toValue(arena.allocator()), .pretty);
-        try out.writeByte('\n');
-        try out.flush();
+        render.printOut(a.ctx.io, "{s}\n", .{try json.stringifyPretty(t, try json.parseTrusted(t, try a.tools.toJson(t)))});
         return .done;
     }
-    const config = a.spec.config;
-    const merged = config != null and !std.mem.eql(u8, config.?, a.spec.path);
-    try out.print("ok: {s}{s}{s} (model {s} at {s})\ntools:", .{
+    var out: std.ArrayList(u8) = .empty;
+    const config = a.spec.config orelse a.spec.path;
+    const merged = !std.mem.eql(u8, config, a.spec.path);
+    try out.print(t, "ok: {s}{s}{s} (model {s} at {s})\ntools:", .{
         a.spec.path,
         if (merged) " + " else "",
-        if (merged) config.? else "",
+        if (merged) config else "",
         json.strOr(a.spec.root, "model", ""),
         json.strOr(a.spec.root, "endpoint.base_url", ""),
     });
-    for (a.tools.items) |tool| try out.print(" {s}", .{tool.name});
-    try printHooks(a, out);
-    var any = false;
-    for (a.spec.layers) |layer| {
-        const plugin = layer.plugin orelse continue;
-        try out.print("{s}{s}", .{ if (any) " " else "plugins: ", plugin });
-        any = true;
+    for (a.tools.items) |tool| try out.print(t, " {s}", .{tool.name});
+    // The hooks found in the layers, naming the plugins they come from.
+    try out.appendSlice(t, "\nhooks:");
+    for (validate.hook_points) |point| {
+        var from: std.ArrayList(u8) = .empty;
+        var found = false;
+        for (a.spec.layers) |layer| {
+            if (!util.isExecutable(a.ctx.io, try std.mem.concat(t, u8, &.{ layer.dir, "/hooks/", point }))) continue;
+            found = true;
+            if (layer.plugin) |plugin| try from.print(t, "{s}{s}", .{ if (from.items.len > 0) "," else "", plugin });
+        }
+        if (found) try out.print(t, " {s}", .{point});
+        if (from.items.len > 0) try out.print(t, "({s})", .{from.items});
     }
-    if (any) try out.writeByte('\n');
-    if (a.notes.items.len > 0) try out.print("problems:\n{s}", .{a.notes.items});
-    try out.flush();
+    try out.append(t, '\n');
+    var any = false;
+    for (a.spec.layers) |layer| if (layer.plugin) |plugin| {
+        try out.print(t, "{s}{s}", .{ if (any) " " else "plugins: ", plugin });
+        any = true;
+    };
+    if (any) try out.append(t, '\n');
+    if (a.notes.items.len > 0) try out.print(t, "problems:\n{s}", .{a.notes.items});
+    render.printOut(a.ctx.io, "{s}", .{out.items});
     return .done;
 }
 
@@ -196,101 +167,85 @@ fn watchCommand(a: *Agent, args: []const []const u8) !Exit {
 
 /// `arx ctl ID|last stop|note TEXT`: appends a command to the inbox.
 fn ctlCommand(a: *Agent, args: []const []const u8) !Exit {
-    const gpa = a.ctx.gpa;
     if (args.len < 4) return options.usageError(a, "ctl needs a session and a command", null);
     const note = std.mem.eql(u8, args[3], "note");
     if (!note and !std.mem.eql(u8, args[3], "stop")) return options.usageError(a, "unknown ctl command", args[3]);
     if (note and args.len < 5) return options.usageError(a, "ctl note needs text", null);
-    const dir = (try session.sessionDir(a.ctx, gpa, args[2])) orelse return options.usageError(a, "no such session", args[2]);
-    defer gpa.free(dir);
-    var arena: std.heap.ArenaAllocator = .init(gpa);
+    var arena: std.heap.ArenaAllocator = .init(a.ctx.gpa);
     defer arena.deinit();
     const t = arena.allocator();
-    var command = json.object();
-    try json.put(t, &command, "cmd", json.string(args[3]));
-    if (note) try json.put(t, &command, "text", json.string(args[4]));
-    const line = try std.mem.concat(t, u8, &.{ try json.stringify(t, command), "\n" });
-    const path = try std.mem.concat(t, u8, &.{ dir, "/inbox" });
-    util.appendFile(path, line) catch return .@"error";
+    const dir = (try session.sessionDir(a.ctx, t, args[2])) orelse return options.usageError(a, "no such session", args[2]);
+    const line = if (note)
+        try t.print("{{\"cmd\":\"note\",\"text\":{f}}}\n", .{json.fmt(.{ .string = args[4] })})
+    else
+        "{\"cmd\":\"stop\"}\n";
+    util.appendFile(try std.mem.concat(t, u8, &.{ dir, "/inbox" }), line) catch return .@"error";
     return .done;
 }
 
 /// Copies a response body to stdout.
-const StdoutSink = struct {
-    /// Writes a chunk of the body to stdout.
-    fn write(_: *StdoutSink, bytes: []const u8) void {
-        sys.writeAll(1, bytes) catch {};
-    }
-};
-
-/// One authenticated call to the endpoint; prints the body.
-fn request(a: *Agent, method: ?[]const u8, body: ?[]const u8, path: []const u8) !Exit {
-    const ctx = a.ctx;
-    const gpa = ctx.gpa;
-    var arena: std.heap.ArenaAllocator = .init(gpa);
-    defer arena.deinit();
-    const t = arena.allocator();
-    const root = a.spec.root;
-    const tmp = ctx.getenvNonEmpty("TMPDIR") orelse "/tmp";
-    const headers = try auth.writeRequestHeaders(ctx, &a.auth, root, std.mem.trimEnd(u8, tmp, "/"), false);
-    defer gpa.free(headers);
-    defer Io.Dir.cwd().deleteFile(ctx.io, headers) catch {};
-    const response = try t.print("{s}/.arx-response-{d}", .{ std.mem.trimEnd(u8, tmp, "/"), sys.getpid() });
-    defer Io.Dir.cwd().deleteFile(ctx.io, response) catch {};
-    var argv: std.ArrayList([]const u8) = .empty;
-    try argv.appendSlice(t, &.{ auth.curlPath(ctx, root), "-sS", "--max-time", "60", "-D", response, "-H", try t.print("@{s}", .{headers}) });
-    if (method) |m| try argv.appendSlice(t, &.{ "-X", m });
-    if (body != null) try argv.appendSlice(t, &.{ "--data-binary", "@-" });
-    try argv.append(t, try auth.endpointUrl(t, root, path));
-    var sink: StdoutSink = .{};
-    const r = proc.run(ctx, .{ .argv = argv.items, .stdin = body, .timeout = 90, .stdout = .init(&sink, StdoutSink.write) });
-    const status = (try auth.readResponseHeaders(ctx, response)).status;
-    if (r.code != 0) render.printErr(ctx.io, "arx: curl exited with {d}\n", .{r.code});
-    if (r.code != 0 or status < 200 or status >= 300) return if (status == 401 or status == 403) .auth else .@"error";
-    return .done;
+fn toStdout(_: *u8, bytes: []const u8) Allocator.Error!void {
+    sys.writeAll(1, bytes) catch {};
 }
 
-/// `arx request [-X METHOD] [--data JSON|-] [--auth-source] PATH`.
+/// `arx request [-X METHOD] [--data JSON|-] [--auth-source] PATH`: one
+/// authenticated call to the endpoint; prints the body.
 fn requestCommand(a: *Agent, args: []const []const u8) !Exit {
-    const gpa = a.ctx.gpa;
+    const ctx = a.ctx;
+    var arena: std.heap.ArenaAllocator = .init(ctx.gpa);
+    defer arena.deinit();
+    const t = arena.allocator();
     var method: ?[]const u8 = null;
     var data: ?[]const u8 = null;
     var path: ?[]const u8 = null;
     var auth_source = false;
     var i: usize = 2;
     while (i < args.len) : (i += 1) {
-        const has_value = i + 1 < args.len;
-        if (std.mem.eql(u8, args[i], "--auth-source")) {
+        const arg = args[i];
+        const value = if (i + 1 < args.len) args[i + 1] else null;
+        if (std.mem.eql(u8, arg, "--auth-source")) {
             auth_source = true;
-        } else if (has_value and std.mem.eql(u8, args[i], "-X")) {
-            i += 1;
-            method = args[i];
-        } else if (has_value and std.mem.eql(u8, args[i], "--data")) {
-            i += 1;
-            data = args[i];
-        } else if (has_value and std.mem.eql(u8, args[i], "--spec")) {
-            i += 1;
-            a.spec_path = args[i];
-        } else if (has_value and std.mem.eql(u8, args[i], "--set")) {
-            i += 1;
-            if (!try spec_mod.addSet(a.sets_arena.allocator(), &a.sets, args[i])) return options.usageError(a, "bad --set", args[i]);
-        } else if (args[i].len > 0 and args[i][0] != '-' and path == null) {
-            path = args[i];
-        } else {
-            return options.usageError(a, "unknown request argument", args[i]);
+            continue;
         }
+        if (value != null and std.mem.eql(u8, arg, "-X")) {
+            method = value;
+        } else if (value != null and std.mem.eql(u8, arg, "--data")) {
+            data = value;
+        } else if (value != null and std.mem.eql(u8, arg, "--spec")) {
+            a.spec_path = value;
+        } else if (value != null and std.mem.eql(u8, arg, "--set")) {
+            if (!try spec_mod.addSet(a.sets_arena.allocator(), &a.sets, value.?)) return options.usageError(a, "bad --set", value);
+        } else if (arg.len > 0 and arg[0] != '-' and path == null) {
+            path = arg;
+            continue;
+        } else {
+            return options.usageError(a, "unknown request argument", arg);
+        }
+        i += 1;
     }
     if (try loadSpec(a)) |code| return code;
+    const root = a.spec.root;
     if (auth_source) {
-        const key = try a.auth.apiKey(a.ctx, a.spec.root);
-        render.printOut(a.ctx.io, "{s}\n", .{if (key != null) a.auth.source orelse "" else "no key found"});
+        const key = try a.auth.apiKey(ctx, root);
+        render.printOut(ctx.io, "{s}\n", .{if (key != null) a.auth.source orelse "" else "no key found"});
         return if (key != null) .done else .auth;
     }
-    const p = path orelse return options.usageError(a, "request needs a path such as /models", null);
-    const body: ?[]u8 = if (data) |d|
-        if (std.mem.eql(u8, d, "-")) try options.readStdin(gpa) else try gpa.dupe(u8, d)
-    else
-        null;
-    defer if (body) |b| gpa.free(b);
-    return request(a, method, body, p);
+    const url = try auth.endpointUrl(t, root, path orelse return options.usageError(a, "request needs a path such as /models", null));
+    const body = if (data) |d| if (std.mem.eql(u8, d, "-")) try options.readStdin(t) else d else null;
+    const tmp = std.mem.trimEnd(u8, ctx.getenvNonEmpty("TMPDIR") orelse "/tmp", "/");
+    const headers = try auth.writeRequestHeaders(ctx, t, &a.auth, root, tmp, false);
+    defer Io.Dir.cwd().deleteFile(ctx.io, headers) catch {};
+    const response = try t.print("{s}/.arx-response-{d}", .{ tmp, sys.getpid() });
+    defer Io.Dir.cwd().deleteFile(ctx.io, response) catch {};
+    var argv: std.ArrayList([]const u8) = .empty;
+    try argv.appendSlice(t, &.{ auth.curlPath(ctx, root), "-sS", "--max-time", "60", "-D", response, "-H", try t.print("@{s}", .{headers}) });
+    if (method) |m| try argv.appendSlice(t, &.{ "-X", m });
+    if (body != null) try argv.appendSlice(t, &.{ "--data-binary", "@-" });
+    try argv.append(t, url);
+    var unused: u8 = 0;
+    const r = try proc.run(ctx, .{ .argv = argv.items, .stdin = body, .timeout = 90, .stdout = .init(&unused, toStdout) });
+    const status = (try auth.readResponseHeaders(ctx, response)).status;
+    if (r.code != 0) render.printErr(ctx.io, "arx: curl exited with {d}\n", .{r.code});
+    if (r.code != 0 or status < 200 or status >= 300) return if (status == 401 or status == 403) .auth else .@"error";
+    return .done;
 }

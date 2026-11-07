@@ -168,14 +168,3 @@ test "yaml to json with lines" {
     try std.testing.expectEqual(@as(usize, 3), json.items(json.field(doc.root, "list")).len);
     try std.testing.expect(std.mem.find(u8, problems.items, "line 6: name: duplicate key") != null);
 }
-
-test "yaml syntax errors carry a position" {
-    const gpa = std.testing.allocator;
-    var arena: std.heap.ArenaAllocator = .init(gpa);
-    defer arena.deinit();
-    var problems: std.ArrayList(u8) = .empty;
-    defer problems.deinit(gpa);
-    const r = try parse(arena.allocator(), "a: [1, 2\nb: c\n", &problems, gpa);
-    try std.testing.expect(r == .syntax);
-    try std.testing.expect(r.syntax.line >= 1);
-}

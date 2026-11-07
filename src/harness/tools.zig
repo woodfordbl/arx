@@ -80,28 +80,17 @@ pub const ToolSet = struct {
         return null;
     }
 
-    /// The tools in OpenAI "tools" format, as a value in `arena`.
-    pub fn toValue(t: *const ToolSet, arena: Allocator) Allocator.Error!json.Value {
-        var out = json.array(arena);
-        for (t.items) |tool| {
-            var function = json.object();
-            try json.put(arena, &function, "name", json.string(tool.name));
-            try json.put(arena, &function, "description", json.string(tool.description));
-            try json.put(arena, &function, "parameters", tool.params);
-            var entry = json.object();
-            try json.put(arena, &entry, "type", json.string("function"));
-            try json.put(arena, &entry, "function", function);
-            try out.array.append(entry);
-        }
-        return out;
-    }
-
     /// The tools in OpenAI "tools" format, as compact JSON. Caller owns the
     /// result.
     pub fn toJson(t: *const ToolSet, gpa: Allocator) Allocator.Error![]u8 {
-        var arena: std.heap.ArenaAllocator = .init(gpa);
-        defer arena.deinit();
-        return json.stringify(gpa, try t.toValue(arena.allocator()));
+        var out: std.ArrayList(u8) = .empty;
+        errdefer out.deinit(gpa);
+        try out.append(gpa, '[');
+        for (t.items, 0..) |tool, i| try out.print(gpa, "{s}{{\"type\":\"function\",\"function\":{{\"name\":{f},\"description\":{f},\"parameters\":{f}}}}}", .{
+            if (i > 0) "," else "", json.fmt(.{ .string = tool.name }), json.fmt(.{ .string = tool.description }), json.fmt(tool.params),
+        });
+        try out.append(gpa, ']');
+        return out.toOwnedSlice(gpa);
     }
 };
 
@@ -163,11 +152,10 @@ pub const SchemaCache = struct {
 /// Runs `<tool> --schema` and fills in the entry.
 fn load(ctx: *const Context, e: *SchemaEntry) Allocator.Error!void {
     const a = e.arena.allocator();
-    var out: proc.Collector = .init(ctx.gpa);
-    defer out.deinit();
-    const r = proc.run(ctx, .{ .argv = &.{ e.path, "--schema" }, .timeout = schema_timeout, .stdout = out.sink() });
+    var out: proc.Collector = .init(a);
+    const r = try proc.run(ctx, .{ .argv = &.{ e.path, "--schema" }, .timeout = schema_timeout, .stdout = out.sink() });
     if (r.spawn_error) |err| {
-        e.problem = try a.print("cannot run it ({s})", .{proc.describeSpawnError(err)});
+        e.problem = try a.print("cannot run it ({s})", .{util.describeError(err)});
     } else if (r.timed_out) {
         e.problem = "--schema took longer than 2s";
     } else if (r.code != 0) {
@@ -175,7 +163,7 @@ fn load(ctx: *const Context, e: *SchemaEntry) Allocator.Error!void {
     } else if (try json.parseObject(a, out.output())) |schema| {
         e.description = json.strOr(schema, "description", "");
         const params = json.field(schema, "parameters");
-        e.params = if (json.isObject(params)) params.? else try json.parseTrusted(a, empty_params);
+        e.params = if ((params != null and params.? == .object)) params.? else try json.parseTrusted(a, empty_params);
     } else {
         e.problem = "--schema must print a JSON object {\"description\": ..., \"parameters\": {...}}";
     }
@@ -273,15 +261,14 @@ const Builder = struct {
             else
                 try b.arena.print("{s}/", .{layer.dir});
             const dir = try util.pathJoin(b.arena, layer.dir, "tools");
-            const names = try util.listNames(ctx.io, ctx.gpa, dir);
-            defer util.freeNames(ctx.gpa, names);
+            const names = try util.listNames(ctx.io, b.arena, dir);
             for (names) |name| {
                 if (!b.has(name)) {
                     try b.executable(layer, where, name);
                 } else if (!isBuiltin(name)) {
                     try b.note("- {s}tools/{s} is hidden by a tool above it\n", .{ where, name });
                 }
-                try found.append(b.arena, try b.arena.dupe(u8, name));
+                try found.append(b.arena, name);
             }
         }
         return found.items;

@@ -91,7 +91,7 @@ fn mask(a: *Agent) Allocator.Error!usize {
         if (clear_inputs) {
             if (ref) |r| {
                 if (json.getPtr(r.call, "function")) |function| {
-                    if (function.* == .object) try json.put(r.message.allocator(), function, "arguments", json.string("{}"));
+                    if (function.* == .object) try json.put(r.message.allocator(), function, "arguments", .{ .string = "{}" });
                 }
             }
         }
@@ -114,45 +114,38 @@ fn cutIndex(messages: *const History, keep: i64) ?usize {
 }
 
 /// Renders messages [from, to) as plain text for the summarizer.
-fn plainHistory(gpa: Allocator, messages: *const History, from: usize, to: usize) Allocator.Error![]u8 {
+fn plainHistory(t: Allocator, messages: *const History, from: usize, to: usize) Allocator.Error![]u8 {
     var out: std.ArrayList(u8) = .empty;
-    errdefer out.deinit(gpa);
     for (messages.slice()[from..to]) |m| {
-        const content = try util.truncate(gpa, json.strOr(m.value, "content", ""), 2000);
-        defer gpa.free(content);
-        try out.print(gpa, "\n## {s}\n{s}\n", .{ json.strOr(m.value, "role", "?"), content });
+        try out.print(t, "\n## {s}\n{s}\n", .{ json.strOr(m.value, "role", "?"), try util.truncate(t, json.strOr(m.value, "content", ""), 2000) });
         for (json.items(json.field(m.value, "tool_calls"))) |call| {
-            const args = try util.truncate(gpa, json.strOr(call, "function.arguments", ""), 300);
-            defer gpa.free(args);
-            try out.print(gpa, "-> {s}({s})\n", .{ json.strOr(call, "function.name", "?"), args });
+            try out.print(t, "-> {s}({s})\n", .{ json.strOr(call, "function.name", "?"), try util.truncate(t, json.strOr(call, "function.arguments", ""), 300) });
         }
     }
-    return out.toOwnedSlice(gpa);
+    return out.items;
 }
 
 /// Summarizes everything between the first user message and the last
 /// `keep` turns with one model call. Returns whether it changed the history.
-fn summarize(a: *Agent) !?bool {
+fn summarize(a: *Agent) !bool {
     const gpa = a.ctx.gpa;
-    const keep = @max(json.int(a.spec.root, "compaction.keep", 5), 1);
-    const cut = cutIndex(&a.messages, keep) orelse return false;
+    const cut = cutIndex(&a.messages, @max(json.int(a.spec.root, "compaction.keep", 5), 1)) orelse return false;
     if (cut <= 2) return false;
-    const prompt = try spec_mod.text(a.ctx, gpa, a.spec.doc(), json.get(a.spec.root, "compaction.prompt"), null);
-    defer if (prompt) |p| gpa.free(p);
-    const plain = try plainHistory(gpa, &a.messages, 1, cut);
-    defer gpa.free(plain);
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    const t = arena.allocator();
+    const prompt = try spec_mod.text(a.ctx, t, a.spec.doc(), json.get(a.spec.root, "compaction.prompt"), null);
     var request: History = .init(gpa);
     defer request.deinit();
     try request.append(try Message.text(gpa, "system", prompt orelse default_summary_prompt));
-    try request.append(try Message.text(gpa, "user", plain));
+    try request.append(try Message.text(gpa, "user", try plainHistory(t, &a.messages, 1, cut)));
     var why: std.ArrayList(u8) = .empty;
-    defer why.deinit(gpa);
-    const result = try llm.chat(a, &request, null, false, &why);
-    const reply = switch (result) {
+    const reply = switch (try llm.chat(a, &request, null, false, &why)) {
         .ok => |r| r,
         else => {
+            defer why.deinit(gpa);
             try a.note("Summarizing the context failed: {s}", .{why.items});
-            return null;
+            return false;
         },
     };
     defer reply.message.destroy(gpa);
@@ -160,27 +153,12 @@ fn summarize(a: *Agent) !?bool {
     s.tokens_in += reply.tokens_in;
     s.tokens_out += reply.tokens_out;
     s.cost += reply.cost;
-    const summary = try std.mem.concat(gpa, u8, &.{
-        "[Summary of the work so far, written before the context was compacted]\n",
-        json.strOr(reply.message.value, "content", ""),
-    });
-    defer gpa.free(summary);
-    const note = try Message.text(gpa, "user", summary);
+    const summary = try t.print("[Summary of the work so far, written before the context was compacted]\n{s}", .{json.strOr(reply.message.value, "content", "")});
     // Keep the system prompt and the task, then the summary, then the last
-    // `keep` turns; free the rest.
-    const old = a.messages.slice();
-    var fresh: std.ArrayList(*Message) = .empty;
-    defer fresh.deinit(gpa);
-    fresh.ensureTotalCapacity(gpa, 3 + old.len - cut) catch |err| {
-        note.destroy(gpa);
-        return err;
-    };
-    fresh.appendSliceAssumeCapacity(old[0..2]);
-    fresh.appendAssumeCapacity(note);
-    fresh.appendSliceAssumeCapacity(old[cut..]);
-    for (old[2..cut]) |m| m.destroy(gpa);
-    a.messages.items.clearRetainingCapacity();
-    a.messages.items.appendSliceAssumeCapacity(fresh.items);
+    // `keep` turns.
+    const note = try Message.text(gpa, "user", summary);
+    for (a.messages.slice()[2..cut]) |m| m.destroy(gpa);
+    a.messages.items.replaceRangeAssumeCapacity(2, cut - 2, &.{note});
     return true;
 }
 
@@ -203,29 +181,18 @@ fn restart(a: *Agent, message: ?[]const u8) Allocator.Error!void {
 /// when it returned it unchanged, and null when it failed.
 fn external(a: *Agent, strategy: []const u8) Allocator.Error!?bool {
     const gpa = a.ctx.gpa;
-    var input: std.Io.Writer.Allocating = .init(gpa);
-    defer input.deinit();
-    const w = &input.writer;
-    (blk: {
-        w.writeAll("{\"messages\":") catch |e| break :blk e;
-        a.messages.write(w, false) catch |e| break :blk e;
-        w.print(",\"usage\":{{\"prompt_tokens\":{d}}},\"context_window\":", .{currentTokens(a)}) catch |e| break :blk e;
-        json.write(w, json.number(json.num(a.spec.root, "context_window", 128000)), .compact) catch |e| break :blk e;
-        w.writeByte('}') catch |e| break :blk e;
-    }) catch return error.OutOfMemory;
-    const named = json.str(json.field(a.spec.root, "compactors"), strategy);
-    const path = try util.pathJoin(gpa, a.spec.dir, named orelse strategy);
-    defer gpa.free(path);
-    var env = try tool_exec.environ(a, null, a.depth); // the same ARX_* variables tools and hooks get
-    defer env.deinit();
-    var out: proc.Collector = .init(gpa);
-    defer out.deinit();
-    const r = proc.run(a.ctx, .{ .argv = &.{path}, .stdin = input.written(), .timeout = 120, .environ = &env, .stdout = out.sink() });
-    if (!r.ok()) return null;
     var arena: std.heap.ArenaAllocator = .init(gpa);
     defer arena.deinit();
-    const result = try json.parseObject(arena.allocator(), out.output()) orelse return null;
-    const items = json.items(json.field(result, "messages"));
+    const t = arena.allocator();
+    const input = try t.print("{{\"messages\":{s},\"usage\":{{\"prompt_tokens\":{d}}},\"context_window\":{f}}}", .{
+        try a.messages.toJson(t, false), currentTokens(a), json.fmt(json.number(json.num(a.spec.root, "context_window", 128000))),
+    });
+    const path = try util.pathJoin(t, a.spec.dir, json.str(json.field(a.spec.root, "compactors"), strategy) orelse strategy);
+    var env = try tool_exec.environ(a, null, a.depth); // the same ARX_* variables tools and hooks get
+    defer env.deinit();
+    var out: proc.Collector = .init(t);
+    if (!(try proc.run(a.ctx, .{ .argv = &.{path}, .stdin = input, .timeout = 120, .environ = &env, .stdout = out.sink() })).ok()) return null;
+    const items = json.items(json.field(try json.parseObject(t, out.output()), "messages"));
     if (items.len == 0) return null;
     for (items) |m| if (json.str(m, "role") == null) return null;
     const current = a.messages.slice();
@@ -233,18 +200,11 @@ fn external(a: *Agent, strategy: []const u8) Allocator.Error!?bool {
         if (!json.equal(x, y.value)) break false;
     } else true;
     if (same) return false;
-    var fresh: std.ArrayList(*Message) = .empty;
-    defer fresh.deinit(gpa);
-    errdefer for (fresh.items) |m| m.destroy(gpa);
-    for (items) |m| {
-        const copy = try Message.fromValue(gpa, m);
-        fresh.append(gpa, copy) catch |err| {
-            copy.destroy(gpa);
-            return err;
-        };
-    }
-    try a.messages.replace(fresh.items);
-    fresh.clearRetainingCapacity();
+    var fresh: History = .init(gpa);
+    errdefer fresh.deinit();
+    for (items) |m| try fresh.append(try Message.fromValue(gpa, m));
+    a.messages.deinit();
+    a.messages = fresh;
     return true;
 }
 
@@ -260,10 +220,10 @@ pub fn compact(a: *Agent, strategy: []const u8, message: ?[]const u8) !bool {
     if (std.mem.eql(u8, strategy, "mask")) {
         changed = try mask(a) > 0;
     } else if (std.mem.eql(u8, strategy, "summarize")) {
-        changed = (try summarize(a)) orelse false;
+        changed = try summarize(a);
     } else if (std.mem.eql(u8, strategy, "hybrid")) {
         changed = try mask(a) > 0;
-        if (currentTokens(a) > limit(a) and ((try summarize(a)) orelse false)) changed = true;
+        if (currentTokens(a) > limit(a) and try summarize(a)) changed = true;
     } else if (std.mem.eql(u8, strategy, "restart")) {
         try restart(a, message);
         changed = true;

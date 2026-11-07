@@ -22,9 +22,11 @@ const root = ".arx/sessions";
 
 /// An open session.
 pub const Session = struct {
-    id: []u8,
+    /// Holds `id` and `dir`.
+    arena: std.heap.ArenaAllocator,
+    id: []const u8,
     /// Absolute, because tools may cd elsewhere.
-    dir: []u8,
+    dir: []const u8,
     transcript: sys.fd_t = -1,
     inbox_offset: u64 = 0,
     /// The number of the last tool-NNNN.out.
@@ -37,51 +39,57 @@ pub const Session = struct {
     /// Creates a new session folder. A top-level session (depth 0) also
     /// becomes `last`.
     pub fn create(ctx: *const Context, depth: i64) !Session {
-        const gpa = ctx.gpa;
         const io = ctx.io;
+        var s: Session = .{ .arena = .init(ctx.gpa), .id = "", .dir = "" };
+        errdefer s.arena.deinit();
+        const a = s.arena.allocator();
         const t = sys.localTime(@divFloor(util.unixMillis(io), 1000));
         // Microseconds overflow 32 bits; keep the low bits on purpose.
         const micros: u64 = @intFromFloat(util.now(io) * 1e6);
         const r: u32 = @as(u32, @bitCast(sys.getpid())) *% 2654435761 ^ @as(u32, @truncate(micros));
-        const id = try gpa.print("{d:0>4}{d:0>2}{d:0>2}-{d:0>2}{d:0>2}{d:0>2}-{x:0>4}", .{
-            t.year, t.month, t.day, t.hour, t.minute, t.second, r & 0xffff,
-        });
-        errdefer gpa.free(id);
-        const rel = try std.mem.concat(gpa, u8, &.{ root, "/", id });
-        defer gpa.free(rel);
-        try util.makeDirs(io, rel);
-        const dir = (try util.realPath(io, gpa, rel)) orelse return error.FileNotFound;
-        errdefer gpa.free(dir);
-        var s: Session = .{ .id = id, .dir = dir };
-        s.transcript = try openTranscript(gpa, dir);
-        if (depth == 0) linkLast(ctx, id);
+        s.id = try a.print("{d:0>4}{d:0>2}{d:0>2}-{d:0>2}{d:0>2}{d:0>2}-{x:0>4}", .{ t.year, t.month, t.day, t.hour, t.minute, t.second, r & 0xffff });
+        const rel = try std.mem.concat(a, u8, &.{ root, "/", s.id });
+        try Dir.cwd().createDirPath(io, rel);
+        s.dir = (try util.realPath(io, a, rel)) orelse return error.FileNotFound;
+        s.transcript = try sys.openAppend(try std.mem.concat(a, u8, &.{ s.dir, "/transcript.jsonl" }));
+        if (depth == 0) linkLast(ctx, s.id);
         return s;
     }
 
     /// Reopens a session (`ref` is an id, "last" or a folder) and rebuilds
     /// its history into `messages`, which must be empty.
     pub fn open(ctx: *const Context, ref: []const u8, messages: *History) !Session {
-        const gpa = ctx.gpa;
-        const dir = (try sessionDir(ctx, gpa, ref)) orelse return error.FileNotFound;
-        errdefer gpa.free(dir);
-        const id = try gpa.dupe(u8, util.baseName(dir));
-        errdefer gpa.free(id);
-        var s: Session = .{ .id = id, .dir = dir };
-        try loadTranscript(ctx, dir, messages);
-        try s.loadMeta(ctx);
+        var s: Session = .{ .arena = .init(ctx.gpa), .id = "", .dir = "" };
+        errdefer s.arena.deinit();
+        const a = s.arena.allocator();
+        s.dir = (try sessionDir(ctx, a, ref)) orelse return error.FileNotFound;
+        s.id = util.baseName(s.dir);
+        var scratch: std.heap.ArenaAllocator = .init(ctx.gpa);
+        defer scratch.deinit();
+        const t = scratch.allocator();
+        // Replay the transcript; a {"_reset":true} line starts the history over.
+        const transcript = try std.mem.concat(a, u8, &.{ s.dir, "/transcript.jsonl" });
+        var lines = std.mem.splitScalar(u8, (try util.readFile(ctx.io, t, transcript)) orelse "", '\n');
+        while (lines.next()) |line| {
+            const value = try json.parseObject(t, line) orelse continue;
+            if (json.boolean(value, "_reset", false)) messages.clear() else try messages.append(try Message.fromValue(ctx.gpa, value));
+        }
+        const meta = try json.parseObject(t, (try util.readFile(ctx.io, t, try std.mem.concat(t, u8, &.{ s.dir, "/meta.json" }))) orelse "");
+        s.turns = json.int(meta, "turns", 0);
+        s.tool_seq = @intCast(std.math.clamp(json.int(meta, "tool_seq", 0), 0, std.math.maxInt(u32)));
+        s.tokens_in = json.int(meta, "tokens_in", 0);
+        s.tokens_out = json.int(meta, "tokens_out", 0);
+        s.cost = json.num(meta, "cost", 0);
         // Commands sent while the session was stopped are stale: skip them.
-        const inbox = try std.mem.concat(gpa, u8, &.{ dir, "/inbox" });
-        defer gpa.free(inbox);
-        s.inbox_offset = if (util.stat(ctx.io, inbox)) |info| @intCast(info.size) else 0;
-        s.transcript = try openTranscript(gpa, dir);
+        s.inbox_offset = if (util.stat(ctx.io, try std.mem.concat(t, u8, &.{ s.dir, "/inbox" }))) |info| @intCast(info.size) else 0;
+        s.transcript = try sys.openAppend(transcript);
         return s;
     }
 
     /// Closes the transcript and frees the strings.
-    pub fn close(s: *Session, gpa: Allocator) void {
+    pub fn close(s: *Session) void {
         if (s.transcript >= 0) sys.close(s.transcript);
-        gpa.free(s.id);
-        gpa.free(s.dir);
+        s.arena.deinit();
         s.* = undefined;
     }
 
@@ -89,11 +97,10 @@ pub const Session = struct {
     /// at most the current turn.
     pub fn append(s: *Session, gpa: Allocator, message: json.Value) Allocator.Error!void {
         if (s.transcript < 0) return;
-        var out: std.Io.Writer.Allocating = .init(gpa);
-        defer out.deinit();
-        json.write(&out.writer, message, .compact) catch return error.OutOfMemory;
-        out.writer.writeByte('\n') catch return error.OutOfMemory;
-        sys.writeAll(s.transcript, out.written()) catch {};
+        const line = try json.stringify(gpa, message);
+        defer gpa.free(line);
+        sys.writeAll(s.transcript, line) catch {};
+        sys.writeAll(s.transcript, "\n") catch {};
     }
 
     /// Records that the history was replaced (compaction, a new system
@@ -142,29 +149,7 @@ pub const Session = struct {
         s.tool_seq += 1;
         return gpa.print("{s}/tool-{d:0>4}.out", .{ s.dir, s.tool_seq });
     }
-
-    /// Restores the counters from meta.json.
-    fn loadMeta(s: *Session, ctx: *const Context) Allocator.Error!void {
-        var arena: std.heap.ArenaAllocator = .init(ctx.gpa);
-        defer arena.deinit();
-        const a = arena.allocator();
-        const path = try std.mem.concat(a, u8, &.{ s.dir, "/meta.json" });
-        const text = (try util.readFile(ctx.io, a, path)) orelse return;
-        const meta = try json.parseObject(a, text);
-        s.turns = json.int(meta, "turns", 0);
-        s.tool_seq = @intCast(std.math.clamp(json.int(meta, "tool_seq", 0), 0, std.math.maxInt(u32)));
-        s.tokens_in = json.int(meta, "tokens_in", 0);
-        s.tokens_out = json.int(meta, "tokens_out", 0);
-        s.cost = json.num(meta, "cost", 0);
-    }
 };
-
-/// Opens dir/transcript.jsonl for appending.
-fn openTranscript(gpa: Allocator, dir: []const u8) !sys.fd_t {
-    const path = try std.mem.concat(gpa, u8, &.{ dir, "/transcript.jsonl" });
-    defer gpa.free(path);
-    return sys.openAppend(path);
-}
 
 /// Points .arx/sessions/last at `id`, atomically.
 fn linkLast(ctx: *const Context, id: []const u8) void {
@@ -177,40 +162,9 @@ fn linkLast(ctx: *const Context, id: []const u8) void {
 }
 
 /// The absolute folder for an id, "last" or a path, or null when there is
-/// no such session. Caller owns the result.
-pub fn sessionDir(ctx: *const Context, gpa: Allocator, ref: []const u8) Allocator.Error!?[]u8 {
-    const dir = if (std.mem.findScalar(u8, ref, '/') != null)
-        try gpa.dupe(u8, ref)
-    else
-        try std.mem.concat(gpa, u8, &.{ root, "/", ref });
-    defer gpa.free(dir);
+/// no such session. Allocated in `a`.
+pub fn sessionDir(ctx: *const Context, a: Allocator, ref: []const u8) Allocator.Error!?[]u8 {
+    const dir = if (std.mem.findScalar(u8, ref, '/') != null) ref else try std.mem.concat(a, u8, &.{ root, "/", ref });
     const info = util.stat(ctx.io, dir) orelse return null;
-    if (info.kind != .directory) return null;
-    return util.realPath(ctx.io, gpa, dir);
-}
-
-/// Replays transcript lines; a {"_reset":true} line starts the history over.
-fn loadTranscript(ctx: *const Context, dir: []const u8, messages: *History) Allocator.Error!void {
-    const gpa = ctx.gpa;
-    const path = try std.mem.concat(gpa, u8, &.{ dir, "/transcript.jsonl" });
-    defer gpa.free(path);
-    const text = (try util.readFile(ctx.io, gpa, path)) orelse return;
-    defer gpa.free(text);
-    var lines = std.mem.splitScalar(u8, text, '\n');
-    while (lines.next()) |line| {
-        if (line.len == 0) continue;
-        const m = try Message.create(gpa);
-        const value = json.parse(m.allocator(), line) catch |err| {
-            m.destroy(gpa);
-            if (err == error.OutOfMemory) return error.OutOfMemory;
-            continue;
-        };
-        if (json.boolean(value, "_reset", false)) {
-            m.destroy(gpa);
-            messages.clear();
-            continue;
-        }
-        m.value = value;
-        try messages.append(m);
-    }
+    return if (info.kind == .directory) util.realPath(ctx.io, a, dir) else null;
 }

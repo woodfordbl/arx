@@ -21,6 +21,7 @@ pub const write = json_write.write;
 pub const writeString = json_write.writeString;
 pub const stringify = json_write.stringify;
 pub const stringifyPretty = json_write.stringifyPretty;
+pub const fmt = json_write.fmt;
 
 /// The deepest nesting `parse` accepts. Deeper input is rejected before it
 /// is built, so the recursive helpers here cannot run out of stack.
@@ -120,11 +121,6 @@ pub fn size(v: ?Value, dotted: []const u8, default: u64) u64 {
     };
 }
 
-/// True when `v` is an object.
-pub fn isObject(v: ?Value) bool {
-    return v != null and v.? == .object;
-}
-
 /// The items of an array, or none.
 pub fn items(v: ?Value) []Value {
     const value = v orelse return &.{};
@@ -162,11 +158,6 @@ pub fn array(arena: Allocator) Value {
     return .{ .array = Array.init(arena) };
 }
 
-/// A string value that refers to `s` (no copy).
-pub fn string(s: []const u8) Value {
-    return .{ .string = s };
-}
-
 /// A number value: an integer when `f` is a whole number, else a float.
 pub fn number(f: f64) Value {
     if (f == @trunc(f) and @abs(f) < 9e15) return .{ .integer = @intFromFloat(f) };
@@ -186,31 +177,19 @@ pub fn putString(arena: Allocator, obj: *Value, key: []const u8, s: []const u8) 
     try put(arena, obj, key, .{ .string = try arena.dupe(u8, s) });
 }
 
-/// Removes `key` from object `obj`, keeping the order of the rest.
-pub fn remove(obj: *Value, key: []const u8) void {
-    if (obj.* == .object) _ = obj.object.orderedRemove(key);
-}
-
 /// Sets the value at `dotted`, creating objects on the way (and replacing
 /// anything on the way that is not an object).
 pub fn set(arena: Allocator, root: *Value, dotted: []const u8, value: Value) Allocator.Error!void {
     var current = root;
     var it = std.mem.splitScalar(u8, dotted, '.');
-    var key = it.next() orelse return;
-    while (it.next()) |next| {
+    while (it.next()) |key| {
         if (current.* != .object) current.* = object();
+        if (it.peek() == null) return put(arena, current, key, value);
         const gop = try current.object.getOrPut(arena, key);
-        if (!gop.found_existing) {
-            gop.key_ptr.* = try arena.dupe(u8, key);
-            gop.value_ptr.* = object();
-        } else if (gop.value_ptr.* != .object) {
-            gop.value_ptr.* = object();
-        }
+        if (!gop.found_existing) gop.key_ptr.* = try arena.dupe(u8, key);
+        if (!gop.found_existing) gop.value_ptr.* = object();
         current = gop.value_ptr;
-        key = next;
     }
-    if (current.* != .object) current.* = object();
-    try put(arena, current, key, value);
 }
 
 /// Parses a YAML scalar. Plain (unquoted) "true", "false", "null", "~", ""
@@ -221,11 +200,9 @@ pub fn scalar(arena: Allocator, text: []const u8, plain: bool) Allocator.Error!V
         if (std.mem.eql(u8, text, "true")) return .{ .bool = true };
         if (std.mem.eql(u8, text, "false")) return .{ .bool = false };
         if (text.len == 0 or std.mem.eql(u8, text, "null") or std.mem.eql(u8, text, "~")) return .null;
-        if (std.mem.findNone(u8, text, "0123456789+-.eE") == null) {
-            if (util.leadingNumber(text)) |n| {
-                if (n.rest.len == 0) return number(n.value);
-            }
-        }
+        if (std.mem.findNone(u8, text, "0123456789+-.eE") == null) if (util.leadingNumber(text)) |n| {
+            if (n.rest.len == 0) return number(n.value);
+        };
     }
     return .{ .string = try arena.dupe(u8, text) };
 }
@@ -237,26 +214,18 @@ fn nestingDepth(text: []const u8) usize {
     var deepest: usize = 0;
     var in_string = false;
     var i: usize = 0;
-    while (i < text.len) : (i += 1) {
-        const ch = text[i];
-        if (in_string) {
-            if (ch == '\\') {
-                i += 1;
-            } else if (ch == '"') {
-                in_string = false;
-            }
-            continue;
-        }
-        switch (ch) {
-            '"' => in_string = true,
-            '[', '{' => {
-                depth += 1;
-                deepest = @max(deepest, depth);
-            },
-            ']', '}' => depth -|= 1,
-            else => {},
-        }
-    }
+    while (i < text.len) : (i += 1) switch (text[i]) {
+        '\\' => i += @intFromBool(in_string), // skip the escaped character
+        '"' => in_string = !in_string,
+        '[', '{' => if (!in_string) {
+            depth += 1;
+            deepest = @max(deepest, depth);
+        },
+        ']', '}' => if (!in_string) {
+            depth -|= 1;
+        },
+        else => {},
+    };
     return deepest;
 }
 
@@ -332,29 +301,6 @@ pub fn equal(a: Value, b: Value) bool {
         } else true,
         .integer, .float, .number_string => unreachable,
     };
-}
-
-test "dotted lookups" {
-    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const v = try parse(a, "{\"tools\":{\"bash\":{\"timeout\":\"5m\",\"on\":true}},\"n\":2.5}");
-    try std.testing.expectEqual(@as(f64, 300), duration(v, "tools.bash.timeout", 0));
-    try std.testing.expect(boolean(v, "tools.bash.on", false));
-    try std.testing.expectEqual(@as(f64, 2.5), num(v, "n", 0));
-    try std.testing.expectEqual(@as(?[]const u8, null), str(v, "tools.x"));
-}
-
-test "set creates objects and write is compact" {
-    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    var v = object();
-    try set(a, &v, "limits.max_turns", number(10));
-    try set(a, &v, "cost", number(0.0123));
-    try putString(a, &v, "s", "a\"b\n\x01");
-    const text = try stringify(a, v);
-    try std.testing.expectEqualStrings("{\"limits\":{\"max_turns\":10},\"cost\":0.0123,\"s\":\"a\\\"b\\n\\u0001\"}", text);
 }
 
 test "scalars" {

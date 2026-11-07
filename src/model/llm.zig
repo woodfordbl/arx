@@ -91,44 +91,6 @@ const BodyWriter = struct {
     }
 };
 
-/// One attempt's results.
-const Attempt = struct {
-    run: proc.Result,
-    curl_err: *const proc.Collector,
-    headers: auth.ResponseHeaders,
-};
-
-/// One request: runs curl and parses the streamed reply into `stream`.
-fn attempt(a: *Agent, body: []const u8, timeout: f64, stream: *Stream, curl_err: *proc.Collector) !Attempt {
-    const ctx = a.ctx;
-    const gpa = ctx.gpa;
-    const root = a.spec.root;
-    const dir = a.session.?.dir;
-    var arena: std.heap.ArenaAllocator = .init(gpa);
-    defer arena.deinit();
-    const t = arena.allocator();
-    const url = try auth.endpointUrl(t, root, "/chat/completions");
-    const headers = try auth.writeRequestHeaders(ctx, &a.auth, root, dir, true);
-    defer gpa.free(headers);
-    defer std.Io.Dir.cwd().deleteFile(ctx.io, headers) catch {};
-    const response = try std.mem.concat(t, u8, &.{ dir, "/.response-headers" });
-    defer std.Io.Dir.cwd().deleteFile(ctx.io, response) catch {};
-    std.Io.Dir.cwd().deleteFile(ctx.io, response) catch {};
-    const r = proc.run(ctx, .{
-        .argv = &.{
-            auth.curlPath(ctx, root),          "-sS",           "-N",     "--max-time",
-            try t.print("{d:.0}", .{timeout}), "-D",            response, "-H",
-            try t.print("@{s}", .{headers}),   "--data-binary", "@-",     url,
-        },
-        .stdin = body,
-        .timeout = timeout + 30,
-        .stdout = stream.sink(),
-        .stderr = curl_err.sink(),
-    });
-    try stream.end();
-    return .{ .run = r, .curl_err = curl_err, .headers = try auth.readResponseHeaders(ctx, response) };
-}
-
 /// curl exit codes worth retrying: DNS, connect, timeouts, dropped
 /// connections and TLS handshakes.
 fn retryableCurl(code: u8) bool {
@@ -147,42 +109,29 @@ fn looksLikeContext(message: []const u8) bool {
 }
 
 /// Decides what to do with an attempt; writes the reason to `why`.
-fn classify(gpa: Allocator, at: *const Attempt, stream: *Stream, why: *std.ArrayList(u8)) Allocator.Error!Outcome {
-    const r = at.run;
+fn classify(t: Allocator, r: proc.Result, curl_err: []const u8, status: u32, stream: *Stream, why: *std.ArrayList(u8)) Allocator.Error!Outcome {
     if (r.interrupted) return .interrupted;
     if (r.spawn_error) |err| {
-        try why.print(gpa, "cannot run curl: {s}", .{proc.describeSpawnError(err)});
+        try why.print(t, "cannot run curl: {s}", .{util.describeError(err)});
         return .fatal;
     }
     if (r.code != 0) {
-        try why.print(gpa, "curl exit {d}: {s}", .{ r.code, std.mem.trimEnd(u8, at.curl_err.output(), "\n") });
+        try why.print(t, "curl exit {d}: {s}", .{ r.code, std.mem.trimEnd(u8, curl_err, "\n") });
         return if (retryableCurl(r.code)) .retry else .fatal;
     }
-    const status = at.headers.status;
     if (status == 200 or (status == 0 and stream.chunks > 0)) {
-        if (stream.stream_error) |e| {
-            try why.print(gpa, "error in the stream: {s}", .{e});
-            return .retry;
-        }
-        if (stream.complete()) return .ok;
-        try why.appendSlice(gpa, "the stream ended before the reply finished");
+        if (stream.stream_error) |e| try why.print(t, "error in the stream: {s}", .{e}) else if (stream.complete()) return .ok;
+        if (why.items.len == 0) try why.appendSlice(t, "the stream ended before the reply finished");
         return .retry;
     }
-    const message = try stream.errorText(gpa);
-    defer gpa.free(message);
-    try why.print(gpa, "HTTP {d}: {s}", .{ status, message });
+    const message = try stream.errorText(t);
+    try why.print(t, "HTTP {d}: {s}", .{ status, message });
     return switch (status) {
         401, 403 => .auth,
         429, 408, 409, 425 => .retry,
         400, 413, 422 => if (looksLikeContext(message)) .context else .fatal,
         else => if (status >= 500) .retry else .fatal,
     };
-}
-
-/// Cost from the spec's per-million-token prices.
-fn priceCost(root: json.Value, in: i64, out: i64) f64 {
-    return json.num(root, "prices.input", 0) * @as(f64, @floatFromInt(in)) / 1e6 +
-        json.num(root, "prices.output", 0) * @as(f64, @floatFromInt(out)) / 1e6;
 }
 
 /// Exponential backoff, or Retry-After when the server sent one.
@@ -205,62 +154,73 @@ fn retryWait(root: json.Value, n: usize, retry_after: ?f64) f64 {
 /// errors with backoff (honoring Retry-After), sending a model.retry event
 /// each time. On failure, appends the reason to `why`.
 pub fn chat(a: *Agent, messages: *const History, tools_json: ?[]const u8, show: bool, why: *std.ArrayList(u8)) !Result {
-    const gpa = a.ctx.gpa;
+    const ctx = a.ctx;
+    const gpa = ctx.gpa;
     const root = a.spec.root;
-    const max_attempts = json.int(root, "endpoint.retry_attempts", 0);
+    const dir = a.session.?.dir;
+    const cwd = std.Io.Dir.cwd();
     var timeout = json.duration(root, "limits.turn_timeout", 600);
-    if (a.caps.wall > 0) {
-        const left = a.caps.wall - (util.now(a.ctx.io) - a.start);
-        if (left < timeout) timeout = @max(left, 1);
-    }
+    if (a.caps.wall > 0) timeout = @max(@min(timeout, a.caps.wall - (util.now(ctx.io) - a.start)), 1);
     const body = try requestBody(gpa, root, messages, tools_json);
     defer gpa.free(body);
     var n: usize = 1;
     while (true) : (n += 1) {
+        var arena: std.heap.ArenaAllocator = .init(gpa);
+        defer arena.deinit();
+        const t = arena.allocator();
         var stream: Stream = .init(gpa, if (show) &a.events else null);
         defer stream.deinit();
-        var curl_err: proc.Collector = .init(gpa);
-        defer curl_err.deinit();
+        var curl_err: proc.Collector = .init(t);
+        const headers = try auth.writeRequestHeaders(ctx, t, &a.auth, root, dir, true);
+        defer cwd.deleteFile(ctx.io, headers) catch {};
+        const response = try std.mem.concat(t, u8, &.{ dir, "/.response-headers" });
+        cwd.deleteFile(ctx.io, response) catch {};
+        defer cwd.deleteFile(ctx.io, response) catch {};
+        const r = try proc.run(ctx, .{
+            .argv = &.{
+                auth.curlPath(ctx, root),          "-sS",           "-N",     "--max-time",
+                try t.print("{d:.0}", .{timeout}), "-D",            response, "-H",
+                try t.print("@{s}", .{headers}),   "--data-binary", "@-",     try auth.endpointUrl(t, root, "/chat/completions"),
+            },
+            .stdin = body,
+            .timeout = timeout + 30,
+            .stdout = stream.sink(),
+            .stderr = curl_err.sink(),
+        });
+        try stream.end();
+        const response_headers = try auth.readResponseHeaders(ctx, response);
         var reason: std.ArrayList(u8) = .empty;
-        defer reason.deinit(gpa);
-        const at = try attempt(a, body, timeout, &stream, &curl_err);
-        switch (try classify(gpa, &at, &stream, &reason)) {
+        switch (try classify(t, r, curl_err.output(), response_headers.status, &stream, &reason)) {
             .ok => return .{ .ok = .{
                 .message = try stream.message(gpa, a.turns()),
                 .tokens_in = stream.tokens_in,
                 .tokens_out = stream.tokens_out,
-                .cost = stream.cost orelse priceCost(root, stream.tokens_in, stream.tokens_out),
+                .cost = stream.cost orelse (json.num(root, "prices.input", 0) * @as(f64, @floatFromInt(stream.tokens_in)) +
+                    json.num(root, "prices.output", 0) * @as(f64, @floatFromInt(stream.tokens_out))) / 1e6,
             } },
+            .interrupted => return .interrupted,
             .retry => {
+                const max_attempts = json.int(root, "endpoint.retry_attempts", 0);
                 if (max_attempts > 0 and n >= max_attempts) {
                     try why.print(gpa, "gave up after {d} attempts: {s}", .{ n, reason.items });
                     return .fatal;
                 }
-                const wait = retryWait(root, n, at.headers.retry_after);
+                const wait = retryWait(root, n, response_headers.retry_after);
                 var event = try a.events.begin("model.retry");
                 defer event.deinit();
                 try event.int("attempt", @intCast(n));
-                try event.int("status", at.headers.status);
-                try event.int("curl_exit", at.run.code);
+                try event.int("status", response_headers.status);
+                try event.int("curl_exit", r.code);
                 try event.num("wait_s", wait);
                 try event.truncated("error", reason.items, 300);
                 try a.events.send(&event);
-                util.sleepSeconds(a.ctx.io, wait);
+                util.sleepSeconds(ctx.io, wait);
                 if (sys.isInterrupted()) return .interrupted;
             },
-            .auth => {
+            inline .auth, .context, .fatal => |outcome| {
                 try why.appendSlice(gpa, reason.items);
-                return .auth;
+                return @field(Result, @tagName(outcome));
             },
-            .context => {
-                try why.appendSlice(gpa, reason.items);
-                return .context;
-            },
-            .fatal => {
-                try why.appendSlice(gpa, reason.items);
-                return .fatal;
-            },
-            .interrupted => return .interrupted,
         }
     }
 }

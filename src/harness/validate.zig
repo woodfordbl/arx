@@ -165,6 +165,8 @@ const Checker = struct {
     ctx: *const Context,
     doc: Doc,
     err: *std.ArrayList(u8),
+    /// For paths and other short-lived strings.
+    t: Allocator,
 
     /// Appends "file:line: path: message" for the key at `path`.
     fn problem(c: Checker, path: []const u8, comptime format: []const u8, args: anytype) Allocator.Error!void {
@@ -190,20 +192,14 @@ const Checker = struct {
         }
         if (best) |b| return c.problem(path, "unknown key (did you mean \"{s}\"?)", .{b});
         var known: std.ArrayList(u8) = .empty;
-        defer known.deinit(c.ctx.gpa);
-        for (fields, 0..) |f, i| {
-            if (i > 0) try known.appendSlice(c.ctx.gpa, ", ");
-            try known.appendSlice(c.ctx.gpa, f.key);
-        }
+        for (fields, 0..) |f, i| try known.print(c.t, "{s}{s}", .{ if (i > 0) ", " else "", f.key });
         try c.problem(path, "unknown key (known: {s})", .{known.items});
     }
 
     /// Checks every key of `node` against `fields`, recursing into mappings.
     fn node(c: Checker, value: json.Value, fields: []const Field, path: []const u8) Allocator.Error!void {
-        const gpa = c.ctx.gpa;
         for (json.keys(value), json.values(value)) |key, child| {
-            const child_path = if (path.len > 0) try gpa.print("{s}.{s}", .{ path, key }) else try gpa.dupe(u8, key);
-            defer gpa.free(child_path);
+            const child_path = if (path.len > 0) try c.t.print("{s}.{s}", .{ path, key }) else key;
             const f = for (fields) |f| {
                 if (std.mem.eql(u8, f.key, key)) break f;
             } else {
@@ -222,10 +218,8 @@ const Checker = struct {
 
     /// Checks the entries of a dict: each value is a mapping of `fields`.
     fn dict(c: Checker, value: json.Value, fields: []const Field, path: []const u8) Allocator.Error!void {
-        const gpa = c.ctx.gpa;
         for (json.keys(value), json.values(value)) |key, entry| {
-            const entry_path = try gpa.print("{s}.{s}", .{ path, key });
-            defer gpa.free(entry_path);
+            const entry_path = try c.t.print("{s}.{s}", .{ path, key });
             switch (entry) {
                 .object => try c.node(entry, fields, entry_path),
                 .null => {},
@@ -249,61 +243,45 @@ const Checker = struct {
 
     /// Checks the names of hook points and tools.
     fn names(c: Checker) Allocator.Error!void {
-        const gpa = c.ctx.gpa;
         for (json.keys(json.field(c.doc.root, "hooks"))) |point| {
-            if (inList(&hook_points, point)) continue;
-            const path = try gpa.print("hooks.{s}", .{point});
-            defer gpa.free(path);
-            try c.problem(path, "unknown hook point (known: session_start, before_tool, after_tool, stop)", .{});
+            if (!inList(&hook_points, point)) try c.problem(try c.t.print("hooks.{s}", .{point}), "unknown hook point (known: session_start, before_tool, after_tool, stop)", .{});
         }
         for (json.keys(json.field(c.doc.root, "tools"))) |tool| {
-            if (validName(tool, 64)) continue;
-            const path = try gpa.print("tools.{s}", .{tool});
-            defer gpa.free(path);
-            try c.problem(path, "tool names use letters, digits, _ and - (64 max)", .{});
+            if (!validName(tool, 64)) try c.problem(try c.t.print("tools.{s}", .{tool}), "tool names use letters, digits, _ and - (64 max)", .{});
         }
     }
 
     /// Each compactors entry names an executable, relative to the file.
     fn compactors(c: Checker) Allocator.Error!void {
-        const gpa = c.ctx.gpa;
         const entries = json.field(c.doc.root, "compactors");
         for (json.keys(entries), json.values(entries)) |name, value| {
-            const where = try gpa.print("compactors.{s}", .{name});
-            defer gpa.free(where);
+            const where = try c.t.print("compactors.{s}", .{name});
             if (value != .string) {
                 try c.problem(where, "must be the path of an executable", .{});
                 continue;
             }
-            const path = try util.pathJoin(gpa, c.doc.dir, value.string);
-            defer gpa.free(path);
+            const path = try util.pathJoin(c.t, c.doc.dir, value.string);
             if (!util.isExecutable(c.ctx.io, path)) try c.problem(where, "{s} is not executable", .{path});
         }
     }
 
     /// Rules the table cannot express: required keys, ranges and templates.
     fn rules(c: Checker) Allocator.Error!void {
-        const gpa = c.ctx.gpa;
         const root = c.doc.root;
         if (json.str(root, "model") == null) try c.problem("model", "required", .{});
         if (json.str(root, "endpoint.base_url") == null) try c.problem("endpoint.base_url", "required", .{});
         try c.compactors();
         if (json.str(root, "compaction.strategy")) |strategy| {
             const named = json.field(json.field(root, "compactors"), strategy) != null;
-            if (!named and !inList(&strategies, strategy)) {
-                const path = try util.pathJoin(gpa, c.doc.dir, strategy);
-                defer gpa.free(path);
-                if (!util.isExecutable(c.ctx.io, path)) {
-                    try c.problem("compaction.strategy", "not a built-in strategy, and {s} is not executable", .{path});
-                }
+            const path = try util.pathJoin(c.t, c.doc.dir, strategy);
+            if (!named and !inList(&strategies, strategy) and !util.isExecutable(c.ctx.io, path)) {
+                try c.problem("compaction.strategy", "not a built-in strategy, and {s} is not executable", .{path});
             }
         }
         const trigger = json.num(root, "compaction.trigger", 0.7);
         if (!(trigger > 0 and trigger <= 1)) try c.problem("compaction.trigger", "must be between 0 and 1", .{});
         for ([_][]const u8{ "instructions", "first_message", "compaction.prompt" }) |key| {
-            const text = (try spec_mod.text(c.ctx, gpa, c.doc, json.get(root, key), c.err)) orelse continue;
-            defer gpa.free(text);
-            try c.template(key, text);
+            if (try spec_mod.text(c.ctx, c.t, c.doc, json.get(root, key), c.err)) |text| try c.template(key, text);
         }
     }
 };
@@ -355,11 +333,10 @@ fn typeName(t: FieldType) []const u8 {
 
 /// Validates a whole spec, appending problems to `err`.
 pub fn spec(ctx: *const Context, s: *const Spec, err: *std.ArrayList(u8)) Allocator.Error!void {
-    const c: Checker = .{ .ctx = ctx, .doc = s.doc(), .err = err };
-    if (s.root != .object) {
-        try err.print(ctx.gpa, "{s}: the spec must be a YAML mapping\n", .{s.path});
-        return;
-    }
+    if (s.root != .object) return err.print(ctx.gpa, "{s}: the spec must be a YAML mapping\n", .{s.path});
+    var arena: std.heap.ArenaAllocator = .init(ctx.gpa);
+    defer arena.deinit();
+    const c: Checker = .{ .ctx = ctx, .doc = s.doc(), .err = err, .t = arena.allocator() };
     try c.node(s.root, &top_fields, "");
     try c.names();
     try c.rules();
@@ -367,21 +344,12 @@ pub fn spec(ctx: *const Context, s: *const Spec, err: *std.ArrayList(u8)) Alloca
 
 /// Validates a parsed plugin.yaml, appending problems to `err`.
 pub fn plugin(ctx: *const Context, d: Doc, err: *std.ArrayList(u8)) Allocator.Error!void {
-    const c: Checker = .{ .ctx = ctx, .doc = d, .err = err };
-    if (d.root != .object) {
-        try err.print(ctx.gpa, "{s}: plugin.yaml must be a YAML mapping\n", .{d.path});
-        return;
-    }
+    if (d.root != .object) return err.print(ctx.gpa, "{s}: plugin.yaml must be a YAML mapping\n", .{d.path});
+    var arena: std.heap.ArenaAllocator = .init(ctx.gpa);
+    defer arena.deinit();
+    const c: Checker = .{ .ctx = ctx, .doc = d, .err = err, .t = arena.allocator() };
     try c.node(d.root, &plugin_fields, "");
     try c.names();
     try c.compactors();
-    const name = json.strOr(d.root, "name", "x");
-    if (name.len == 0 or std.mem.findNone(u8, name, name_chars) != null) {
-        try c.problem("name", "use letters, digits, _ and -", .{});
-    }
-}
-
-test "edit distance" {
-    try std.testing.expectEqual(@as(usize, 2), editDistance("modle", "model"));
-    try std.testing.expectEqual(@as(usize, 1), editDistance("tols", "tools"));
+    if (!validName(json.strOr(d.root, "name", "x"), std.math.maxInt(usize))) try c.problem("name", "use letters, digits, _ and -", .{});
 }

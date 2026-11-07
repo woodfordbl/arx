@@ -37,7 +37,7 @@ pub fn load(ctx: *const Context, spec: *Spec) Allocator.Error!void {
     });
     try loader.loadAll(try util.pathJoin(a, spec.dir, "plugins"));
     const config = try util.configDir(ctx, a);
-    if (!try sameDir(ctx, spec.dir, config)) {
+    if (!try sameDir(ctx, a, spec.dir, config)) {
         // A `plugins:` list makes the harness exact: the spec folder and the
         // plugins it names, without loose files in the config folder.
         if (json.field(spec.root, "plugins") == null or json.field(spec.root, "plugins").? != .array) {
@@ -50,13 +50,10 @@ pub fn load(ctx: *const Context, spec: *Spec) Allocator.Error!void {
 }
 
 /// True when `a` and `b` are the same folder.
-fn sameDir(ctx: *const Context, a: []const u8, b: []const u8) Allocator.Error!bool {
-    const ra = try util.realPath(ctx.io, ctx.gpa, a);
-    defer if (ra) |p| ctx.gpa.free(p);
-    const rb = try util.realPath(ctx.io, ctx.gpa, b);
-    defer if (rb) |p| ctx.gpa.free(p);
-    if (ra != null and rb != null) return std.mem.eql(u8, ra.?, rb.?);
-    return std.mem.eql(u8, a, b);
+fn sameDir(ctx: *const Context, arena: Allocator, a: []const u8, b: []const u8) Allocator.Error!bool {
+    const ra = try util.realPath(ctx.io, arena, a) orelse a;
+    const rb = try util.realPath(ctx.io, arena, b) orelse b;
+    return std.mem.eql(u8, ra, rb);
 }
 
 const Loader = struct {
@@ -89,16 +86,10 @@ const Loader = struct {
     /// Loads every plugin folder in `parent`, in name order. Folders without
     /// a plugin.yaml are not plugins and are passed over.
     fn loadAll(l: *Loader, parent: []const u8) Allocator.Error!void {
-        const gpa = l.ctx.gpa;
-        const names = try util.listNames(l.ctx.io, gpa, parent);
-        defer util.freeNames(gpa, names);
-        for (names) |name| {
+        for (try util.listNames(l.ctx.io, l.arena, parent)) |name| {
             const dir = try std.mem.concat(l.arena, u8, &.{ parent, "/", name });
-            const yaml_path = try std.mem.concat(gpa, u8, &.{ dir, "/plugin.yaml" });
-            defer gpa.free(yaml_path);
-            if (util.exists(l.ctx.io, yaml_path) and l.allowed(name) and !l.have(name)) {
-                try l.loadOne(dir, try l.arena.dupe(u8, name));
-            }
+            const yaml_path = try std.mem.concat(l.arena, u8, &.{ dir, "/plugin.yaml" });
+            if (util.isReadable(l.ctx.io, yaml_path) and l.allowed(name) and !l.have(name)) try l.loadOne(dir, name);
         }
     }
 
@@ -140,18 +131,12 @@ const Loader = struct {
             for (json.values(compactors.*)) |*path| try absolute(a, path, dir);
         }
         const mine = json.items(json.field(root, "observers"));
-        if (mine.len > 0 and json.field(l.spec.root, "observers") == null) {
-            try json.put(a, &l.spec.root, "observers", json.array(a));
-        }
-        if (json.getPtr(&l.spec.root, "observers")) |all| {
-            if (all.* == .array) {
-                for (mine) |command| {
-                    if (command != .string) continue;
-                    try all.array.append(.{ .string = try withPluginDir(a, dir, command.string) });
-                }
-            }
-        }
-        for (own_keys) |key| json.remove(&root, key);
+        if (mine.len > 0 and json.field(l.spec.root, "observers") == null) try json.put(a, &l.spec.root, "observers", json.array(a));
+        const all = json.getPtr(&l.spec.root, "observers");
+        if (all != null and all.?.* == .array) for (mine) |command| {
+            if (command == .string) try all.?.array.append(.{ .string = try withPluginDir(a, dir, command.string) });
+        };
+        for (own_keys) |key| _ = root.object.orderedRemove(key);
         var merged = plugin;
         merged.root = root;
         try spec_mod.mergeUnder(l.spec, merged);
@@ -195,11 +180,8 @@ fn versionNumber(s: []const u8) ?i64 {
 /// or null when it can. A build that is not a release ("0.1.0-4-gabc1234",
 /// or no number at all) accepts any plugin.
 fn versionProblem(a: Allocator, constraint: []const u8, version: []const u8) Allocator.Error!?[]u8 {
-    const ok = std.mem.startsWith(u8, constraint, ">=");
-    const need = if (ok) std.mem.trimStart(u8, constraint[2..], " ") else "";
-    const need_number = versionNumber(need) orelse
-        return try a.print("arx: \"{s}\" must look like \">=0.2.0\"", .{constraint});
-    if (!ok) return try a.print("arx: \"{s}\" must look like \">=0.2.0\"", .{constraint});
+    const need = if (std.mem.startsWith(u8, constraint, ">=")) versionNumber(std.mem.trimStart(u8, constraint[2..], " ")) else null;
+    const need_number = need orelse return try a.print("arx: \"{s}\" must look like \">=0.2.0\"", .{constraint});
     if (std.mem.findScalar(u8, version, '-') != null) return null;
     const have = versionNumber(version) orelse return null;
     if (have < need_number) return try a.print("needs arx {s}, and this is arx {s}", .{ constraint, version });
@@ -225,14 +207,11 @@ fn readPlugin(ctx: *const Context, arena: Allocator, dir: []const u8, err: *std.
 
 /// True when `program` is an executable on PATH, or at its path when it
 /// has a '/'.
-fn onPath(ctx: *const Context, program: []const u8) Allocator.Error!bool {
+fn onPath(ctx: *const Context, a: Allocator, program: []const u8) Allocator.Error!bool {
     if (std.mem.findScalar(u8, program, '/') != null) return util.isExecutable(ctx.io, program);
     var dirs = std.mem.splitScalar(u8, ctx.getenv("PATH") orelse "", ':');
     while (dirs.next()) |dir| {
-        if (dir.len == 0) continue;
-        const full = try std.mem.concat(ctx.gpa, u8, &.{ dir, "/", program });
-        defer ctx.gpa.free(full);
-        if (util.isExecutable(ctx.io, full)) return true;
+        if (dir.len > 0 and util.isExecutable(ctx.io, try std.mem.concat(a, u8, &.{ dir, "/", program }))) return true;
     }
     return false;
 }
@@ -244,24 +223,16 @@ fn field(gpa: Allocator, out: *std.ArrayList(u8), key: []const u8, value: []cons
     try out.append(gpa, '\n');
 }
 
-/// Appends "key=" and the entries of `dir`, space-separated. With `inner`,
-/// only entries that have `dir/<entry>/<inner>`.
-fn listField(ctx: *const Context, out: *std.ArrayList(u8), key: []const u8, dir: []const u8, inner: ?[]const u8) Allocator.Error!void {
-    const gpa = ctx.gpa;
-    const entries = try util.listNames(ctx.io, gpa, dir);
-    defer util.freeNames(gpa, entries);
+/// The entries of `dir`, space-separated. With `inner`, only entries that
+/// have `dir/<entry>/<inner>`.
+fn entries(ctx: *const Context, a: Allocator, dir: []const u8, inner: ?[]const u8) Allocator.Error![]const u8 {
     var list: std.ArrayList(u8) = .empty;
-    defer list.deinit(gpa);
-    for (entries) |entry| {
-        if (inner) |file| {
-            const path = try std.mem.concat(gpa, u8, &.{ dir, "/", entry, "/", file });
-            defer gpa.free(path);
-            if (!util.isReadable(ctx.io, path)) continue;
-        }
-        if (list.items.len > 0) try list.append(gpa, ' ');
-        try list.appendSlice(gpa, entry);
+    for (try util.listNames(ctx.io, a, dir)) |entry| {
+        if (inner) |file| if (!util.isReadable(ctx.io, try std.mem.concat(a, u8, &.{ dir, "/", entry, "/", file }))) continue;
+        if (list.items.len > 0) try list.append(a, ' ');
+        try list.appendSlice(a, entry);
     }
-    try field(gpa, out, key, list.items);
+    return list.items;
 }
 
 /// Reads and checks the plugin in `dir` without loading it, for `arx check
@@ -276,26 +247,20 @@ pub fn describe(ctx: *const Context, dir: []const u8, out: *std.ArrayList(u8), e
     const doc = (try readPlugin(ctx, a, dir, err)) orelse return false;
     const real = (try util.realPath(ctx.io, a, dir)) orelse dir;
     try field(gpa, out, "name", json.strOr(doc.root, "name", util.baseName(real)));
-    try field(gpa, out, "version", json.strOr(doc.root, "version", ""));
-    try field(gpa, out, "description", json.strOr(doc.root, "description", ""));
-    try field(gpa, out, "arx", json.strOr(doc.root, "arx", ""));
+    for ([_][]const u8{ "version", "description", "arx" }) |key| try field(gpa, out, key, json.strOr(doc.root, key, ""));
     var requires: std.ArrayList(u8) = .empty;
     var missing: std.ArrayList(u8) = .empty;
     for (json.items(json.field(doc.root, "requires"))) |item| {
         if (item != .string) continue;
-        if (requires.items.len > 0) try requires.append(a, ' ');
-        try requires.appendSlice(a, item.string);
-        if (!try onPath(ctx, item.string)) {
-            if (missing.items.len > 0) try missing.append(a, ' ');
-            try missing.appendSlice(a, item.string);
-        }
+        try requires.print(a, "{s}{s}", .{ if (requires.items.len > 0) " " else "", item.string });
+        if (!try onPath(ctx, a, item.string)) try missing.print(a, "{s}{s}", .{ if (missing.items.len > 0) " " else "", item.string });
     }
     try field(gpa, out, "requires", requires.items);
     try field(gpa, out, "missing", missing.items);
-    try listField(ctx, out, "tools", try util.pathJoin(a, dir, "tools"), null);
-    try listField(ctx, out, "hooks", try util.pathJoin(a, dir, "hooks"), null);
-    try listField(ctx, out, "skills", try util.pathJoin(a, dir, "skills"), "SKILL.md");
-    try listField(ctx, out, "commands", try util.pathJoin(a, dir, "commands"), null);
+    for ([_][]const u8{ "tools", "hooks", "skills", "commands" }) |key| {
+        const inner: ?[]const u8 = if (std.mem.eql(u8, key, "skills")) "SKILL.md" else null;
+        try field(gpa, out, key, try entries(ctx, a, try util.pathJoin(a, dir, key), inner));
+    }
     return true;
 }
 

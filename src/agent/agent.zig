@@ -118,7 +118,7 @@ pub const Agent = struct {
     /// `arx ctl stop` arrived.
     stop_requested: bool = false,
     events: Events,
-    auth: Auth = .{},
+    auth: Auth,
 
     /// An agent with no spec, session or history yet.
     pub fn init(ctx: *const Context) Agent {
@@ -127,6 +127,7 @@ pub const Agent = struct {
             .sets_arena = .init(ctx.gpa),
             .messages = .init(ctx.gpa),
             .events = .init(ctx),
+            .auth = .init(ctx.gpa),
         };
     }
 
@@ -136,11 +137,11 @@ pub const Agent = struct {
         a.tools.deinit(gpa);
         a.schemas.deinit(gpa);
         a.spec.deinit(gpa);
-        if (a.session) |*s| s.close(gpa);
+        if (a.session) |*s| s.close();
         a.messages.deinit();
         a.notes.deinit(gpa);
         if (a.final_output) |f| gpa.free(f);
-        a.auth.deinit(gpa);
+        a.auth.deinit();
         a.cap_args.deinit(gpa);
         a.sets_arena.deinit();
     }
@@ -179,13 +180,6 @@ pub const Agent = struct {
     pub fn recordReset(a: *Agent) Allocator.Error!void {
         if (a.session) |*s| try s.reset(a.ctx.gpa, &a.messages);
     }
-
-    /// Replaces the final answer.
-    pub fn setFinalOutput(a: *Agent, text: []const u8) Allocator.Error!void {
-        const copy = try a.ctx.gpa.dupe(u8, text);
-        if (a.final_output) |old| a.ctx.gpa.free(old);
-        a.final_output = copy;
-    }
 };
 
 /// Reads `name` and `description` from SKILL.md front matter.
@@ -201,57 +195,29 @@ fn frontMatter(text: []const u8, name: *[]const u8, desc: *[]const u8) void {
 
 /// Lists skills as "- name: description (path)", one per line, from every
 /// layer; the first folder with a name wins.
-fn skillsIndex(a: *Agent, out: *std.ArrayList(u8)) Allocator.Error!void {
-    const gpa = a.ctx.gpa;
+fn skillsIndex(a: *Agent, t: Allocator, out: *std.ArrayList(u8)) Allocator.Error!void {
     const before = out.items.len;
     var seen: std.ArrayList([]const u8) = .empty;
-    defer seen.deinit(gpa);
-    var held: std.ArrayList([][]u8) = .empty;
-    defer {
-        for (held.items) |names| util.freeNames(gpa, names);
-        held.deinit(gpa);
-    }
     for (a.spec.layers) |layer| {
         const dir = layer.skills orelse continue;
-        const names = try util.listNames(a.ctx.io, gpa, dir);
-        try held.append(gpa, names);
-        for (names) |folder| {
-            const listed = for (seen.items) |s| {
-                if (std.mem.eql(u8, s, folder)) break true;
-            } else false;
-            if (listed) continue;
-            const path = try std.mem.concat(gpa, u8, &.{ dir, "/", folder, "/SKILL.md" });
-            defer gpa.free(path);
-            const text = (try util.readFile(a.ctx.io, gpa, path)) orelse continue;
-            defer gpa.free(text);
+        names: for (try util.listNames(a.ctx.io, t, dir)) |folder| {
+            for (seen.items) |s| if (std.mem.eql(u8, s, folder)) continue :names;
+            const path = try std.mem.concat(t, u8, &.{ dir, "/", folder, "/SKILL.md" });
+            const text = (try util.readFile(a.ctx.io, t, path)) orelse continue;
             var name: []const u8 = folder;
             var desc: []const u8 = "";
             frontMatter(text, &name, &desc);
-            try out.print(gpa, "- {s}: {s} ({s})\n", .{ name, desc, path });
-            try seen.append(gpa, folder);
+            try out.print(t, "- {s}: {s} ({s})\n", .{ name, desc, path });
+            try seen.append(t, folder);
         }
     }
-    if (out.items.len == before) try out.appendSlice(gpa, "(no skills yet)");
-}
-
-/// Appends a line about the plugins in use, if there are any.
-fn pluginsText(a: *Agent, out: *std.ArrayList(u8)) Allocator.Error!void {
-    const gpa = a.ctx.gpa;
-    var list: std.ArrayList(u8) = .empty;
-    defer list.deinit(gpa);
-    for (a.spec.layers) |layer| {
-        const plugin = layer.plugin orelse continue;
-        if (list.items.len > 0) try list.appendSlice(gpa, ", ");
-        try list.print(gpa, "{s} ({s})", .{ plugin, layer.dir });
-    }
-    if (list.items.len == 0) return;
-    try out.print(gpa, "\n- Plugins add tools, hooks and skills below yours: {s}. A tool of yours with the same name wins; hooks all run, yours first.", .{list.items});
+    if (out.items.len == before) try out.appendSlice(t, "(no skills yet)");
 }
 
 /// Tells the agent where its harness lives and how to change it.
-fn harnessText(a: *Agent, out: *std.ArrayList(u8)) Allocator.Error!void {
+fn harnessText(a: *Agent, t: Allocator, out: *std.ArrayList(u8)) Allocator.Error!void {
     const skills = json.str(a.spec.root, "skills");
-    try out.print(a.ctx.gpa, "Your harness is yours to change; edits take effect on your next turn:\n" ++
+    try out.print(t, "Your harness is yours to change; edits take effect on your next turn:\n" ++
         "- Spec: {s} (YAML: model settings, tools, hooks, compaction, limits). Check edits with `{s} check --spec {s}`.\n" ++
         "- Tools: {s}/tools/<name>, any executable (chmod +x). `<name> --schema` prints {{\"description\": ..., \"parameters\": <JSON Schema>}}; " ++
         "a call gets its arguments as JSON on stdin; stdout and stderr are the result; a non-zero exit marks an error.\n" ++
@@ -267,92 +233,77 @@ fn harnessText(a: *Agent, out: *std.ArrayList(u8)) Allocator.Error!void {
         if (skills != null) "/" else "",
         if (a.session) |s| s.dir else "(none)",
     });
-    try pluginsText(a, out);
+    var plugins: std.ArrayList(u8) = .empty;
+    for (a.spec.layers) |layer| if (layer.plugin) |plugin| {
+        try plugins.print(t, "{s}{s} ({s})", .{ if (plugins.items.len > 0) ", " else "", plugin, layer.dir });
+    };
+    if (plugins.items.len > 0) try out.print(t, "\n- Plugins add tools, hooks and skills below yours: {s}. A tool of yours with the same name wins; hooks all run, yours first.", .{plugins.items});
 }
 
 /// {{file:PATH}}, {{file:PATH:tail=N}} or {{file:PATH:max=SIZE}}.
-fn fileVar(a: *Agent, spec: []const u8, out: *std.ArrayList(u8)) Allocator.Error!void {
-    const gpa = a.ctx.gpa;
-    const colon = std.mem.findScalar(u8, spec, ':');
-    const path = if (colon) |i| spec[0..i] else spec;
-    const option: ?[]const u8 = if (colon) |i| spec[i + 1 ..] else null;
-    const text = (try util.readFile(a.ctx.io, gpa, path)) orelse {
-        try out.print(gpa, "(missing: {s})", .{path});
-        return;
-    };
-    defer gpa.free(text);
+fn fileVar(a: *Agent, t: Allocator, spec: []const u8, out: *std.ArrayList(u8)) Allocator.Error!void {
+    const colon = std.mem.findScalar(u8, spec, ':') orelse spec.len;
+    const path = spec[0..colon];
+    const option = if (colon < spec.len) spec[colon + 1 ..] else "";
+    const text = (try util.readFile(a.ctx.io, t, path)) orelse return out.print(t, "(missing: {s})", .{path});
     var start: usize = 0;
-    var max: u64 = 0;
-    if (option) |o| {
-        if (std.mem.startsWith(u8, o, "tail=")) {
-            var lines: i64 = if (util.leadingNumber(o[5..])) |n| @intFromFloat(@max(@min(n.value, 1e9), -1e9)) else 0;
-            start = if (text.len > 0 and text[text.len - 1] == '\n') text.len - 1 else text.len;
-            while (start > 0 and lines > 0) {
-                start -= 1;
-                if (text[start] == '\n') lines -= 1;
-            }
-            if (lines == 0) start += 1;
-            start = @min(start, text.len);
-        } else if (std.mem.startsWith(u8, o, "max=")) {
-            max = util.parseSize(o[4..]) orelse 0;
+    if (std.mem.startsWith(u8, option, "tail=")) {
+        var lines: i64 = if (util.leadingNumber(option[5..])) |n| @intFromFloat(@max(@min(n.value, 1e9), -1e9)) else 0;
+        start = text.len - @intFromBool(text.len > 0 and text[text.len - 1] == '\n');
+        while (start > 0 and lines > 0) {
+            start -= 1;
+            if (text[start] == '\n') lines -= 1;
         }
+        if (lines == 0) start = @min(start + 1, text.len);
     }
-    const clean = try util.utf8Clean(gpa, text[start..]);
-    defer gpa.free(clean);
-    if (max > 0 and clean.len > max) {
-        const cut = try util.truncate(gpa, clean, @intCast(max));
-        defer gpa.free(cut);
-        try out.appendSlice(gpa, cut);
-    } else {
-        try out.appendSlice(gpa, clean);
-    }
+    const clean = try util.utf8Clean(t, text[start..]);
+    const max = if (std.mem.startsWith(u8, option, "max=")) util.parseSize(option[4..]) orelse 0 else 0;
+    try out.appendSlice(t, if (max > 0) try util.truncate(t, clean, @intCast(max)) else clean);
 }
 
 /// Appends the value of one {{name}}.
-fn appendVar(a: *Agent, name: []const u8, out: *std.ArrayList(u8)) Allocator.Error!void {
-    const gpa = a.ctx.gpa;
+fn appendVar(a: *Agent, t: Allocator, name: []const u8, out: *std.ArrayList(u8)) Allocator.Error!void {
     if (std.mem.eql(u8, name, "prompt")) {
-        try out.appendSlice(gpa, a.prompt orelse "");
+        try out.appendSlice(t, a.prompt orelse "");
     } else if (std.mem.eql(u8, name, "harness")) {
-        try harnessText(a, out);
+        try harnessText(a, t, out);
     } else if (std.mem.eql(u8, name, "skills")) {
-        try skillsIndex(a, out);
+        try skillsIndex(a, t, out);
     } else if (std.mem.eql(u8, name, "date")) {
-        const t = sys.localTime(@divFloor(util.unixMillis(a.ctx.io), 1000));
-        try out.print(gpa, "{d:0>4}-{d:0>2}-{d:0>2}", .{ t.year, t.month, t.day });
+        const now = sys.localTime(@divFloor(util.unixMillis(a.ctx.io), 1000));
+        try out.print(t, "{d:0>4}-{d:0>2}-{d:0>2}", .{ now.year, now.month, now.day });
     } else if (std.mem.eql(u8, name, "cwd")) {
-        const cwd = std.process.currentPathAlloc(a.ctx.io, gpa) catch |err| switch (err) {
+        try out.appendSlice(t, std.process.currentPathAlloc(a.ctx.io, t) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
-            else => null,
-        };
-        defer if (cwd) |c| gpa.free(c);
-        try out.appendSlice(gpa, cwd orelse ".");
+            else => ".",
+        });
     } else if (std.mem.eql(u8, name, "session")) {
-        try out.appendSlice(gpa, a.sessionId());
+        try out.appendSlice(t, a.sessionId());
     } else if (std.mem.eql(u8, name, "turn")) {
-        try out.print(gpa, "{d}", .{a.turns()});
+        try out.print(t, "{d}", .{a.turns()});
     } else if (std.mem.startsWith(u8, name, "file:")) {
-        try fileVar(a, name[5..], out);
+        try fileVar(a, t, name[5..], out);
     } else {
-        try out.print(gpa, "{{{{{s}}}}}", .{name});
+        try out.print(t, "{{{{{s}}}}}", .{name});
     }
 }
 
 /// Expands {{vars}} in `template`: prompt, harness, skills, date, cwd,
 /// session, turn, and file:PATH[:tail=N|:max=SIZE]. Caller owns the result.
 pub fn renderTemplate(a: *Agent, template: []const u8) Allocator.Error![]u8 {
-    const gpa = a.ctx.gpa;
+    var arena: std.heap.ArenaAllocator = .init(a.ctx.gpa);
+    defer arena.deinit();
+    const t = arena.allocator();
     var out: std.ArrayList(u8) = .empty;
-    errdefer out.deinit(gpa);
     var pos: usize = 0;
     while (std.mem.findPos(u8, template, pos, "{{")) |open| {
         const close = std.mem.findPos(u8, template, open + 2, "}}") orelse break;
-        try out.appendSlice(gpa, template[pos..open]);
-        try appendVar(a, std.mem.trim(u8, template[open + 2 .. close], " "), &out);
+        try out.appendSlice(t, template[pos..open]);
+        try appendVar(a, t, std.mem.trim(u8, template[open + 2 .. close], " "), &out);
         pos = close + 2;
     }
-    try out.appendSlice(gpa, template[pos..]);
-    return out.toOwnedSlice(gpa);
+    try out.appendSlice(t, template[pos..]);
+    return a.ctx.gpa.dupe(u8, out.items);
 }
 
 /// The system prompt: the spec's instructions (or a default), rendered.
@@ -387,12 +338,4 @@ test "caps" {
     try std.testing.expect(!c.parse("turns=5x"));
     try std.testing.expectEqual(@as(i64, 50), c.turns);
     try std.testing.expectEqual(@as(f64, 28800), c.wall);
-}
-
-test "front matter" {
-    var name: []const u8 = "folder";
-    var desc: []const u8 = "";
-    frontMatter("---\nname: greeting\ndescription: How to greet.\n---\nbody", &name, &desc);
-    try std.testing.expectEqualStrings("greeting", name);
-    try std.testing.expectEqualStrings("How to greet.", desc);
 }

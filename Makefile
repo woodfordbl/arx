@@ -36,13 +36,13 @@ SRC := $(shell find src -name '*.zig') build.zig build.zig.zon
 
 arx: check-zig $(SRC)
 	$(ZIG) build -Doptimize=small -Dtarget=$(ZIG_TARGET) $(VERSION_FLAG) --prefix build/$(TARGET)
-	cp build/$(TARGET)/bin/arx $@
+	rm -f $@ && cp build/$(TARGET)/bin/arx $@ # replace, not overwrite: macOS kills an overwritten signed binary
 	strip $@ 2>/dev/null || true
 
 debug: arx-debug
 arx-debug: check-zig $(SRC)
 	$(ZIG) build -Doptimize=debug $(VERSION_FLAG) --prefix build/debug
-	cp build/debug/bin/arx $@
+	rm -f $@ && cp build/debug/bin/arx $@
 
 # Stops early, with the fix, when the zig on PATH is not the pinned one.
 check-zig:

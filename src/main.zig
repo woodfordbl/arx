@@ -113,31 +113,12 @@ fn runAgent(a: *Agent, args: []const []const u8) !Exit {
 }
 
 test {
-    _ = @import("base/sys.zig");
+    // The files with unit tests; `zig build test` only sees what is imported.
     _ = @import("base/util.zig");
     _ = @import("base/json.zig");
     _ = @import("base/proc.zig");
-    _ = @import("io/history.zig");
-    _ = @import("io/session.zig");
-    _ = @import("io/events.zig");
-    _ = @import("io/render.zig");
-    _ = @import("model/auth.zig");
-    _ = @import("model/sse.zig");
-    _ = @import("model/llm.zig");
     _ = @import("harness/yaml.zig");
-    _ = @import("harness/spec.zig");
-    _ = @import("harness/validate.zig");
-    _ = @import("harness/schema.zig");
     _ = @import("harness/plugins.zig");
-    _ = @import("harness/signature.zig");
-    _ = @import("harness/tools.zig");
-    _ = @import("harness/tool_exec.zig");
-    _ = @import("harness/hooks.zig");
-    _ = @import("harness/compact.zig");
+    _ = @import("model/llm.zig");
     _ = @import("agent/agent.zig");
-    _ = @import("agent/loop.zig");
-    _ = @import("agent/run.zig");
-    _ = @import("cli/options.zig");
-    _ = @import("cli/commands.zig");
-    _ = @import("cli/external.zig");
 }

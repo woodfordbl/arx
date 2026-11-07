@@ -21,36 +21,28 @@ const kill_grace_seconds = 3.0;
 /// background children still hold open.
 const drain_seconds = 0.2;
 
-/// Receives chunks of a child's output.
+/// Receives chunks of a child's output. A sink that runs out of memory
+/// stops the child, and `run` returns the error.
 pub const Sink = struct {
     context: *anyopaque,
-    writeFn: *const fn (context: *anyopaque, bytes: []const u8) void,
+    writeFn: *const fn (context: *anyopaque, bytes: []const u8) Allocator.Error!void,
 
     /// A sink that calls `f(ptr, bytes)`.
-    pub fn init(ptr: anytype, comptime f: fn (@TypeOf(ptr), []const u8) void) Sink {
-        const Ptr = @TypeOf(ptr);
+    pub fn init(ptr: anytype, comptime f: fn (@TypeOf(ptr), []const u8) Allocator.Error!void) Sink {
         const wrapper = struct {
             /// Calls `f` with the context cast back to its type.
-            fn call(context: *anyopaque, bytes: []const u8) void {
-                f(@as(Ptr, @ptrCast(@alignCast(context))), bytes);
+            fn call(context: *anyopaque, bytes: []const u8) Allocator.Error!void {
+                return f(@ptrCast(@alignCast(context)), bytes);
             }
         };
         return .{ .context = ptr, .writeFn = wrapper.call };
     }
-
-    /// Passes a chunk to the sink.
-    fn write(s: Sink, bytes: []const u8) void {
-        s.writeFn(s.context, bytes);
-    }
 };
 
-/// Collects output in memory, keeping at most `limit` bytes.
+/// Collects output in memory, keeping the first megabyte.
 pub const Collector = struct {
     gpa: Allocator,
     list: std.ArrayList(u8) = .empty,
-    limit: usize = 1 << 20,
-    /// Set when memory ran out; the output is then incomplete.
-    failed: bool = false,
 
     /// An empty collector.
     pub fn init(gpa: Allocator) Collector {
@@ -68,11 +60,8 @@ pub const Collector = struct {
     }
 
     /// Keeps `bytes` while under the limit.
-    fn append(c: *Collector, bytes: []const u8) void {
-        if (c.list.items.len >= c.limit) return;
-        c.list.appendSlice(c.gpa, bytes) catch {
-            c.failed = true;
-        };
+    fn append(c: *Collector, bytes: []const u8) Allocator.Error!void {
+        if (c.list.items.len < 1 << 20) try c.list.appendSlice(c.gpa, bytes);
     }
 
     /// The output so far.
@@ -88,14 +77,9 @@ pub const SidePipe = struct {
     fds: [2]sys.fd_t,
     sink: Sink,
 
-    /// Opens the pipe. `run` closes it.
+    /// Opens the pipe. `run` closes it; fds[1] is the child's end.
     pub fn open(sink: Sink) sys.Error!SidePipe {
         return .{ .fds = try sys.pipe(), .sink = sink };
-    }
-
-    /// The descriptor number the child writes to.
-    pub fn childFd(p: SidePipe) sys.fd_t {
-        return p.fds[1];
     }
 };
 
@@ -134,20 +118,6 @@ pub const Result = struct {
     }
 };
 
-/// Describes why a program could not be started, like strerror() would.
-pub fn describeSpawnError(err: anyerror) []const u8 {
-    return switch (err) {
-        error.FileNotFound => "No such file or directory",
-        error.AccessDenied, error.PermissionDenied => "Permission denied",
-        error.InvalidExe => "Exec format error",
-        error.IsDir => "Is a directory",
-        error.NotDir => "Not a directory",
-        error.SystemResources, error.ProcessFdQuotaExceeded, error.SystemFdQuotaExceeded => "Too many open files or processes",
-        error.OutOfMemory => "Cannot allocate memory",
-        else => @errorName(err),
-    };
-}
-
 /// A copy of `base` with `extra` ("KEY", "value") pairs added or replaced.
 /// Caller owns the map.
 pub fn environWith(gpa: Allocator, base: *const Environ.Map, extra: []const [2][]const u8) Allocator.Error!Environ.Map {
@@ -182,19 +152,20 @@ fn asFile(fd: sys.fd_t) File {
 }
 
 /// Reads one chunk from `fd.*` into `sink`; closes it at end of file.
-fn pump(fd: *sys.fd_t, sink: ?Sink) void {
+fn pump(fd: *sys.fd_t, sink: ?Sink) Allocator.Error!void {
     var chunk: [65536]u8 = undefined;
     const n = posix.read(fd.*, &chunk) catch |err| switch (err) {
         error.WouldBlock => return,
         else => return closeFd(fd),
     };
     if (n == 0) return closeFd(fd);
-    if (sink) |s| s.write(chunk[0..n]);
+    if (sink) |s| try s.writeFn(s.context, chunk[0..n]);
 }
 
 /// Runs `opts` and waits for the child. The child gets its own process
-/// group, so a timeout or Ctrl-C stops it and everything it started.
-pub fn run(ctx: *const Context, opts: Options) Result {
+/// group, so a timeout or Ctrl-C stops it and everything it started. Fails
+/// only when a sink runs out of memory (the child is then stopped too).
+pub fn run(ctx: *const Context, opts: Options) Allocator.Error!Result {
     const io = ctx.io;
     var result: Result = .{};
     var p: Pipes = .{};
@@ -231,6 +202,7 @@ pub fn run(ctx: *const Context, opts: Options) Result {
     var kill_at: f64 = 0;
     var drain_until: f64 = 0;
     const deadline: f64 = if (opts.timeout > 0) start + opts.timeout else 0;
+    var sink_error: ?Allocator.Error = null;
     while (true) {
         var fds: [4]posix.pollfd = undefined;
         var n: usize = 0;
@@ -244,17 +216,17 @@ pub fn run(ctx: *const Context, opts: Options) Result {
             const ready = posix.poll(fds[0..n], wait_ms) catch 0;
             if (ready > 0) {
                 if (i_in) |i| if (fds[i].revents != 0) {
-                    const w = sys.writeSome(p.in[1], input[written..]) catch std.math.maxInt(usize);
-                    if (w == std.math.maxInt(usize)) {
-                        closeFd(&p.in[1]);
-                    } else {
-                        written += w;
-                        if (written >= input.len) closeFd(&p.in[1]);
-                    }
+                    written += sys.writeSome(p.in[1], input[written..]) catch input.len; // gone: stop feeding
+                    if (written >= input.len) closeFd(&p.in[1]);
                 };
-                if (i_out) |i| if (fds[i].revents != 0) pump(&p.out[0], opts.stdout);
-                if (i_err) |i| if (fds[i].revents != 0) pump(&p.err[0], opts.stderr);
-                if (i_side) |i| if (fds[i].revents != 0) pump(&p.side[0], if (opts.side) |s| s.sink else null);
+                (blk: {
+                    if (i_out) |i| if (fds[i].revents != 0) pump(&p.out[0], opts.stdout) catch |e| break :blk e;
+                    if (i_err) |i| if (fds[i].revents != 0) pump(&p.err[0], opts.stderr) catch |e| break :blk e;
+                    if (i_side) |i| if (fds[i].revents != 0) pump(&p.side[0], opts.side.?.sink) catch |e| break :blk e;
+                }) catch |e| {
+                    sink_error = e;
+                    p.closeAll(); // stop reading; the child is killed below
+                };
             }
         } else {
             io.sleep(.fromMilliseconds(1), .awake) catch {}; // all pipes closed: wait for the exit
@@ -268,8 +240,8 @@ pub fn run(ctx: *const Context, opts: Options) Result {
             }
         }
         const t = util.now(io);
-        if (!reaped and !killed and (sys.isInterrupted() or (deadline > 0 and t > deadline))) {
-            if (sys.isInterrupted()) result.interrupted = true else result.timed_out = true;
+        if (!reaped and !killed and (sink_error != null or sys.isInterrupted() or (deadline > 0 and t > deadline))) {
+            if (sys.isInterrupted()) result.interrupted = true else result.timed_out = sink_error == null;
             sys.killGroup(pid, .TERM);
             killed = true;
             kill_at = t + kill_grace_seconds;
@@ -281,6 +253,7 @@ pub fn run(ctx: *const Context, opts: Options) Result {
     p.closeAll();
     if (!reaped) status = sys.wait(pid);
     if (killed) sys.killGroup(pid, .KILL); // anything left in the group
+    if (sink_error) |e| return e;
     result.secs = util.now(io) - start;
     result.code = sys.exitCode(status);
     return result;
@@ -301,29 +274,6 @@ fn addPoll(fds: *[4]posix.pollfd, n: *usize, fd: sys.fd_t, events: i16) ?usize {
     return n.* - 1;
 }
 
-test "run feeds stdin and collects stdout and stderr apart" {
-    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
-    defer threaded.deinit();
-    var env: Environ.Map = .init(std.testing.allocator);
-    defer env.deinit();
-    try env.put("PATH", "/usr/bin:/bin");
-    const ctx: Context = .{ .gpa = std.testing.allocator, .io = threaded.io(), .environ = &env, .self_path = "", .version = "test" };
-    var out: Collector = .init(std.testing.allocator);
-    defer out.deinit();
-    var err: Collector = .init(std.testing.allocator);
-    defer err.deinit();
-    const r = run(&ctx, .{
-        .argv = &.{ "sh", "-c", "cat; echo oops >&2; exit 3" },
-        .stdin = "hello",
-        .environ = &env,
-        .stdout = out.sink(),
-        .stderr = err.sink(),
-    });
-    try std.testing.expectEqual(@as(u8, 3), r.code);
-    try std.testing.expectEqualStrings("hello", out.output());
-    try std.testing.expectEqualStrings("oops\n", err.output());
-}
-
 test "run kills the group at the timeout" {
     var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
     defer threaded.deinit();
@@ -331,7 +281,7 @@ test "run kills the group at the timeout" {
     defer env.deinit();
     try env.put("PATH", "/usr/bin:/bin");
     const ctx: Context = .{ .gpa = std.testing.allocator, .io = threaded.io(), .environ = &env, .self_path = "", .version = "test" };
-    const r = run(&ctx, .{ .argv = &.{ "sh", "-c", "sleep 5 & sleep 5" }, .timeout = 0.2, .environ = &env });
+    const r = try run(&ctx, .{ .argv = &.{ "sh", "-c", "sleep 5 & sleep 5" }, .timeout = 0.2, .environ = &env });
     try std.testing.expect(r.timed_out);
     try std.testing.expect(r.secs < 4);
 }

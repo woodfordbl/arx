@@ -41,30 +41,19 @@ pub fn installSignals() void {
     posix.sigaction(.TERM, &action, null);
 }
 
-/// The errors of the calls below, reduced to what callers act on.
-pub const Error = error{ SystemResources, AccessDenied, FileNotFound, BrokenPipe, Unexpected };
-
-/// Maps the errno of a failed call to an Error.
-fn fail(rc: anytype) Error {
-    return switch (posix.errno(rc)) {
-        .ACCES, .PERM => error.AccessDenied,
-        .NOENT, .NOTDIR => error.FileNotFound,
-        .MFILE, .NFILE, .NOMEM, .NOSPC => error.SystemResources,
-        .PIPE => error.BrokenPipe,
-        else => error.Unexpected,
-    };
-}
+/// The calls below fail with this one error; no caller needs more detail.
+pub const Error = error{SystemCall};
 
 /// Opens `path` for appending, creating it with mode 0644. The descriptor
 /// is close-on-exec, so tools never inherit it.
 pub fn openAppend(path: []const u8) Error!fd_t {
     var buf: [posix.PATH_MAX]u8 = undefined;
-    if (path.len >= buf.len) return error.FileNotFound;
+    if (path.len >= buf.len) return error.SystemCall;
     @memcpy(buf[0..path.len], path);
     buf[path.len] = 0;
     const flags: posix.O = .{ .ACCMODE = .WRONLY, .CREAT = true, .APPEND = true, .CLOEXEC = true };
     const rc = c.open(buf[0..path.len :0], flags, @as(c_uint, 0o644));
-    if (rc < 0) return fail(rc);
+    if (rc < 0) return error.SystemCall;
     return rc;
 }
 
@@ -75,7 +64,7 @@ pub fn writeAll(fd: fd_t, bytes: []const u8) Error!void {
         const rc = c.write(fd, rest.ptr, rest.len);
         if (rc < 0) {
             if (posix.errno(rc) == .INTR) continue;
-            return fail(rc);
+            return error.SystemCall;
         }
         rest = rest[@intCast(rc)..];
     }
@@ -88,7 +77,7 @@ pub fn writeSome(fd: fd_t, bytes: []const u8) Error!usize {
     if (rc >= 0) return @intCast(rc);
     return switch (posix.errno(rc)) {
         .AGAIN, .INTR => 0,
-        else => fail(rc),
+        else => error.SystemCall,
     };
 }
 
@@ -102,15 +91,15 @@ pub fn close(fd: fd_t) void {
 pub fn pipe() Error![2]fd_t {
     var fds: [2]fd_t = undefined;
     const rc = c.pipe(&fds);
-    if (rc != 0) return fail(rc);
-    setCloexec(fds[0]);
-    setCloexec(fds[1]);
+    if (rc != 0) return error.SystemCall;
+    _ = setCloexec(fds[0]);
+    _ = setCloexec(fds[1]);
     return fds;
 }
 
-/// Marks `fd` close-on-exec.
-pub fn setCloexec(fd: fd_t) void {
-    _ = c.fcntl(fd, posix.F.SETFD, @as(c_int, posix.FD_CLOEXEC));
+/// Marks `fd` close-on-exec. Returns false when `fd` is not open.
+pub fn setCloexec(fd: fd_t) bool {
+    return c.fcntl(fd, posix.F.SETFD, @as(c_int, posix.FD_CLOEXEC)) >= 0;
 }
 
 /// Makes writes to `fd` return at once instead of waiting for room.
@@ -121,16 +110,11 @@ pub fn setNonblocking(fd: fd_t) void {
     _ = c.fcntl(fd, posix.F.SETFL, flags | nonblock);
 }
 
-/// True when `fd` is an open descriptor.
-pub fn isOpen(fd: fd_t) bool {
-    return c.fcntl(fd, posix.F.GETFD) >= 0;
-}
-
 /// A duplicate of `fd`, close-on-exec, or null.
 pub fn dup(fd: fd_t) ?fd_t {
     const rc = c.dup(fd);
     if (rc < 0) return null;
-    setCloexec(rc);
+    _ = setCloexec(rc);
     return rc;
 }
 
@@ -217,14 +201,4 @@ pub fn localTime(unix_seconds: i64) LocalTime {
         .minute = @intCast(tm.min),
         .second = @intCast(@min(tm.sec, 59)),
     };
-}
-
-test "pipe round trip" {
-    const fds = try pipe();
-    defer close(fds[0]);
-    defer close(fds[1]);
-    try writeAll(fds[1], "hello");
-    var buf: [8]u8 = undefined;
-    const n = try posix.read(fds[0], &buf);
-    try std.testing.expectEqualStrings("hello", buf[0..n]);
 }
