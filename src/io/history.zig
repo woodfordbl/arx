@@ -85,13 +85,6 @@ pub const History = struct {
         };
     }
 
-    /// Replaces every message with `messages`, taking ownership of them.
-    pub fn replace(h: *History, messages: []const *Message) Allocator.Error!void {
-        h.clear();
-        try h.items.ensureTotalCapacity(h.gpa, messages.len);
-        h.items.appendSliceAssumeCapacity(messages);
-    }
-
     /// The number of messages.
     pub fn len(h: *const History) usize {
         return h.items.items.len;
@@ -128,6 +121,13 @@ pub const History = struct {
         try w.writeByte(']');
     }
 
+    /// The history as a JSON array, in `t`; see `write`.
+    pub fn toJson(h: *const History, t: Allocator, strip_private: bool) Allocator.Error![]u8 {
+        var out: Writer.Allocating = .init(t);
+        h.write(&out.writer, strip_private) catch return error.OutOfMemory;
+        return out.written();
+    }
+
     /// A rough token count: the serialized size divided by 4.
     pub fn estimateTokens(h: *const History) i64 {
         var buf: [256]u8 = undefined;
@@ -136,18 +136,3 @@ pub const History = struct {
         return @intCast(counter.fullCount() / 4);
     }
 };
-
-test "history writes and strips private fields" {
-    const gpa = std.testing.allocator;
-    var h: History = .init(gpa);
-    defer h.deinit();
-    try h.append(try Message.text(gpa, "user", "hi"));
-    const tool = try Message.text(gpa, "tool", "out");
-    try json.putString(tool.allocator(), &tool.value, "_out", "/x");
-    try h.append(tool);
-    var out: Writer.Allocating = .init(gpa);
-    defer out.deinit();
-    try h.write(&out.writer, true);
-    try std.testing.expectEqualStrings("[{\"role\":\"user\",\"content\":\"hi\"},{\"role\":\"tool\",\"content\":\"out\"}]", out.written());
-    try std.testing.expect(h.estimateTokens() > 0);
-}

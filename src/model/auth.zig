@@ -19,18 +19,23 @@ const Context = @import("../base/context.zig").Context;
 /// Finds the API key and remembers a stored one, so the Keychain is asked
 /// at most once per run.
 pub const Auth = struct {
+    /// Holds `name` and `stored`.
+    arena: std.heap.ArenaAllocator,
     /// The variable name the cached key belongs to.
-    name: ?[]u8 = null,
+    name: ?[]const u8 = null,
     /// The stored key for `name`, or null when none was found.
-    stored: ?[]u8 = null,
+    stored: ?[]const u8 = null,
     /// Where the last `apiKey` call found its key, or null.
     source: ?[]const u8 = null,
 
+    /// An empty cache.
+    pub fn init(gpa: Allocator) Auth {
+        return .{ .arena = .init(gpa) };
+    }
+
     /// Forgets the cached key.
-    pub fn deinit(a: *Auth, gpa: Allocator) void {
-        if (a.name) |n| gpa.free(n);
-        if (a.stored) |s| gpa.free(s);
-        a.* = .{};
+    pub fn deinit(a: *Auth) void {
+        a.arena.deinit();
     }
 
     /// The API key for the spec's endpoint, or null, in fx's order: for
@@ -50,14 +55,14 @@ pub const Auth = struct {
             return key;
         }
         if (a.name == null or !std.mem.eql(u8, a.name.?, name)) {
-            a.deinit(ctx.gpa);
-            a.name = try ctx.gpa.dupe(u8, name);
-            a.stored = try keychainKey(ctx, name);
-            if (a.stored != null) {
-                a.source = "the macOS Keychain";
-            } else {
-                a.stored = try fileKey(ctx, name);
-                a.source = if (a.stored != null) "the arx credentials file" else null;
+            _ = a.arena.reset(.retain_capacity);
+            const t = a.arena.allocator();
+            a.name = try t.dupe(u8, name);
+            a.stored = try keychainKey(ctx, t, name);
+            a.source = "the macOS Keychain";
+            if (a.stored == null) {
+                a.stored = try fileKey(ctx, t, name);
+                a.source = "the arx credentials file";
             }
         }
         if (a.stored == null) a.source = null;
@@ -71,37 +76,25 @@ fn trimEnd(s: []const u8) []const u8 {
 }
 
 /// Reads `name` from the macOS Keychain (service "arx"), or null.
-fn keychainKey(ctx: *const Context, name: []const u8) Allocator.Error!?[]u8 {
-    if (builtin.target.os.tag != .macos) return null;
-    if (ctx.getenv("ARX_DISABLE_KEYCHAIN") != null) return null;
-    var out: proc.Collector = .init(ctx.gpa);
-    defer out.deinit();
-    var err: proc.Collector = .init(ctx.gpa);
-    defer err.deinit();
-    const r = proc.run(ctx, .{
+fn keychainKey(ctx: *const Context, t: Allocator, name: []const u8) Allocator.Error!?[]const u8 {
+    if (builtin.target.os.tag != .macos or ctx.getenv("ARX_DISABLE_KEYCHAIN") != null) return null;
+    var out: proc.Collector = .init(t);
+    var err: proc.Collector = .init(t);
+    const r = try proc.run(ctx, .{
         .argv = &.{ "security", "find-generic-password", "-s", "arx", "-a", name, "-w" },
         .timeout = 10,
         .stdout = out.sink(),
         .stderr = err.sink(),
     });
-    if (!r.ok() or out.output().len == 0) return null;
-    return try ctx.gpa.dupe(u8, trimEnd(out.output()));
+    return if (r.ok() and out.output().len > 0) trimEnd(out.output()) else null;
 }
 
 /// Reads `name` from configDir()/credentials ("NAME=value" lines), or null.
-fn fileKey(ctx: *const Context, name: []const u8) Allocator.Error!?[]u8 {
-    const gpa = ctx.gpa;
-    const dir = try util.configDir(ctx, gpa);
-    defer gpa.free(dir);
-    const path = try std.mem.concat(gpa, u8, &.{ dir, "/credentials" });
-    defer gpa.free(path);
-    const text = (try util.readFile(ctx.io, gpa, path)) orelse return null;
-    defer gpa.free(text);
-    var lines = std.mem.splitScalar(u8, text, '\n');
+fn fileKey(ctx: *const Context, t: Allocator, name: []const u8) Allocator.Error!?[]const u8 {
+    const path = try std.mem.concat(t, u8, &.{ try util.configDir(ctx, t), "/credentials" });
+    var lines = std.mem.splitScalar(u8, (try util.readFile(ctx.io, t, path)) orelse "", '\n');
     while (lines.next()) |line| {
-        if (line.len > name.len and std.mem.startsWith(u8, line, name) and line[name.len] == '=') {
-            return try gpa.dupe(u8, trimEnd(line[name.len + 1 ..]));
-        }
+        if (line.len > name.len and std.mem.startsWith(u8, line, name) and line[name.len] == '=') return trimEnd(line[name.len + 1 ..]);
     }
     return null;
 }
@@ -119,29 +112,21 @@ pub fn curlPath(ctx: *const Context, root: json.Value) []const u8 {
 }
 
 /// Writes the request headers, including the key, to a new 0600 file in
-/// `dir` for `curl -H @file`, and returns its path. Delete it after the
-/// call. `streaming` adds "Accept: text/event-stream". Caller owns the path.
-pub fn writeRequestHeaders(ctx: *const Context, auth: *Auth, root: json.Value, dir: []const u8, streaming: bool) ![]u8 {
-    const gpa = ctx.gpa;
-    var h: std.Io.Writer.Allocating = .init(gpa);
-    defer h.deinit();
-    const w = &h.writer;
-    w.writeAll("Content-Type: application/json\n") catch return error.OutOfMemory;
-    if (streaming) w.writeAll("Accept: text/event-stream\n") catch return error.OutOfMemory;
-    if (try auth.apiKey(ctx, root)) |key| {
-        if (key.len > 0) w.print("Authorization: Bearer {s}\n", .{key}) catch return error.OutOfMemory;
-    }
+/// `dir` for `curl -H @file`, and returns its path (in `t`). Delete it
+/// after the call. `streaming` adds "Accept: text/event-stream".
+pub fn writeRequestHeaders(ctx: *const Context, t: Allocator, auth: *Auth, root: json.Value, dir: []const u8, streaming: bool) ![]u8 {
+    var h: std.ArrayList(u8) = .empty;
+    try h.appendSlice(t, "Content-Type: application/json\n");
+    if (streaming) try h.appendSlice(t, "Accept: text/event-stream\n");
+    if (try auth.apiKey(ctx, root)) |key| if (key.len > 0) try h.print(t, "Authorization: Bearer {s}\n", .{key});
     const headers = json.get(root, "endpoint.headers");
-    for (json.keys(headers), json.values(headers)) |k, v| {
-        if (v == .string) w.print("{s}: {s}\n", .{ k, v.string }) catch return error.OutOfMemory;
-    }
-    const path = try gpa.print("{s}/.arx-request-{d}", .{ dir, sys.getpid() });
-    errdefer gpa.free(path);
+    for (json.keys(headers), json.values(headers)) |k, v| if (v == .string) try h.print(t, "{s}: {s}\n", .{ k, v.string });
+    const path = try t.print("{s}/.arx-request-{d}", .{ dir, sys.getpid() });
     const permissions: Io.File.Permissions = .fromMode(0o600);
     var file = try Io.Dir.cwd().createFile(ctx.io, path, .{ .permissions = permissions });
     defer file.close(ctx.io);
     try file.setPermissions(ctx.io, permissions);
-    try file.writePositionalAll(ctx.io, h.written(), 0);
+    try file.writePositionalAll(ctx.io, h.items, 0);
     return path;
 }
 

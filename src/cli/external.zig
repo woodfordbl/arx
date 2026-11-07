@@ -29,8 +29,7 @@ fn searchDirs(ctx: *const Context, arena: Allocator) Allocator.Error![]const []c
     try dirs.append(arena, try std.mem.concat(arena, u8, &.{ bin, "/../libexec/arx" })); // installed
     try dirs.append(arena, try std.mem.concat(arena, u8, &.{ bin, "/commands" })); // source checkout
     try dirs.append(arena, try std.mem.concat(arena, u8, &.{ config, "/commands" }));
-    const names = try util.listNames(ctx.io, ctx.gpa, plugins);
-    defer util.freeNames(ctx.gpa, names);
+    const names = try util.listNames(ctx.io, arena, plugins);
     for (names) |name| try dirs.append(arena, try std.mem.concat(arena, u8, &.{ plugins, "/", name, "/commands" }));
     var path = std.mem.splitScalar(u8, ctx.getenv("PATH") orelse "", ':');
     while (path.next()) |dir| if (dir.len > 0) try dirs.append(arena, dir);
@@ -75,7 +74,7 @@ pub fn run(ctx: *const Context, name: []const u8, args: []const []const u8) Allo
     try argv.append(a, path);
     if (args.len > 2) try argv.appendSlice(a, args[2..]);
     const err = std.process.replace(ctx.io, .{ .argv = argv.items, .environ_map = &env });
-    render.printErr(ctx.io, "arx: cannot run {s}: {s}\n", .{ path, proc.describeSpawnError(err) });
+    render.printErr(ctx.io, "arx: cannot run {s}: {s}\n", .{ path, util.describeError(err) });
     return .@"error";
 }
 
@@ -111,7 +110,7 @@ fn printCommands(ctx: *const Context, out: *std.Io.Writer) !void {
             if (isCommand(ctx, try std.mem.concat(a, u8, &.{ dir, "/", entry }))) try names.append(a, name);
         }
     }
-    util.sortStrings([]const u8, names.items);
+    util.sortStrings(names.items);
     try out.writeAll("commands:\n");
     for (names.items) |name| {
         const path = (try find(ctx, a, name)) orelse continue;

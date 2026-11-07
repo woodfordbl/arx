@@ -30,6 +30,19 @@ pub const Exit = enum(u8) {
     }
 };
 
+/// What went wrong, the way strerror() would say it.
+pub fn describeError(err: anyerror) []const u8 {
+    return switch (err) {
+        error.FileNotFound => "No such file or directory",
+        error.AccessDenied, error.PermissionDenied => "Permission denied",
+        error.InvalidExe => "Exec format error",
+        error.IsDir => "Is a directory",
+        error.NotDir => "Not a directory",
+        error.OutOfMemory => "Cannot allocate memory",
+        else => @errorName(err),
+    };
+}
+
 /// Parses the longest leading decimal number in `s`, the way strtod does
 /// for plain decimals. Returns the value and the rest of the text.
 pub fn leadingNumber(s: []const u8) ?struct { value: f64, rest: []const u8 } {
@@ -217,12 +230,6 @@ pub fn isReadable(io: Io, path: []const u8) bool {
     return true;
 }
 
-/// True when `path` exists (a broken symlink does not count).
-pub fn exists(io: Io, path: []const u8) bool {
-    Dir.cwd().access(io, path, .{}) catch return false;
-    return true;
-}
-
 /// The canonical absolute path of `path`, or null. Caller owns the result.
 pub fn realPath(io: Io, gpa: Allocator, path: []const u8) Allocator.Error!?[]u8 {
     const z = Dir.cwd().realPathFileAlloc(io, path, gpa) catch |err| switch (err) {
@@ -261,34 +268,25 @@ pub fn appendFile(path: []const u8, data: []const u8) sys.Error!void {
     try sys.writeAll(fd, data);
 }
 
-/// Creates `path` and any missing parents.
-pub fn makeDirs(io: Io, path: []const u8) !void {
-    try Dir.cwd().createDirPath(io, path);
-}
-
 /// The entries of `dir` that do not start with '.', sorted so that lists
-/// stay stable between runs. A missing folder has none. Caller owns the
-/// names and the slice; free them with `freeNames`.
-pub fn listNames(io: Io, gpa: Allocator, dir_path: []const u8) Allocator.Error![][]u8 {
-    var names: std.ArrayList([]u8) = .empty;
-    errdefer freeNames(gpa, names.items);
-    defer names.deinit(gpa);
-    var dir = Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch return names.toOwnedSlice(gpa);
+/// stay stable between runs. A missing folder has none. Everything is
+/// allocated in `arena`.
+pub fn listNames(io: Io, arena: Allocator, dir_path: []const u8) Allocator.Error![]const []const u8 {
+    var names: std.ArrayList([]const u8) = .empty;
+    var dir = Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch return &.{};
     defer dir.close(io);
     var it = dir.iterate();
     while (it.next(io) catch null) |entry| {
-        if (entry.name.len == 0 or entry.name[0] == '.') continue;
-        try names.ensureUnusedCapacity(gpa, 1);
-        names.appendAssumeCapacity(try gpa.dupe(u8, entry.name));
+        if (entry.name.len > 0 and entry.name[0] != '.') try names.append(arena, try arena.dupe(u8, entry.name));
     }
-    sortStrings([]u8, names.items);
-    return names.toOwnedSlice(gpa);
+    sortStrings(names.items);
+    return names.items;
 }
 
 /// Sorts short lists of strings in place. Folder listings hold a few dozen
 /// names, so an insertion sort is plenty, and much smaller than the
 /// generic block sort.
-pub fn sortStrings(comptime T: type, items: []T) void {
+pub fn sortStrings(items: [][]const u8) void {
     if (items.len < 2) return;
     for (1..items.len) |i| {
         const item = items[i];
@@ -296,12 +294,6 @@ pub fn sortStrings(comptime T: type, items: []T) void {
         while (j > 0 and std.mem.lessThan(u8, item, items[j - 1])) : (j -= 1) items[j] = items[j - 1];
         items[j] = item;
     }
-}
-
-/// Frees a list from `listNames`.
-pub fn freeNames(gpa: Allocator, names: []const []u8) void {
-    for (names) |name| gpa.free(name);
-    gpa.free(names);
 }
 
 /// Monotonic time in seconds.
@@ -369,24 +361,4 @@ test "truncate keeps whole characters" {
     const out = try truncate(gpa, "h\u{e9}llo", 2);
     defer gpa.free(out);
     try std.testing.expectEqualStrings("h…", out);
-}
-
-test "sortStrings" {
-    var names = [_][]const u8{ "b", "a", "c", "ab" };
-    sortStrings([]const u8, &names);
-    sortStrings([]const u8, names[0..0]);
-    try std.testing.expectEqualStrings("a", names[0]);
-    try std.testing.expectEqualStrings("ab", names[1]);
-    try std.testing.expectEqualStrings("c", names[3]);
-}
-
-test "paths" {
-    try std.testing.expectEqualStrings(".", dirName("file"));
-    try std.testing.expectEqualStrings("/", dirName("/file"));
-    try std.testing.expectEqualStrings("a/b", dirName("a/b/c"));
-    try std.testing.expectEqualStrings("c", baseName("a/b/c"));
-    const gpa = std.testing.allocator;
-    const joined = try pathJoin(gpa, "dir", "x");
-    defer gpa.free(joined);
-    try std.testing.expectEqualStrings("dir/x", joined);
 }

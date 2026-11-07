@@ -20,16 +20,20 @@ const Agent = agent_mod.Agent;
 const loop = @import("loop.zig");
 const Exit = util.Exit;
 
-/// Opens or resumes the session and points the event stream at it.
-fn openSession(a: *Agent) !?Exit {
+/// Loads the harness, opens or resumes the session, and starts the event
+/// stream and observers.
+fn start(a: *Agent) !?Exit {
     const ctx = a.ctx;
-    const gpa = ctx.gpa;
+    var err: std.ArrayList(u8) = .empty;
+    defer err.deinit(ctx.gpa);
+    a.spec = (try spec_mod.load(ctx, a.spec_path, a.sets, &err)) orelse {
+        render.printErr(ctx.io, "{s}", .{err.items});
+        return .usage;
+    };
     const opened = if (a.resume_ref) |ref| Session.open(ctx, ref, &a.messages) else Session.create(ctx, a.depth);
-    a.session = opened catch |err| {
-        if (err == error.OutOfMemory) return error.OutOfMemory;
-        render.printErr(ctx.io, "arx: cannot {s} session {s}\n", .{
-            if (a.resume_ref != null) "resume" else "create", a.resume_ref orelse "",
-        });
+    a.session = opened catch |e| {
+        if (e == error.OutOfMemory) return error.OutOfMemory;
+        render.printErr(ctx.io, "arx: cannot {s} session {s}\n", .{ if (a.resume_ref != null) "resume" else "create", a.resume_ref orelse "" });
         return if (a.resume_ref != null) .usage else .@"error";
     };
     const s = &a.session.?;
@@ -37,33 +41,14 @@ fn openSession(a: *Agent) !?Exit {
     a.events.depth = a.depth;
     a.events.turn = s.turns;
     a.events.view.enabled = !a.quiet;
-    const path = try std.mem.concat(gpa, u8, &.{ s.dir, "/events.jsonl" });
-    defer gpa.free(path);
-    a.events.open(path, a.events_target) catch {
+    a.events.open(try std.mem.concat(s.arena.allocator(), u8, &.{ s.dir, "/events.jsonl" }), a.events_target) catch {
         render.printErr(ctx.io, "arx: cannot open --events {s}\n", .{a.events_target.?});
         return .usage;
     };
-    return null;
-}
-
-/// Loads the harness and starts the session.
-fn start(a: *Agent) !?Exit {
-    const ctx = a.ctx;
-    const gpa = ctx.gpa;
-    var err: std.ArrayList(u8) = .empty;
-    defer err.deinit(gpa);
-    a.spec = (try spec_mod.load(ctx, a.spec_path, a.sets, &err)) orelse {
-        render.printErr(ctx.io, "{s}", .{err.items});
-        return .usage;
-    };
-    if (try openSession(a)) |code| return code;
-    {
-        // Observers get the same ARX_* variables as tools.
-        var env = try tool_exec.environ(a, null, a.depth);
-        defer env.deinit();
-        for (json.items(json.field(a.spec.root, "observers"))) |observer| {
-            if (observer == .string) a.events.addObserver(observer.string, &env);
-        }
+    var env = try tool_exec.environ(a, null, a.depth); // observers get the same ARX_* variables as tools
+    defer env.deinit();
+    for (json.items(json.field(a.spec.root, "observers"))) |observer| {
+        if (observer == .string) a.events.addObserver(observer.string, &env);
     }
     try tools.build(a);
     var event = try a.events.begin("session.start");
@@ -85,16 +70,11 @@ fn begin(a: *Agent, prompt: []const u8) !void {
     try a.addMessage("system", system);
     var arena: std.heap.ArenaAllocator = .init(gpa);
     defer arena.deinit();
-    const outcome = try hooks.run(a, arena.allocator(), "session_start", json.object());
+    const outcome = try hooks.run(a, arena.allocator(), "session_start", "");
     const first = try agent_mod.firstMessage(a, prompt);
     defer gpa.free(first);
-    if (json.str(outcome.output, "context")) |context| {
-        const joined = try std.mem.concat(gpa, u8, &.{ first, "\n\n", context });
-        defer gpa.free(joined);
-        try a.addMessage("user", joined);
-    } else {
-        try a.addMessage("user", first);
-    }
+    const context = json.str(outcome.output, "context");
+    try a.addMessage("user", if (context) |c| try arena.allocator().print("{s}\n\n{s}", .{ first, c }) else first);
 }
 
 /// Headless: one task, run until the agent stops.
@@ -170,29 +150,17 @@ fn interactive(a: *Agent) !Exit {
 
 /// Prints --json output, or the final answer when it was not already shown.
 fn printResult(a: *Agent, code: Exit) Allocator.Error!void {
-    const gpa = a.ctx.gpa;
     const answer = a.final_output orelse "";
     var buf: [4096]u8 = undefined;
     var w = Io.File.stdout().writerStreaming(a.ctx.io, &buf);
     const out = &w.interface;
     if (a.json_output) {
-        var arena: std.heap.ArenaAllocator = .init(gpa);
-        defer arena.deinit();
-        const t = arena.allocator();
         const s = a.session;
-        var r = json.object();
-        try json.put(t, &r, "session", json.string(a.sessionId()));
-        try json.put(t, &r, "status", json.string(code.status()));
-        try json.put(t, &r, "exit", .{ .integer = @backingInt(code) });
-        try json.put(t, &r, "final_output", json.string(answer));
-        try json.put(t, &r, "turns", .{ .integer = a.turns() });
-        var tokens = json.object();
-        try json.put(t, &tokens, "input", .{ .integer = if (s) |x| x.tokens_in else 0 });
-        try json.put(t, &tokens, "output", .{ .integer = if (s) |x| x.tokens_out else 0 });
-        try json.put(t, &r, "tokens", tokens);
-        try json.put(t, &r, "cost", json.number(if (s) |x| x.cost else 0));
-        json.write(out, r, .compact) catch {};
-        out.writeByte('\n') catch {};
+        out.print("{{\"session\":{f},\"status\":\"{s}\",\"exit\":{d},\"final_output\":{f},\"turns\":{d},\"tokens\":{{\"input\":{d},\"output\":{d}}},\"cost\":{f}}}\n", .{
+            json.fmt(.{ .string = a.sessionId() }), code.status(),                                   @backingInt(code),
+            json.fmt(.{ .string = answer }),        a.turns(),                                       if (s) |x| x.tokens_in else 0,
+            if (s) |x| x.tokens_out else 0,         json.fmt(json.number(if (s) |x| x.cost else 0)),
+        }) catch {};
     } else if (answer.len > 0 and !(a.events.view.enabled and sys.isatty(1) and sys.isatty(2))) {
         out.print("{s}\n", .{answer}) catch {}; // on a terminal the view already showed it
     }

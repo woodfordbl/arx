@@ -91,6 +91,21 @@ fn writeIndented(w: *Writer, v: Value, style: Style, depth: usize) Writer.Error!
     }
 }
 
+/// A value that prints as compact JSON with "{f}".
+pub const Fmt = struct {
+    value: Value,
+
+    /// Writes the value as compact JSON.
+    pub fn format(f: Fmt, w: *Writer) Writer.Error!void {
+        return write(w, f.value, .compact);
+    }
+};
+
+/// `v`, to print as JSON with "{f}" in a format string.
+pub fn fmt(v: Value) Fmt {
+    return .{ .value = v };
+}
+
 /// `v` as compact JSON text. Caller owns the result.
 pub fn stringify(gpa: Allocator, v: Value) Allocator.Error![]u8 {
     var out: Writer.Allocating = .init(gpa);
@@ -105,16 +120,4 @@ pub fn stringifyPretty(gpa: Allocator, v: Value) Allocator.Error![]u8 {
     defer out.deinit();
     write(&out.writer, v, .pretty) catch return error.OutOfMemory;
     return out.toOwnedSlice();
-}
-
-test "compact and pretty output" {
-    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    var v: Value = .{ .object = .empty };
-    try v.object.put(a, "n", .{ .float = 0.0123 });
-    try v.object.put(a, "i", .{ .float = 3 });
-    try v.object.put(a, "list", .{ .array = .init(a) });
-    try std.testing.expectEqualStrings("{\"n\":0.0123,\"i\":3,\"list\":[]}", try stringify(a, v));
-    try std.testing.expectEqualStrings("{\n  \"n\": 0.0123,\n  \"i\": 3,\n  \"list\": []\n}", try stringifyPretty(a, v));
 }

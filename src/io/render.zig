@@ -67,91 +67,54 @@ pub const View = struct {
     /// events), and false for our own live events (whose text was drawn as
     /// it streamed).
     pub fn event(v: *View, e: json.Value, from_log: bool) void {
-        const kind = json.strOr(e, "type", "");
         const depth = json.int(e, "depth", 0);
-        if (std.mem.eql(u8, kind, "model.delta")) {
-            if (from_log) v.text(depth, json.strOr(e, "text", ""));
-        } else if (!v.work(e, kind, depth)) {
-            v.harness(e, kind, depth);
-        }
-    }
-
-    /// Draws the model and tool events. Returns false for other events.
-    fn work(v: *View, e: json.Value, kind: []const u8, depth: i64) bool {
-        if (eql(kind, "model.message")) {
-            const in = json.num(e, "tokens_in", 0);
-            const out = json.num(e, "tokens_out", 0);
-            if (in != 0 or out != 0) {
-                v.line(depth, dim, "  · {f} in · {f} out · ${d:.5}", .{ human(in), human(out), json.num(e, "cost", 0) });
-            }
-        } else if (eql(kind, "model.retry")) {
-            v.line(depth, yellow, "  ↻ retry {d} in {d:.1}s: {s}", .{
-                json.int(e, "attempt", 0), json.num(e, "wait_s", 0), json.strOr(e, "error", ""),
-            });
-        } else if (eql(kind, "tool.start")) {
-            v.line(depth, cyan, "  ⏵ {s} {s}", .{ json.strOr(e, "name", ""), json.strOr(e, "preview", "") });
-        } else if (eql(kind, "tool.end")) {
-            v.line(depth, if (json.boolean(e, "error", false)) red else dim, "    ↳ exit {d} · {d:.1}s · {f} B  {s}", .{
-                json.int(e, "exit", 0),
-                json.num(e, "secs", 0),
-                human(json.num(e, "bytes", 0)),
-                json.strOr(e, "preview", ""),
-            });
-        } else {
-            return false;
-        }
-        return true;
-    }
-
-    /// Draws the harness and session events.
-    fn harness(v: *View, e: json.Value, kind: []const u8, depth: i64) void {
-        if (eql(kind, "session.start")) {
-            v.line(depth, dim, "● arx {s} · {s} · {s} · session {s}", .{
-                v.version,
-                json.strOr(e, "name", "agent"),
-                json.strOr(e, "model", "?"),
-                json.strOr(e, "session", ""),
-            });
-        } else if (eql(kind, "hook")) {
-            const err = json.str(e, "error");
-            const decision = json.str(e, "decision");
-            if (err != null or decision != null) {
-                v.line(depth, if (err != null) red else magenta, "  ⚑ hook {s}: {s}", .{
-                    json.strOr(e, "point", ""), err orelse decision.?,
-                });
-            }
-        } else if (eql(kind, "harness.reload")) {
-            if (json.boolean(e, "ok", false)) {
-                v.line(depth, green, "  ↻ harness reloaded ({d:.1} ms)", .{json.num(e, "ms", 0)});
-            } else {
-                v.line(depth, red, "  ✗ harness edit rejected; still using the previous version:\n{s}", .{json.strOr(e, "errors", "")});
-            }
-        } else if (eql(kind, "compact")) {
-            v.line(depth, blue, "  ⇣ compacted ({s}): {f} → {f} tokens", .{
-                json.strOr(e, "strategy", ""),
-                human(json.num(e, "tokens_before", 0)),
-                human(json.num(e, "tokens_after", 0)),
-            });
-        } else if (eql(kind, "note")) {
-            v.line(depth, yellow, "  ✎ {s}", .{json.strOr(e, "text", "")});
-        } else if (eql(kind, "error")) {
-            v.line(depth, red, "  ✗ {s}", .{json.strOr(e, "error", "")});
-        } else if (eql(kind, "session.end")) {
-            v.line(depth, bold, "● {s} · {d} turns · {f} tokens · ${d:.5} · {d:.1}s", .{
-                json.strOr(e, "status", ""),
-                json.int(e, "turns", 0),
-                human(json.num(e, "tokens", 0)),
-                json.num(e, "cost", 0),
-                json.num(e, "secs", 0),
-            });
+        const kind = std.meta.stringToEnum(enum {
+            @"model.delta",
+            @"model.message",
+            @"model.retry",
+            @"tool.start",
+            @"tool.end",
+            @"session.start",
+            @"session.end",
+            hook,
+            @"harness.reload",
+            compact,
+            note,
+            @"error",
+        }, json.strOr(e, "type", "")) orelse return;
+        switch (kind) {
+            .@"model.delta" => if (from_log) v.text(depth, json.strOr(e, "text", "")),
+            .@"model.message" => {
+                const in = json.num(e, "tokens_in", 0);
+                const out = json.num(e, "tokens_out", 0);
+                if (in != 0 or out != 0) v.line(depth, dim, "  · {f} in · {f} out · ${d:.5}", .{ human(in), human(out), json.num(e, "cost", 0) });
+            },
+            .@"model.retry" => v.line(depth, yellow, "  ↻ retry {d} in {d:.1}s: {s}", .{ json.int(e, "attempt", 0), json.num(e, "wait_s", 0), json.strOr(e, "error", "") }),
+            .@"tool.start" => v.line(depth, cyan, "  ⏵ {s} {s}", .{ json.strOr(e, "name", ""), json.strOr(e, "preview", "") }),
+            .@"tool.end" => v.line(depth, if (json.boolean(e, "error", false)) red else dim, "    ↳ exit {d} · {d:.1}s · {f} B  {s}", .{
+                json.int(e, "exit", 0), json.num(e, "secs", 0), human(json.num(e, "bytes", 0)), json.strOr(e, "preview", ""),
+            }),
+            .@"session.start" => v.line(depth, dim, "● arx {s} · {s} · {s} · session {s}", .{
+                v.version, json.strOr(e, "name", "agent"), json.strOr(e, "model", "?"), json.strOr(e, "session", ""),
+            }),
+            .@"session.end" => v.line(depth, bold, "● {s} · {d} turns · {f} tokens · ${d:.5} · {d:.1}s", .{
+                json.strOr(e, "status", ""), json.int(e, "turns", 0), human(json.num(e, "tokens", 0)), json.num(e, "cost", 0), json.num(e, "secs", 0),
+            }),
+            .hook => if (json.str(e, "error") orelse json.str(e, "decision")) |what| {
+                v.line(depth, if (json.str(e, "error") != null) red else magenta, "  ⚑ hook {s}: {s}", .{ json.strOr(e, "point", ""), what });
+            },
+            .@"harness.reload" => if (json.boolean(e, "ok", false))
+                v.line(depth, green, "  ↻ harness reloaded ({d:.1} ms)", .{json.num(e, "ms", 0)})
+            else
+                v.line(depth, red, "  ✗ harness edit rejected; still using the previous version:\n{s}", .{json.strOr(e, "errors", "")}),
+            .compact => v.line(depth, blue, "  ⇣ compacted ({s}): {f} → {f} tokens", .{
+                json.strOr(e, "strategy", ""), human(json.num(e, "tokens_before", 0)), human(json.num(e, "tokens_after", 0)),
+            }),
+            .note => v.line(depth, yellow, "  ✎ {s}", .{json.strOr(e, "text", "")}),
+            .@"error" => v.line(depth, red, "  ✗ {s}", .{json.strOr(e, "error", "")}),
         }
     }
 };
-
-/// True when the strings are equal.
-fn eql(a: []const u8, b: []const u8) bool {
-    return std.mem.eql(u8, a, b);
-}
 
 /// Indents subagent output with one bar per level.
 fn indent(w: *Io.Writer, depth: i64) void {
@@ -182,13 +145,13 @@ fn human(n: f64) Human {
 pub fn watch(ctx: *const Context, ref: []const u8, raw: bool, from_start: bool) Allocator.Error!util.Exit {
     const gpa = ctx.gpa;
     const io = ctx.io;
-    const dir = (try session.sessionDir(ctx, gpa, ref)) orelse {
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    const dir = (try session.sessionDir(ctx, arena.allocator(), ref)) orelse {
         printErr(io, "arx: no session {s}\n", .{ref});
         return .usage;
     };
-    defer gpa.free(dir);
-    const path = try std.mem.concat(gpa, u8, &.{ dir, "/events.jsonl" });
-    defer gpa.free(path);
+    const path = try std.mem.concat(arena.allocator(), u8, &.{ dir, "/events.jsonl" });
     const id = util.baseName(dir);
     var file = Io.Dir.cwd().openFile(io, path, .{}) catch {
         printErr(io, "arx: cannot open {s}\n", .{path});
@@ -238,8 +201,8 @@ fn watchLine(ctx: *const Context, view: *View, line: []const u8, id: []const u8,
     if (!raw) view.event(e, true);
     if (json.int(e, "depth", 0) == 0 and std.mem.eql(u8, json.strOr(e, "session", ""), id)) {
         const kind = json.strOr(e, "type", "");
-        if (eql(kind, "session.end")) return true;
-        if (eql(kind, "session.start")) return false;
+        if (std.mem.eql(u8, kind, "session.end")) return true;
+        if (std.mem.eql(u8, kind, "session.start")) return false;
     }
     return ended;
 }

@@ -52,7 +52,7 @@ fn runOne(a: *Agent, arena: Allocator, layer: Layer, point: []const u8, path: []
     defer out.deinit();
     var err: proc.Collector = .init(gpa);
     defer err.deinit();
-    const r = proc.run(a.ctx, .{
+    const r = try proc.run(a.ctx, .{
         .argv = &.{path},
         .stdin = input,
         .timeout = json.duration(options(a, layer, point), "timeout", 10),
@@ -103,7 +103,7 @@ fn combine(arena: Allocator, point: []const u8, answer: json.Value, output: *?js
             try json.put(arena, &output.*.?, k, .{ .string = try arena.print("{s}\n\n{s}", .{ before, text }) });
         } else {
             var fresh = json.object();
-            try json.put(arena, &fresh, k, json.string(text));
+            try json.put(arena, &fresh, k, .{ .string = text });
             output.* = fresh;
         }
         return false;
@@ -114,18 +114,16 @@ fn combine(arena: Allocator, point: []const u8, answer: json.Value, output: *?js
     return decides;
 }
 
-/// Runs hooks/<point> in every layer that has one, in layer order, with
-/// `input` plus point, session and turn on stdin. A hook that fails (non-zero
-/// exit, timeout, or output that is not a JSON object) is reported and then
+/// Runs hooks/<point> in every layer that has one, in layer order, with a
+/// JSON object on stdin: `fields` (object members such as `"tool":{...}`,
+/// or "") plus point, session and turn. A hook that fails (non-zero exit,
+/// timeout, or output that is not a JSON object) is reported and then
 /// ignored, unless its options say `fail: closed`; then the run stops with
 /// status `failed`. The output lives in `arena`.
-pub fn run(a: *Agent, arena: Allocator, point: []const u8, input: json.Value) Allocator.Error!Outcome {
-    var full = input;
-    if (full != .object) full = json.object();
-    try json.putString(arena, &full, "point", point);
-    try json.putString(arena, &full, "session", a.sessionId());
-    try json.put(arena, &full, "turn", .{ .integer = a.turns() });
-    const text = try json.stringify(arena, full);
+pub fn run(a: *Agent, arena: Allocator, point: []const u8, fields: []const u8) Allocator.Error!Outcome {
+    const text = try arena.print("{{{s}{s}\"point\":\"{s}\",\"session\":\"{s}\",\"turn\":{d}}}", .{
+        fields, if (fields.len > 0) "," else "", point, a.sessionId(), a.turns(),
+    });
     var outcome: Outcome = .{ .status = .none };
     for (a.spec.layers) |layer| {
         const path = try std.mem.concat(arena, u8, &.{ layer.dir, "/hooks/", point });
