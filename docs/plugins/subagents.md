@@ -90,8 +90,8 @@ subagent's own harness.
 | The task leaves out context | the subagent starts with nothing but the task | say in `description` that the model must give the complete task |
 | The `agent:` path is wrong | `tools.x: subagent spec ... not found`, and there is no tool | `agent:` is relative to the folder of the spec or `plugin.yaml` that names it |
 | You expect the parent's budget to be shared | each subagent gets the full caps again | set lower `limits:` in the subagent's spec |
-| The subagent comes from a user plugin | it loads your user plugins too, so it has its own subagent tool and can call itself, up to the depth cap | add a `plugins:` list (or `plugins: []`) to its spec |
-| The subagent can edit files you did not plan | it has `bash` and `edit` by default | turn them off in its spec with `enabled: false` |
+| The subagent comes from a user plugin | it loads your user plugins too, so it has its own subagent tool and can call itself, up to the depth cap | add a `plugins:` list to its spec, such as `plugins: [shell]` |
+| The subagent can edit files you did not plan | it gets `bash` and `edit` from your `shell` plugin | turn `edit` off in its spec with `tools: {edit: {enabled: false}}` |
 
 ## Planned
 

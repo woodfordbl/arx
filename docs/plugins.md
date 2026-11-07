@@ -24,9 +24,9 @@ live on the next turn.
 
 | Kind | What it is | Where it lives | When it runs | Example in [`plugins/`](../plugins) |
 |---|---|---|---|---|
-| [Tool](plugins/tools.md) | an action the model can call | `tools/<name>` | when the model calls it | `word-count`, `clock` |
+| [Tool](plugins/tools.md) | an action the model can call | `tools/<name>` | when the model calls it | `shell` (`bash`, `edit`), `word-count`, `clock` |
 | [Subagent](plugins/subagents.md) | a tool that runs arx again, with its own spec | `tools: {name: {agent: spec.yaml}}` | when the model calls it | `reviewer` |
-| [Hook](plugins/hooks.md) | a check or change at a fixed point of the loop | `hooks/<point>` | at its hook point | `guard`, `git-context`, `fail-hint` |
+| [Hook](plugins/hooks.md) | a check or change of the request, reply, call or result | `hooks/<point>` | at its hook point | `guard`, `git-context`, `fail-hint` |
 | [Compactor](plugins/compactors.md) | a program that shortens the history | `compactors: {name: path}` | when the prompt passes the trigger | `keep-last` |
 | [Observer](plugins/observers.md) | a reader of the event stream | `observers: [command]` | for the whole session | `notify` |
 | [Driver](plugins/drivers.md) | a program that runs arx | anywhere | when you run it | [`resume_on_cap.sh`](../examples/plugins/drivers/resume_on_cap.sh) |
@@ -38,9 +38,9 @@ a plugin folder, or your config folder.
 
 ## More
 
-- **[Planned changes](plugins/planned.md):** hooks on the raw request and
-  reply, a tool runtime that runs calls in parallel, the `shell` plugin, and
-  kits. None of this is built yet.
+- **[Planned changes](plugins/planned.md):** a tool runtime that runs calls
+  in parallel, kits, the active list and hook bands. None of this is built
+  yet.
 - **[The marketplace](../plugins):** one working plugin of each kind.
   [`examples/plugins/`](../examples/plugins) is a harness that uses all of
   them, and `make test` runs it.

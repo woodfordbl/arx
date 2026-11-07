@@ -66,7 +66,7 @@ characters.
 | `fail` | string | `open` | `open` ignores a failed hook. `closed` makes a failed `before_tool` hook deny the call. |
 
 The keys under `hooks:` must be hook points: `session_start`,
-`before_tool`, `after_tool`, `stop`.
+`before_model`, `after_model`, `before_tool`, `after_tool`, `stop`.
 
 ### Checking a plugin
 
@@ -86,7 +86,8 @@ skills=
 commands=
 ```
 
-`missing` lists the programs in `requires` that are not on `PATH`. If the
+`tools` lists tool files, not schema files (`tools/<name>.json`). `missing`
+lists the programs in `requires` that are not on `PATH`. If the
 plugin is not valid, it prints the problems on stderr and exits 2. It does
 not check that `name` matches the folder name; loading does.
 
@@ -110,6 +111,7 @@ Tools, hooks, compactors and observers run with these variables:
 |---|---|---|
 | Tool (a call) | yes | in a plugin |
 | Tool (`--schema`) | no | no |
+| Tool (`tools/<name>.json`) | no process runs | — |
 | Hook | yes | in a plugin |
 | Compactor | yes | no |
 | Observer | yes | in a plugin |
@@ -127,14 +129,18 @@ Tools, hooks, compactors and observers run with these variables:
 
 ## Hook points
 
-| Point | Extra input | Output it may print |
+| Point | Input | Output it may print |
 |---|---|---|
 | `session_start` | none | `{"context": "..."}` |
-| `before_tool` | `{"tool": {"name", "args"}}` | `{"decision": "deny", "reason": "..."}` |
-| `after_tool` | `{"tool": {"name"}, "result": {"text", "error"}}` | `{"note": "..."}` |
+| `before_model` | `{"messages", "tools", "model", "settings", "reason"}` | any of `messages`, `tools`, `model`, `settings` |
+| `after_model` | `{"reply", "usage", "finish"}` | `reply` |
+| `before_tool` | `{"id", "name", "args"}` | any of `name`, `args`, `result`; or `{"decision": "deny", "reason": "..."}` |
+| `after_tool` | `{"call": {"id", "name", "args"}, "result", "is_error"}` | `result`; or `{"note": "..."}` |
 | `stop` | `{"last_message": "..."}` | `{"decision": "continue" or "restart", "message": "..."}` |
 
-Every input also has `point`, `session` and `turn`. See [Hooks](hooks.md).
+Every input also has `point`, `session` and `turn`. At the four middle points
+the hooks form a chain, and each prints only the fields it changes. See
+[Hooks](hooks.md).
 
 ## Events
 
@@ -156,7 +162,7 @@ new `v`.
 | `model.retry` | `attempt`, `status` (HTTP), `curl_exit`, `wait_s`, `error` |
 | `tool.start` | `id`, `name`, `preview` |
 | `tool.end` | `id`, `name`, `error`, `preview`; process tools add `exit`, `secs`, `bytes` and `path` |
-| `hook` | `point`, `secs`, `plugin` (for a plugin's hook), and `decision` or `error` |
+| `hook` | `point`, `secs`, `plugin` (for a plugin's hook); `changed` (the fields the hook changed), `decision`, or `error` |
 | `harness.reload` | `ok`, `ms`, and `tools` (a count) or `errors` |
 | `compact` | `strategy`, `tokens_before`, `tokens_after` |
 | `note` | `text`: harness notes, and caps reached |
@@ -177,6 +183,20 @@ Each session has a folder `.arx/sessions/<id>/` in the working directory.
 | `meta.json` | turns, tokens, cost and status, for `--resume` |
 | `tool-NNNN.out` | the full output of each process tool call |
 | `inbox` | commands from `arx ctl` |
+
+## arx tool
+
+`arx tool bash|edit` runs a tool of the [shell plugin](tools.md#bash-and-edit)
+with the arguments as JSON on stdin. `arx tool NAME --schema` prints its
+schema.
+
+| Tool | Arguments | Exit code |
+|---|---|---|
+| `bash` | `{"command": "..."}`, run with `sh -c` in the working directory, with stdin empty | the command's exit code |
+| `edit` | `{"path", "old", "new"}`: replaces `old`, which must occur exactly once; an empty `old` creates a new file | `0`, or `1` when the edit cannot be made |
+
+Arguments that are not valid give exit `1` and a message. A name other than
+`bash` or `edit` is a usage error (exit `2`).
 
 ## arx plugin
 

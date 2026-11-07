@@ -78,7 +78,7 @@ The full version, with a limit on the rounds, is
 | The driver parses the terminal view | the format can change, and it has colors | use `--json` and `--quiet`, or `--events` |
 | A resumed run has the same turn cap | the turn count includes the turns before, so the cap stops it at once | raise `--cap turns` by the turns already used |
 | The driver uses `last` while other runs start in the same folder | `last` points at the newest session, which may be another one | read `session` from the JSON result and use the id |
-| The driver lets the agent choose its plugins | the agent can edit `plugins:` in its spec | pin them with `--set 'plugins=[...]'` |
+| The driver lets the agent choose its plugins | the agent can edit `plugins:` in its spec | pin them with `--set 'plugins=["shell","guard"]'`; keep `shell`, or the agent has no `bash` and `edit` |
 | The driver trusts `final_output` as the score | the agent can write anything | measure the result with your own program |
 
 ## Planned

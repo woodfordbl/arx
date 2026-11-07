@@ -132,9 +132,9 @@ arx starts it, gives it JSON, and reads what it prints.
 
 | Kind | Where | Contract |
 |---|---|---|
-| [Tool](docs/plugins/tools.md) | `tools/<name>` | `--schema` prints `{"description", "parameters"}`; a call gets JSON on stdin; stdout is the result. |
+| [Tool](docs/plugins/tools.md) | `tools/<name>` | `tools/<name>.json` or `--schema` gives `{"description", "parameters"}`; a call gets JSON on stdin; stdout is the result. `bash` and `edit` come from the `shell` plugin. |
 | [Subagent](docs/plugins/subagents.md) | `tools: {name: {agent: spec.yaml}}` | arx runs itself one level deeper. |
-| [Hook](docs/plugins/hooks.md) | `hooks/<point>` | `session_start`, `before_tool`, `after_tool`, `stop`: JSON in, optional decision out. |
+| [Hook](docs/plugins/hooks.md) | `hooks/<point>` | `before_model`, `after_model`, `before_tool`, `after_tool`: the raw request, reply, call or result in, the changed fields out. `session_start`, `stop`: JSON in, optional decision out. |
 | [Compactor](docs/plugins/compactors.md) | `compaction.strategy: <name or path>` | `{"messages", ...}` in, `{"messages"}` out. |
 | [Observer](docs/plugins/observers.md) | `observers: [command]` | the event stream on stdin, one JSON object per line. |
 | [Driver](docs/plugins/drivers.md) | anything that runs `arx -p … --json` | exit code, JSON result, event stream. |

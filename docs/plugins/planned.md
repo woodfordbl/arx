@@ -5,82 +5,19 @@ system, so that plugin authors can plan for it. The contracts can still
 change. For what works today, see the other pages of the
 [plugin guide](../plugins.md).
 
-The redesign has six parts:
+Two parts of the redesign are built and documented on the other pages:
+hooks on raw objects, with `before_model` and `after_model` ([Hooks](hooks.md)),
+and `bash` and `edit` in the `shell` plugin, with schema files
+([Tools](tools.md#bash-and-edit)). These parts are not built:
 
 | Part | What it adds | Section |
 |---|---|---|
-| Hook lifecycle | hooks on the raw request, reply, call and result; `before_model` and `after_model` | [Hook lifecycle](#hook-lifecycle) |
 | Tool runtime | keys on each call, calls that run at the same time, scheduler plugins | [Tool runtime](#tool-runtime) |
-| The `shell` plugin | `bash` and `edit` move out of the core | [The shell plugin](#the-shell-plugin) |
 | Kits | a kind with `kit.yaml` and no code, that makes one kind of agent | [Kits](#kits) |
 | The active list | one ordered list of plugins for each run | [The active list](#the-active-list) |
 | Hook bands | `policy`, `normal` and `final`: the order of hooks at one point | [Hook bands](#hook-bands) |
-
-## Hook lifecycle
-
-This contract replaces the hook outputs of today for `before_tool` and
-`after_tool`, and adds two hook points around the model call. Approval,
-compaction, rate limits and concurrency are then hooks and plugins, so the
-spec needs no settings for them.
-
-### One turn
-
-1. **`before_model`** gets the request. Its output is what the model gets.
-2. **The model** replies, with or without tool calls.
-3. **`after_model`** gets the reply, and can change or remove tool calls.
-4. **`before_tool`** runs once for each call. It allows the call, changes it,
-   or gives a result in place of the run. It also sets the call's keys.
-5. **The tool runtime** puts each allowed call in a queue. The scheduler
-   starts calls when their keys are free, and many calls can run at the same
-   time.
-6. **`after_tool`** runs when a call ends, and can change its result.
-7. **The results** go to the model in the order of the calls, so the
-   transcript is the same as when the calls run one at a time. Then the next
-   turn starts at step 1.
-
-### Hook points
-
-Each hook gets the raw object as JSON on stdin, with `point`, `session` and
-`turn` added. It prints the fields it changes, or nothing to keep the object
-as it is. A printed field replaces the field of the same name.
-
-| Point | Input (stdin) | Output it may print |
-|---|---|---|
-| `before_model` | `{"messages", "tools", "model", "settings", "reason"}` | any of `messages`, `tools`, `model`, `settings` |
-| `after_model` | `{"reply", "usage", "finish"}` | `{"reply": ...}` |
-| `before_tool` | `{"id", "name", "args", "keys"}` | any of `name`, `args`, `keys`; or `{"result": "..."}` to skip the tool |
-| `after_tool` | `{"call", "result", "is_error"}` | `{"result": "..."}`, and `{"backoff": {"key", "secs"}}` |
-
-`reason` is `turn`, or `context_overflow` when the provider said the context
-is too long. Messages use the format in [Compactors](compactors.md), with the
-`_` fields.
-
-- **Order:** the hooks at one point run by [band](#hook-bands), then in the
-  order of the [active list](#the-active-list). Each hook gets the output of
-  the hook before it. A plugin that the launcher pins runs first.
-- **Each call apart:** the `before_tool` hooks of different calls run at the
-  same time. A hook may wait for a person (approval), and the other calls do
-  not wait for it. A hook never waits for a free slot: that is the job of the
-  runtime.
-- **`after_tool` always runs** for a call that `before_tool` let through, also
-  after an error, a timeout or Ctrl-C.
-- **Changed calls:** if a hook changed `name` or `args`, arx adds one line to
-  the result, such as `[ran as: git push]`, so the model knows what ran.
-- **The history:** messages that `before_model` returns replace the history.
-  arx writes them to `transcript.jsonl` after a `{"_reset":true}` line, as
-  compaction does today. The transcript then shows exactly what the model
-  got.
-- **Compaction:** a compaction plugin is a `before_model` hook. If the
-  provider says the context is too long, arx runs `before_model` again with
-  `"reason": "context_overflow"`, then retries once. The compactor kind and the
-  built-in strategies then move to plugins.
-- **Long-lived hooks:** a hook can start once for each session and read one
-  JSON line for each call, so that it keeps state and starts no process for
-  each call.
-- **Hooks of today keep working:** `{"decision": "deny", "reason": "..."}`
-  from `before_tool` becomes the result `denied: <reason>`, and
-  `{"note": "..."}` from `after_tool` is added to the result. `session_start`
-  and `stop` do not change.
+| Hooks, more | long-lived hooks, and a pinned plugin that runs first | [More for hooks](#more-for-hooks) |
+| Trust and sandboxes | a policy folder, a `harness_edit` hook point, and `sandbox:` | [Other plans](#other-plans) |
 
 ## Tool runtime
 
@@ -99,8 +36,8 @@ only when no running call holds one of its keys.
 - **More than one key:** the runtime gives all the keys of a call together, or
   none of them. Two calls cannot each hold one key and wait for the other.
 
-A tool declares its keys in its `--schema` answer. `{name}` puts in the value
-of the top-level argument `name`:
+A tool declares its keys in its schema (`tools/<name>.json` or `--schema`).
+`{name}` puts in the value of the top-level argument `name`:
 
 ```json
 {"description": "...", "parameters": {...}, "keys": ["file:{path}"]}
@@ -114,12 +51,14 @@ of the top-level argument `name`:
 | `web_fetch` | `["host:{url}"]` | one request to each host at a time (`{url}` gives the host in a `host:` key) |
 | a subagent | `[]` | subagents run in parallel |
 
-- **Keys from a hook:** `keys` is a field of the call, so a `before_tool` hook
-  can calculate it and print it. For example, it can make `./a.py` and `a.py`
+- **Keys from a hook:** `keys` becomes a field of the raw call that
+  `before_tool` gets today (`{"id", "name", "args", "keys"}`), so a hook can
+  calculate it and print it. For example, it can make `./a.py` and `a.py`
   the same key, or give `git status` no keys so that it runs in parallel.
 - **Keys and results:** a call's keys must be known before it starts, so they
   cannot come from its own result. A result can slow later calls:
-  `after_tool` prints a `backoff` (for example after an HTTP 429), and a
+  `after_tool` prints a `backoff` (`{"backoff": {"key", "secs"}}`, for
+  example after an HTTP 429), and a
   scheduler plugin waits that long before it starts a call with that key.
   The built-in scheduler ignores `backoff`.
 
@@ -147,27 +86,21 @@ exchange one JSON object per line:
   once and send the real result later through the inbox, so that a subagent
   starts without a wait.
 
-## The shell plugin
+## More for hooks
 
-Today `bash` and `edit` are built into the core, and no plugin can replace
-them. The plan moves them into a plugin:
+The [hook lifecycle](hooks.md) is built. These additions are not:
 
-1. **The code stays in the binary.** `arx tool bash` and `arx tool edit` run
-   the C code of today, so the tools stay fast and need no other programs.
-2. **A `shell` plugin** has `tools/bash` and `tools/edit`. Each file is one
-   line, such as `exec "$ARX_BIN" tool edit`.
-3. **A schema file:** a file such as `tools/bash.json` gives the schema, so
-   arx starts no process to load the tool. `--schema` stays as the fallback.
-4. **No special cases:** every tool comes from a layer, and
-   `tools.<name>.timeout` works the same for all tools.
-5. **A `sandbox:` value** in the spec. arx does not read it: it gives it to
-   each tool and hook as `ARX_SANDBOX`. A sandbox plugin, such as
-   `sandbox-docker`, ships its own `bash` and `edit` that read this value. The
-   rule "the first tool with a name wins" does the rest.
-
-Without a plugin that gives tools, an agent can only chat, and `arx doctor`
-warns about it. A plugin that replaces a tool on purpose declares
-`replaces: [bash]`, so `arx check` does not warn about it.
+- **Long-lived hooks:** a hook can start once for each session and read one
+  JSON line for each call, so that it keeps state and starts no process for
+  each call.
+- **A pinned plugin runs first:** the hooks of a plugin that the launcher
+  pins run before all others at each point.
+- **Approval without a wait for others:** when the tool runtime runs calls at
+  the same time, the `before_tool` hooks of different calls also run at the
+  same time. A hook may then wait for a person, and the other calls do not
+  wait for it.
+- **Replacing a tool on purpose:** a plugin declares `replaces: [bash]`, so
+  `arx check` does not warn that it hides the shell plugin's `bash`.
 
 ## Kits
 
@@ -264,9 +197,10 @@ as today. A pinned policy comes before them. `arx plugin enable NAME` and
 
 ## Hook bands
 
-The hooks at one point are a pipeline, so their order is important. For
-example, compaction must run before cache breakpoints, and redaction must run
-last. List order alone breaks easily, so each hook point has three bands:
+Today the hooks at one point run as a chain in layer order. A chain is a
+pipeline, so its order is important: for example, compaction must run before
+cache breakpoints, and redaction must run last. List order alone breaks
+easily, so each hook point will have three bands:
 
 | Band | Runs | Examples |
 |---|---|---|
@@ -286,11 +220,15 @@ hooks:
   `changes: [args, keys]`.
 - **`arx check` warns about overlaps:** if two active plugins change the same
   field at one point, it shows them and their order.
-- **Each `hook` event lists the fields that the hook changed,** so you can see
-  which plugin changed what.
+- **Each `hook` event lists the fields that the hook changed.** This part is
+  built: see `changed` in the [hook event](reference.md#events).
 
 ## Other plans
 
+- **Sandboxes:** a `sandbox:` value in the spec. arx does not read it: it
+  gives it to each tool and hook as `ARX_SANDBOX`. A sandbox plugin, such as
+  `sandbox-docker`, ships its own `bash` and `edit` that read this value, in a
+  layer above the `shell` plugin.
 - **New variables:** `ARX_SANDBOX` (the spec's `sandbox:` value),
   `ARX_STATE_DIR` (`$ARX_SESSION_DIR/plugins/<name>/`, state for one session)
   and `ARX_DATA_DIR` (`.arx/state/<name>/`, data across sessions).

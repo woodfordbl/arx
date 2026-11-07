@@ -36,7 +36,7 @@ it, when, and what it must print. There are eight kinds:
 |---|---|---|
 | [Tool](tools.md) | the call's arguments as JSON | the result, as text |
 | [Subagent](subagents.md) | a task | its final answer (arx does this for it) |
-| [Hook](hooks.md) | JSON about the moment | nothing, or a JSON decision |
+| [Hook](hooks.md) | the raw request, reply, call or result; or JSON about the moment | the fields it changes, or a decision |
 | [Compactor](compactors.md) | the history as JSON | a shorter history as JSON |
 | [Observer](observers.md) | the event stream, one JSON line per event | nothing |
 | [Driver](drivers.md) | nothing: it runs arx | anything |
@@ -97,7 +97,7 @@ from. arx builds the layers in this order:
 | Part | Rule |
 |---|---|
 | Tools | The first layer with a working tool of a name wins. arx tells the agent about each tool that a higher layer hides. |
-| Hooks | Every layer's hook for a point runs, in layer order. See [More than one hook](hooks.md#more-than-one-hook) for how the answers combine. |
+| Hooks | Every layer's hook for a point runs, in layer order. Around the model and tool calls, each hook gets the object as the hook before it left it. See [More than one hook](hooks.md#more-than-one-hook). |
 | Skills | `{{skills}}` lists the skills of every layer. When two layers have a skill folder with the same name, the first one wins. |
 | Observers | All of them run. |
 | Compactors | All names are available. When two places name the same compactor, the spec wins, then the first plugin. |
@@ -110,9 +110,12 @@ plugin's tool with the same name.
 names the only plugins to use:
 
 ```yaml
-plugins: [guard, notify]   # only these two
-plugins: []                # no plugins at all
+plugins: [shell, guard]    # only these two
+plugins: []                # no plugins at all, so no bash and edit either
 ```
+
+`bash` and `edit` come from the `shell` plugin, so a list that leaves it out
+leaves the agent without them.
 
 A list also leaves out layer 3, so the harness is exactly the spec folder and
 the plugins it names. Use a list in experiment harnesses, so that a plugin you
@@ -123,7 +126,7 @@ install later cannot change a run.
 reload:
 
 ```sh
-arx -p "..." --set 'plugins=["guard"]'
+arx -p "..." --set 'plugins=["shell","guard"]'
 ```
 
 Write the list as JSON. `plugins=[guard]` is not valid.
@@ -138,20 +141,21 @@ starts.
 ## Hook point
 
 **Today.** A hook point is a fixed place in the run where arx runs hooks.
-There are four:
+There are six:
 
-| Point | When |
-|---|---|
-| `session_start` | once, before the first model call of a new session |
-| `before_tool` | before each tool call |
-| `after_tool` | after each tool call |
-| `stop` | when the model replies without calling a tool |
+| Point | When | The hook gets |
+|---|---|---|
+| `session_start` | once, before the first model call of a new session | the session |
+| `before_model` | before each model call | the request: messages, tools, model, settings |
+| `after_model` | after each model call | the reply |
+| `before_tool` | before each tool call | the call: id, name, args |
+| `after_tool` | after each tool call | the call and its result |
+| `stop` | when the model replies without calling a tool | the last message |
 
 A hook is the executable `hooks/<point>` in any layer. See [Hooks](hooks.md).
 
-**Planned:** two more points, `before_model` and `after_model`, and hooks that
-get and return the raw request, reply, call and result. See
-[Planned changes](planned.md#hook-lifecycle).
+**Planned:** hook bands (`policy`, `normal`, `final`) that order the hooks at
+one point. See [Hook bands](planned.md#hook-bands).
 
 ## Marketplace
 

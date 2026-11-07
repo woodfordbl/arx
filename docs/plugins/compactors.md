@@ -32,8 +32,10 @@ compaction: {strategy: keep_last, trigger: 0.7}
 
 - before a model call, when the prompt is larger than
   `compaction.trigger × context_window` (default 0.7 × 128000 tokens);
-- when the provider says the context is too long. arx compacts once and
-  retries the call.
+- when the provider says the context is too long, and no `before_model`
+  hook changed anything for that error. With the default `mask`, arx uses
+  `hybrid` here. Then it retries the call once. See
+  [Context overflow](hooks.md#context-overflow).
 
 **Input (stdin):**
 
@@ -98,10 +100,16 @@ grep '"type":"compact"' .arx/sessions/last/events.jsonl
 | The compactor removes `_out` fields | the agent loses the paths of full tool outputs | copy messages as they are, and change only what you must |
 | `compaction.strategy` names a compactor from a plugin that is off | the spec is not valid: `not a built-in strategy, and ... is not executable` | turn the plugin on, or use a path |
 
+## A before_model hook instead
+
+A [`before_model` hook](hooks.md) can also compact: messages it prints
+replace the history. It runs before every model call, so it can decide on
+its own when to cut, and it gets `"reason": "context_overflow"` when the
+provider said the prompt is too long. Use a compactor when the spec should
+choose the strategy with `compaction.strategy`; use a hook when the plugin
+should always act.
+
 ## Planned
 
-Compaction becomes a `before_model` hook: the hook gets the request and
-returns new messages, which replace the history. If the provider says the
-context is too long, arx runs `before_model` again with
-`"reason": "context_overflow"`. The compactor kind and the built-in strategies
-then move to plugins. See [Planned changes](planned.md#hook-lifecycle).
+The compactor kind and the built-in strategies will move to plugins, as
+`before_model` hooks. See [Planned changes](planned.md).

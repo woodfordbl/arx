@@ -93,19 +93,22 @@ arx check
 
 ```
 ok: agent.yaml (model test-model at http://fake.invalid/v1)
-tools: bash edit greet
+tools: greet
 hooks:
 plugins: hello
 ```
 
-`bash` and `edit` are built in. `arx tools` prints all three as the model
-sees them.
+`greet` is the only tool, because the empty config folder has no `shell`
+plugin. With your own config, `arx setup` turns that plugin on, and the agent
+also gets `bash` and `edit`. `arx tools` prints the tools as the model sees
+them.
 
 ## 3. Write a hook
 
 A hook is an executable in `hooks/`, named after its hook point. A
 `before_tool` hook runs before each tool call. It gets the call as JSON on
-stdin. It prints nothing to allow the call, or a decision to deny it:
+stdin: `{"id", "name", "args"}`. It prints nothing to let the call run, or a
+decision to deny it:
 
 ```sh
 mkdir -p plugins/hello/hooks
@@ -124,7 +127,7 @@ chmod +x plugins/hello/hooks/before_tool
 Try it by hand. arx sends compact JSON, with no spaces:
 
 ```sh
-echo '{"tool":{"name":"greet","args":{"name":"Bob"}}}' | plugins/hello/hooks/before_tool
+echo '{"id":"c2","name":"greet","args":{"name":"Bob"}}' | plugins/hello/hooks/before_tool
 ```
 
 ```
@@ -133,6 +136,9 @@ echo '{"tool":{"name":"greet","args":{"name":"Bob"}}}' | plugins/hello/hooks/bef
 
 `arx check` now shows the hook and the plugin it comes from:
 `hooks: before_tool(hello)`.
+
+A hook can also change the call, or the request and the reply around the
+model call. See [Hooks](hooks.md).
 
 ## 4. See them in a session
 
@@ -171,7 +177,7 @@ arx -p "Greet Ada and Bob"
     ↳ exit 0 · 0.0s · 12 B  Hello, Ada!
   ⏵ greet {"name":"Bob"}
   ⚑ hook before_tool: deny
-    ↳ exit 0 · 0.0s · 0 B  denied by the before_tool hook: do not greet Bob
+    ↳ exit 0 · 0.0s · 0 B  denied: do not greet Bob
 I greeted Ada. I may not greet Bob.
 ● done · 3 turns · 0 tokens · $0.00000 · 0.1s
 ```

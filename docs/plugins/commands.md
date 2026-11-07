@@ -23,8 +23,8 @@ commands like this, written as short scripts in [`commands/`](../../commands).
 
 **Where arx looks,** in this order. The first match wins:
 
-1. arx's built-in commands: `check`, `tools`, `schema`, `watch`, `ctl`,
-   `request`, `version`, `help`;
+1. arx's built-in commands: `check`, `tools`, `schema`, `tool`, `watch`,
+   `ctl`, `request`, `version`, `help`;
 2. `../libexec/arx/` next to the binary (an installed arx);
 3. `commands/` next to the binary (a source checkout);
 4. `~/.config/arx/commands/` (yours; `arx update` never touches it);
