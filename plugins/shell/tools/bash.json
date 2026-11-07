@@ -1,0 +1,15 @@
+{
+  "description": "Run a shell command (sh -c) in the working directory. You see the first {{tool_output.head}} and last {{tool_output.tail}} bytes of output; the full output is saved to a file whose path is shown. Timeout {{timeout}}s.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "command": {
+        "type": "string",
+        "description": "Shell command, run with sh -c in the working directory"
+      }
+    },
+    "required": [
+      "command"
+    ]
+  }
+}

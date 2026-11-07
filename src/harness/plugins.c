@@ -294,7 +294,11 @@ static void AppendNames(Buffer* out, const char* key, const char* dir,
   Buffer list = {0};
   for (int i = 0; i < n; i++) {
     char* path = inner ? XAsprintf("%s/%s/%s", dir, names[i], inner) : NULL;
-    if (!path || !access(path, R_OK)) {
+    size_t len = strlen(names[i]);
+    // tools/<name>.json is the schema of a tool, not a tool.
+    int schema = !strcmp(key, "tools") && len > 5 &&
+                 !strcmp(names[i] + len - 5, ".json");
+    if (!schema && (!path || !access(path, R_OK))) {
       BufferPrintf(&list, "%s%s", list.len ? " " : "", names[i]);
     }
     free(path);

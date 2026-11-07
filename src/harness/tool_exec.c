@@ -78,69 +78,6 @@ void FreeEnv(char** env) {
   free(env);
 }
 
-// Creates `path` with `text`, refusing to overwrite.
-static char* CreateFile(const char* path, const char* text, int* is_error) {
-  char* dir = DirName(path);
-  MakeDirs(dir);
-  free(dir);
-  if (WriteFileAtomic(path, text, strlen(text))) {
-    return XAsprintf("cannot create %s: %s", path, strerror(errno));
-  }
-  *is_error = 0;
-  return XAsprintf("created %s (%zu bytes)", path, strlen(text));
-}
-
-// The edit tool: replace one exact, unique occurrence, or create a file.
-static char* Edit(cJSON* args, int* is_error) {
-  const char* path = JsonStr(args, "path", NULL);
-  const char* old = JsonStr(args, "old", NULL);
-  const char* new_text = JsonStr(args, "new", NULL);
-  *is_error = 1;
-  if (!path || !old || !new_text) {
-    return XStrdup("edit needs string arguments path, old and new");
-  }
-  size_t n;
-  char* text = ReadFile(path, &n);
-  if (!*old) {
-    if (!text) return CreateFile(path, new_text, is_error);
-    free(text);
-    return XAsprintf("%s exists; pass the exact text to replace in `old`",
-                     path);
-  }
-  if (!text) return XAsprintf("cannot read %s: %s", path, strerror(errno));
-  size_t old_len = strlen(old), count = 0;
-  char* hit = NULL;
-  for (char* p = text; (p = memmem(p, n - (size_t)(p - text), old, old_len));
-       p += old_len) {
-    if (!count++) hit = p;
-  }
-  char* result;
-  if (count != 1) {
-    result = count ? XAsprintf(
-                         "`old` occurs %zu times in %s; include more "
-                         "context so it is unique",
-                         count, path)
-                   : XAsprintf(
-                         "`old` was not found in %s (it must match "
-                         "exactly, including whitespace)",
-                         path);
-  } else {
-    Buffer b = {0};
-    BufferAppend(&b, text, (size_t)(hit - text));
-    BufferAppendStr(&b, new_text);
-    BufferAppend(&b, hit + old_len, n - (size_t)(hit - text) - old_len);
-    if (WriteFileAtomic(path, b.data, b.len)) {
-      result = XAsprintf("cannot write %s: %s", path, strerror(errno));
-    } else {
-      result = XAsprintf("edited %s", path);
-      *is_error = 0;
-    }
-    BufferFree(&b);
-  }
-  free(text);
-  return result;
-}
-
 // DataFn for a subagent's fd 3: forwards each complete event line.
 static void ForwardSink(void* ctx, const char* data, size_t n) {
   Buffer* b = ctx;
@@ -231,9 +168,6 @@ static char* ProcessResult(const Capture* cap, const char* path,
 
 // Checks the arguments a tool needs; returns an error message or NULL.
 static char* CheckArgs(const Tool* t, cJSON* args) {
-  if (t->kind == kToolBash && !JsonStr(args, "command", NULL)) {
-    return XStrdup("bash needs a string argument `command`");
-  }
   if (t->kind == kToolAgent && !JsonStr(args, "task", NULL)) {
     return XStrdup("this subagent needs a string argument `task`");
   }
@@ -248,7 +182,7 @@ static Tool* FindTool(Agent* a, const char* name) {
   return NULL;
 }
 
-// Runs a process-backed tool (bash, executable or subagent).
+// Runs a process-backed tool (an executable or a subagent).
 static char* RunProcessTool(Agent* a, Tool* t, cJSON* args, const char* raw,
                             int* is_error, char* path, cJSON* end_event) {
   Capture cap = {.head_max = JsonSize(a->spec.root, "tool_output.head", 2048),
@@ -262,17 +196,16 @@ static char* RunProcessTool(Agent* a, Tool* t, cJSON* args, const char* raw,
     RunSubagent(a, t, JsonStr(args, "task", ""), env, &cap, &out, &r);
     text = r.spawn_failed ? NULL : SubagentResult(&out, &cap, path, r.code);
   } else {
-    char* bash_argv[] = {"sh", "-c", (char*)JsonStr(args, "command", ""), NULL};
-    char* exec_argv[] = {t->path, NULL};
-    Proc p = {.argv = t->kind == kToolBash ? bash_argv : exec_argv,
+    // A file that only hands over to `arx tool NAME` starts as arx itself.
+    char* file_argv[] = {t->path, NULL};
+    char* core_argv[] = {g_self, "tool", t->core, NULL};
+    Proc p = {.argv = t->core ? core_argv : file_argv,
+              .in = raw,
+              .in_len = strlen(raw),
               .timeout = t->timeout,
               .env = env,
               .on_out = CaptureSink,
               .out_ctx = &cap};
-    if (t->kind == kToolExec) {
-      p.in = raw;
-      p.in_len = strlen(raw);
-    }
     ProcRun(&p, &r);
     text = r.spawn_failed ? NULL : ProcessResult(&cap, path, &r, t->timeout);
   }
@@ -311,8 +244,6 @@ char* ToolCall(Agent* a, const char* name, const char* args, int* is_error,
   char* text;
   if (!cJSON_IsObject(parsed)) {
     text = XAsprintf("the arguments are not a valid JSON object: %.200s", raw);
-  } else if (t->kind == kToolEdit) {
-    text = Edit(parsed, is_error);
   } else if (!(text = CheckArgs(t, parsed))) {
     *output_path = SessionOutputPath(&a->session);
     text = RunProcessTool(a, t, parsed, raw, is_error, *output_path, end_event);

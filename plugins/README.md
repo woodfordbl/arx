@@ -1,12 +1,14 @@
 # The arx marketplace
 
 Each folder here is a plugin: a `plugin.yaml` and any of `tools/`, `hooks/`,
-`skills/` and `commands/`. The arx release does not include them. Install
-one with `arx plugin add <name>`: arx gets it from this repo, at the tag of
-the arx you have, so you get the version that CI tested with it.
+`skills/` and `commands/`. The arx release does not include them, except
+`shell`, which `arx setup` turns on. Install one with `arx plugin add
+<name>`: arx gets it from this repo, at the tag of the arx you have, so you
+get the version that CI tested with it.
 
 | Plugin | What it adds |
 |---|---|
+| [shell](shell) | the `bash` and `edit` tools (`arx tool bash\|edit`) |
 | [clock](clock) | a `now` tool: the date and time in UTC |
 | [word-count](word-count) | a `word_count` tool, in Python |
 | [guard](guard) | a `before_tool` hook that denies destructive shell commands |

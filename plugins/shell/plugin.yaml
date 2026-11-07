@@ -1,0 +1,4 @@
+name: shell
+version: 0.1.0
+description: The bash and edit tools, run by arx itself (arx tool bash|edit).
+arx: ">=0.2"
