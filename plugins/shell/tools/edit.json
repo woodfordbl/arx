@@ -20,5 +20,8 @@
       "old",
       "new"
     ]
-  }
+  },
+  "keys": [
+    "file:{path}"
+  ]
 }

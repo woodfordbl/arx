@@ -9,6 +9,7 @@
 //   schema.c     the JSON Schema for `arx schema`, from the same table
 //   tools.c      finds tools: tools/<name> in every layer, and subagents
 //   tool_exec.c  runs one tool call; subagents run arx again
+//   keys.c       the keys of a tool call, which say what may run together
 //   shell_tools.c  bash and edit, for `arx tool` (the shell plugin)
 //   hooks.c      runs hooks/<point>
 //   compact.c    keeps the conversation inside the context window
@@ -184,6 +185,7 @@ typedef struct Tool {
   double timeout;
   char* plugin_dir;  // the plugin folder it came from, or NULL
   char* core;        // NAME when the file only runs `arx tool NAME`, or NULL
+  cJSON* keys;       // key templates from the schema; NULL means ["*"]
 } Tool;
 
 // The tools of the current harness version.
@@ -209,12 +211,28 @@ void ToolsFree(ToolSet* tools);
 // Returns the tools in OpenAI "tools" format (a new array).
 cJSON* ToolsJson(const ToolSet* tools);
 
-// Runs tool `name` with JSON `args`. Returns the text for the model
-// (malloc'd), sets `*is_error`, stores the full-output path in
-// `*output_path` (malloc'd, or NULL), and adds exit, secs, bytes and path to
-// `end_event`.
-char* ToolCall(struct Agent* a, const char* name, const char* args,
-               int* is_error, char** output_path, cJSON* end_event);
+// A tool call that runs; see ToolStart.
+typedef struct ToolRun ToolRun;
+
+// Finds the tool called `name`, or returns NULL.
+Tool* ToolFind(struct Agent* a, const char* name);
+
+// Starts tool `name` with JSON `args` and returns at once; ProcPoll on
+// ToolChild() runs it, and ToolFinish ends it. Stores the full-output path
+// in `*output_path` (malloc'd, or NULL). Returns NULL when the call ends
+// at once (an unknown tool, bad arguments, or a process that could not
+// start): then `*text` is the result (malloc'd) and `*is_error` is set.
+ToolRun* ToolStart(struct Agent* a, const char* name, const char* args,
+                   char** text, int* is_error, char** output_path,
+                   cJSON* end_event);
+
+// The process of a started call, for ProcPoll.
+ProcChild* ToolChild(ToolRun* run);
+
+// Ends a call (stopping its process if it still runs) and frees `run`.
+// Returns the text for the model (malloc'd), sets `*is_error`, and adds
+// exit, secs, bytes and path to `end_event`.
+char* ToolFinish(ToolRun* run, int* is_error, cJSON* end_event);
 
 // Returns the ARX_* environment entries for tools and hooks (ARX_SESSION,
 // ARX_SESSION_DIR, ARX_TURN, ARX_CWD, ARX_SPEC, ARX_SPEC_DIR, ARX_DEPTH,
@@ -224,6 +242,23 @@ char** ToolEnv(struct Agent* a, const char* plugin_dir);
 
 // Frees an array from ToolEnv.
 void FreeEnv(char** env);
+
+// ---- keys.c ----
+
+// True when `keys` is an array of strings.
+int KeysValid(cJSON* keys);
+
+// Returns the keys of a call to `tool` (may be NULL for an unknown tool,
+// which gets []) with the arguments `args`, as a new array. A tool that
+// declares no keys gets ["*"]; a subagent gets []. In each key, {name}
+// becomes the value of the top-level argument `name` ("" when it is
+// missing), and in a key that starts with "host:", just the host of that
+// value, so ["host:{url}"] gives "host:example.com".
+cJSON* KeysFor(const Tool* tool, cJSON* args);
+
+// True when two calls with these keys may not run at the same time: one of
+// them has "*", or they share a key.
+int KeysConflict(cJSON* a, cJSON* b);
 
 // ---- shell_tools.c ----
 

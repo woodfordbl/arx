@@ -1,6 +1,7 @@
-// tool_exec.c: runs one tool call. Output goes to a file in the session, and
-// the model sees only its head and tail. Subagents are this same binary run
-// one level deeper, with their events forwarded into ours.
+// tool_exec.c: starts and ends one tool call; the runtime runs many at
+// once. Output goes to a file in the session, and the model sees only its
+// head and tail. Subagents are this same binary run one level deeper, with
+// their events forwarded into ours.
 
 #include <errno.h>
 #include <fcntl.h>
@@ -91,11 +92,22 @@ static void ForwardSink(void* ctx, const char* data, size_t n) {
   }
 }
 
-// Runs a subagent: `arx -p - --spec <path> --json --events fd:3`, with our
-// caps and one more level of depth.
-static void RunSubagent(Agent* a, Tool* t, const char* task, char** env,
-                        Capture* cap, Buffer* out, ProcResult* r) {
-  Buffer forward = {0};
+// A tool call that runs: its process and what it collects.
+struct ToolRun {
+  ToolKind kind;
+  double timeout;
+  Capture cap;
+  Buffer out, forward;  // a subagent's --json answer, and its event lines
+  char** env;
+  char* input;  // stdin, kept until the process ends
+  char* path;   // the full output
+  ProcChild* child;
+};
+
+// Starts a subagent: `arx -p - --spec <path> --json --events fd:3`, with our
+// caps and one more level of depth. Each subagent forwards its own events,
+// one whole line at a time, so several can run at once.
+static ProcChild* StartSubagent(Agent* a, Tool* t, ToolRun* run) {
   int k = 0;
   char** argv = XMalloc((size_t)(12 + 2 * a->cap_count) * sizeof(*argv));
   char* fixed[] = {g_self,   "-p",      "-",        "--spec", t->path,
@@ -108,22 +120,22 @@ static void RunSubagent(Agent* a, Tool* t, const char* task, char** env,
     argv[k++] = a->cap_args[i];
   }
   argv[k] = NULL;
-  free(env[6]);
-  env[6] = XAsprintf("ARX_DEPTH=%d", a->depth + 1);
+  free(run->env[6]);
+  run->env[6] = XAsprintf("ARX_DEPTH=%d", a->depth + 1);
   Proc p = {.argv = argv,
-            .in = task,
-            .in_len = strlen(task),
+            .in = run->input,
+            .in_len = strlen(run->input),
             .timeout = t->timeout,
-            .env = env,
+            .env = run->env,
             .on_out = BufferSink,
-            .out_ctx = out,
+            .out_ctx = &run->out,
             .on_err = CaptureSink,
-            .err_ctx = cap,
+            .err_ctx = &run->cap,
             .on_fd3 = ForwardSink,
-            .fd3_ctx = &forward};
-  ProcRun(&p, r);
+            .fd3_ctx = &run->forward};
+  ProcChild* child = ProcStart(&p);
   free(argv);
-  BufferFree(&forward);
+  return child;
 }
 
 // Turns a subagent's --json output and exit code into the tool result.
@@ -174,80 +186,109 @@ static char* CheckArgs(const Tool* t, cJSON* args) {
   return NULL;
 }
 
-// Finds a tool by name, or NULL.
-static Tool* FindTool(Agent* a, const char* name) {
+// Finds a tool by name; see harness.h.
+Tool* ToolFind(Agent* a, const char* name) {
   for (int i = 0; i < a->tools.count; i++) {
     if (!strcmp(a->tools.items[i].name, name)) return &a->tools.items[i];
   }
   return NULL;
 }
 
-// Runs a process-backed tool (an executable or a subagent).
-static char* RunProcessTool(Agent* a, Tool* t, cJSON* args, const char* raw,
-                            int* is_error, char* path, cJSON* end_event) {
-  Capture cap = {.head_max = JsonSize(a->spec.root, "tool_output.head", 2048),
-                 .tail_max = JsonSize(a->spec.root, "tool_output.tail", 6144)};
-  cap.fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
-  char** env = ToolEnv(a, t->plugin_dir);
-  Buffer out = {0};
-  ProcResult r;
-  char* text;
+// Starts a process-backed tool (an executable or a subagent). Returns
+// NULL when the process could not start.
+static ToolRun* StartProcessTool(Agent* a, Tool* t, cJSON* args,
+                                 const char* raw, char* path) {
+  ToolRun* run = XMalloc(sizeof(*run));
+  memset(run, 0, sizeof(*run));
+  run->kind = t->kind;
+  run->timeout = t->timeout;
+  run->path = path;
+  run->cap.head_max = JsonSize(a->spec.root, "tool_output.head", 2048);
+  run->cap.tail_max = JsonSize(a->spec.root, "tool_output.tail", 6144);
+  run->cap.fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+  run->env = ToolEnv(a, t->plugin_dir);
   if (t->kind == kToolAgent) {
-    RunSubagent(a, t, JsonStr(args, "task", ""), env, &cap, &out, &r);
-    text = r.spawn_failed ? NULL : SubagentResult(&out, &cap, path, r.code);
+    run->input = XStrdup(JsonStr(args, "task", ""));
+    run->child = StartSubagent(a, t, run);
   } else {
     // A file that only hands over to `arx tool NAME` starts as arx itself.
     char* file_argv[] = {t->path, NULL};
     char* core_argv[] = {g_self, "tool", t->core, NULL};
+    run->input = XStrdup(raw);
     Proc p = {.argv = t->core ? core_argv : file_argv,
-              .in = raw,
-              .in_len = strlen(raw),
+              .in = run->input,
+              .in_len = strlen(run->input),
               .timeout = t->timeout,
-              .env = env,
+              .env = run->env,
               .on_out = CaptureSink,
-              .out_ctx = &cap};
-    ProcRun(&p, &r);
-    text = r.spawn_failed ? NULL : ProcessResult(&cap, path, &r, t->timeout);
+              .out_ctx = &run->cap};
+    run->child = ProcStart(&p);
   }
-  if (!text) text = XAsprintf("could not start the tool: %s", strerror(errno));
-  if (cap.fd >= 0) close(cap.fd);
+  return run;
+}
+
+// The process of a started call; see harness.h.
+ProcChild* ToolChild(ToolRun* run) { return run->child; }
+
+// Ends a started call and frees it; see harness.h.
+char* ToolFinish(ToolRun* run, int* is_error, cJSON* end_event) {
+  ProcResult r = {.code = -1, .spawn_failed = 1};
+  int saved = errno;
+  if (run->child) ProcFinish(run->child, &r);
+  char* text = NULL;
+  if (r.spawn_failed) {
+    text = XAsprintf("could not start the tool: %s", strerror(saved));
+  } else if (run->kind == kToolAgent) {
+    text = SubagentResult(&run->out, &run->cap, run->path, r.code);
+  } else {
+    text = ProcessResult(&run->cap, run->path, &r, run->timeout);
+  }
+  if (run->cap.fd >= 0) close(run->cap.fd);
   *is_error = r.spawn_failed || r.code != 0 || r.timed_out;
   cJSON_AddNumberToObject(end_event, "exit", r.code);
   cJSON_AddNumberToObject(end_event, "secs", r.secs);
-  cJSON_AddNumberToObject(end_event, "bytes", (double)cap.total);
-  cJSON_AddStringToObject(end_event, "path", path);
-  BufferFree(&cap.head);
-  BufferFree(&cap.tail);
-  BufferFree(&out);
-  FreeEnv(env);
+  cJSON_AddNumberToObject(end_event, "bytes", (double)run->cap.total);
+  cJSON_AddStringToObject(end_event, "path", run->path);
+  BufferFree(&run->cap.head);
+  BufferFree(&run->cap.tail);
+  BufferFree(&run->out);
+  BufferFree(&run->forward);
+  FreeEnv(run->env);
+  free(run->input);
+  free(run);
   return text;
 }
 
-// Runs one tool call; see harness.h.
-char* ToolCall(Agent* a, const char* name, const char* args, int* is_error,
-               char** output_path, cJSON* end_event) {
+// Starts one tool call; see harness.h.
+ToolRun* ToolStart(Agent* a, const char* name, const char* args, char** text,
+                   int* is_error, char** output_path, cJSON* end_event) {
   *is_error = 1;
   *output_path = NULL;
-  Tool* t = FindTool(a, name);
+  *text = NULL;
+  Tool* t = ToolFind(a, name);
   if (!t) {
     Buffer names = {0};
     for (int i = 0; i < a->tools.count; i++) {
       BufferPrintf(&names, "%s%s", i ? ", " : "", a->tools.items[i].name);
     }
-    char* text = XAsprintf("unknown tool \"%s\" (available: %s)", name,
-                           names.data ? names.data : "none");
+    *text = XAsprintf("unknown tool \"%s\" (available: %s)", name,
+                      names.data ? names.data : "none");
     BufferFree(&names);
-    return text;
+    return NULL;
   }
   const char* raw = args && *args ? args : "{}";
   cJSON* parsed = cJSON_Parse(raw);
-  char* text;
+  ToolRun* run = NULL;
   if (!cJSON_IsObject(parsed)) {
-    text = XAsprintf("the arguments are not a valid JSON object: %.200s", raw);
-  } else if (!(text = CheckArgs(t, parsed))) {
+    *text = XAsprintf("the arguments are not a valid JSON object: %.200s", raw);
+  } else if (!(*text = CheckArgs(t, parsed))) {
     *output_path = SessionOutputPath(&a->session);
-    text = RunProcessTool(a, t, parsed, raw, is_error, *output_path, end_event);
+    run = StartProcessTool(a, t, parsed, raw, *output_path);
+    if (!run->child) {  // report it at once, with the end fields
+      *text = ToolFinish(run, is_error, end_event);
+      run = NULL;
+    }
   }
   cJSON_Delete(parsed);
-  return text;
+  return run;
 }

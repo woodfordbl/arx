@@ -72,11 +72,44 @@ int RunTurns(Agent* a);
 // message (the caller owns it). Returns -1 on success, else an ExitCode.
 int ModelTurn(Agent* a, cJSON** message);
 
-// Runs every tool call in `calls` one at a time, through the before_tool
-// and after_tool hooks, and adds each result to the history and the
-// transcript. Calls after a Ctrl-C still get a result, so the history stays
-// valid.
+// Runs the tool calls in `calls` through the before_tool hooks, then
+// queues the allowed calls and runs them by their keys (calls that share a
+// key run one at a time, "*" runs alone, [] runs with anything), or as a
+// scheduler plugin says. after_tool runs as each call ends. Adds the
+// results to the history and the transcript in the order of the calls.
+// Calls after a Ctrl-C still get a result, so the history stays valid.
 void RunToolCalls(Agent* a, cJSON* calls);
+
+// The scheduler plugin (scheduler.c): one process for each session, an
+// executable `scheduler` at the top of a layer (the first wins).
+
+// Starts the plugin when a layer has one, or stops it when none has or it
+// changed. A plugin that failed is not started again. Returns 1 when a
+// plugin schedules.
+int SchedOpen(Agent* a);
+
+// True while a plugin schedules; it stops when it exits or prints a bad
+// line (with an error event), and then the built-in scheduler takes over.
+int SchedActive(void);
+
+// The plugin's process, for ProcPoll, or NULL.
+ProcChild* SchedChild(void);
+
+// Sends {"ready": {id, name, keys}}: a call is in the queue.
+void SchedReady(const char* id, const char* name, cJSON* keys);
+
+// Sends {"done": {id, secs, is_error, backoff}}: a call ended. `backoff`
+// may be NULL.
+void SchedDone(const char* id, double secs, int is_error, cJSON* backoff);
+
+// Returns the seconds until the plugin's tick is due, at most `max`.
+double SchedWait(double max);
+
+// Reads what the plugin printed: adds the ids of {"start": [...]} to the
+// array `start` and each {"result": {id, text}} to the object `results`
+// (id -> text), and keeps {"wake_at"}. Sends {"tick": <unix secs>} when it
+// is due.
+void SchedPoll(cJSON* start, cJSON* results);
 
 // Expands {{vars}} in `tmpl`: prompt, harness, skills, date, cwd, session,
 // turn, and file:PATH[:tail=N|:max=SIZE]. Returns a malloc'd string.

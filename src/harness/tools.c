@@ -1,7 +1,8 @@
 // tools.c: builds the tool set from the tools/ folder of every layer.
 // Executable tools are found by path and described by a <name>.json file
-// next to them, or else by `--schema`; the answers are cached by
-// modification time and size, so a reload only reads tools that changed.
+// next to them, or else by `--schema` (description, parameters and keys);
+// the answers are cached by modification time and size, so a reload only
+// reads tools that changed.
 
 #include <errno.h>
 #include <stdlib.h>
@@ -28,7 +29,8 @@ typedef struct SchemaEntry {
   char* description;
   char* error;  // why the tool is skipped, or NULL
   cJSON* params;
-  char* core;  // the `arx tool NAME` the file hands over to, or NULL
+  char* core;   // the `arx tool NAME` the file hands over to, or NULL
+  cJSON* keys;  // the declared keys, or NULL
 } SchemaEntry;
 
 static SchemaEntry g_schemas[128];
@@ -78,6 +80,12 @@ static void ReadSchema(SchemaEntry* e, cJSON* j, const char* what) {
     return;
   }
   cJSON* params = cJSON_GetObjectItem(j, "parameters");
+  cJSON* keys = cJSON_GetObjectItem(j, "keys");
+  if (keys && !KeysValid(keys)) {
+    e->error = XAsprintf("%s: \"keys\" must be a list of strings", what);
+    return;
+  }
+  e->keys = keys ? cJSON_Duplicate(keys, 1) : NULL;
   e->description = XStrdup(JsonStr(j, "description", ""));
   e->params = cJSON_IsObject(params)
                   ? cJSON_Duplicate(params, 1)
@@ -144,8 +152,9 @@ static SchemaEntry* SchemaFor(const char* path) {
     free(e->error);
     free(e->core);
     cJSON_Delete(e->params);
+    cJSON_Delete(e->keys);
     e->description = e->error = e->core = NULL;
-    e->params = NULL;
+    e->params = e->keys = NULL;
   }
   e->mtime = mtime;
   e->size = size;
@@ -201,6 +210,7 @@ static void Add(ToolSet* t, ToolKind kind, const char* name, const char* desc,
   tool->timeout = timeout;
   tool->plugin_dir = NULL;
   tool->core = NULL;
+  tool->keys = kind == kToolAgent ? cJSON_CreateArray() : NULL;
 }
 
 // True for a <name>.json schema file, which sits next to its tool.
@@ -248,6 +258,7 @@ static void AddExecutable(struct Agent* a, const Layer* layer,
       Tool* t = &a->tools.items[a->tools.count - 1];
       if (layer->plugin) t->plugin_dir = XStrdup(layer->dir);
       if (s->core) t->core = XStrdup(s->core);
+      if (s->keys) t->keys = cJSON_Duplicate(s->keys, 1);
       free(desc);
     }
   }
@@ -356,6 +367,7 @@ void ToolsFree(ToolSet* tools) {
     free(tools->items[i].plugin_dir);
     free(tools->items[i].core);
     cJSON_Delete(tools->items[i].params);
+    cJSON_Delete(tools->items[i].keys);
   }
   free(tools->items);
   tools->items = NULL;

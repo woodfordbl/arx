@@ -12,3 +12,7 @@ its own `bash` and `edit` in a layer above this one, for example in
 
 Settings: `tools.bash.timeout` and `tools.edit.timeout` (default 120s), and
 `enabled: false` to turn one off.
+
+`edit` declares the keys `["file:{path}"]`, so edits to different files run
+at the same time and edits to one file run one at a time. `bash` declares
+none, so it runs alone.
