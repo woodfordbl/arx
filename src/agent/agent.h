@@ -65,6 +65,19 @@ int AgentMain(Agent* a);
 // Returns an ExitCode.
 int RunTurns(Agent* a);
 
+// Calls the model once for the next turn, through the before_model and
+// after_model hooks, and accounts for the usage. On a context-overflow
+// error it compacts (before_model with reason context_overflow, else the
+// built-in strategy) and retries once. Sets `*message` to the assistant
+// message (the caller owns it). Returns -1 on success, else an ExitCode.
+int ModelTurn(Agent* a, cJSON** message);
+
+// Runs every tool call in `calls` one at a time, through the before_tool
+// and after_tool hooks, and adds each result to the history and the
+// transcript. Calls after a Ctrl-C still get a result, so the history stays
+// valid.
+void RunToolCalls(Agent* a, cJSON* calls);
+
 // Expands {{vars}} in `tmpl`: prompt, harness, skills, date, cwd, session,
 // turn, and file:PATH[:tail=N|:max=SIZE]. Returns a malloc'd string.
 char* RenderTemplate(Agent* a, const char* tmpl);

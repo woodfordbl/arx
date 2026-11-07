@@ -145,8 +145,8 @@ typedef struct Field {
 // The top-level keys of agent.yaml, ending with a zeroed Field.
 extern const Field kTopFields[];
 
-// The hook points, NULL-terminated: session_start, before_tool, after_tool,
-// stop.
+// The hook points, NULL-terminated: session_start, before_model,
+// after_model, before_tool, after_tool, stop.
 extern const char* const kHookPoints[];
 
 // The characters allowed in tool names (OpenAI function names).
@@ -240,19 +240,41 @@ int ShellToolRun(const char* name, const char* args);
 
 // ---- hooks.c ----
 
-// Runs hooks/<point> in every layer that has one, in layer order, with
-// `input` (consumed) plus point, session and turn on stdin. Sets `*output`
-// to the combined JSON decision (or NULL):
+// Runs hooks/<point> for a decision point (session_start or stop) in every
+// layer that has one, in layer order, with `input` (consumed) plus point,
+// session and turn on stdin. Sets `*output` to the combined JSON (or NULL):
 //   session_start  {"context": "..."}           every hook's, joined
-//   before_tool    {"decision": "deny", "reason": "..."}   the first deny
-//   after_tool     {"note": "..."}               every hook's, joined
 //   stop           {"decision": "continue" | "restart", "message": "..."}
 //                                                the first decision
 // Returns 0 when there is no hook and 1 when hooks ran. A hook that fails
 // (non-zero exit, timeout, or output that is not a JSON object) is reported
 // and then ignored, unless its options say `fail: closed`; then HookRun
-// stops and returns -1, and a before_tool call is denied.
+// stops and returns -1.
 int HookRun(struct Agent* a, const char* point, cJSON* input, cJSON** output);
+
+// Runs hooks/<point> for a raw-object point as a chain, in layer order. Each
+// hook gets `object` (kept by the caller) plus point, session and turn, and
+// prints the fields it changes; they replace the fields of `object` before
+// the next hook runs:
+//   before_model  {messages, tools, model, settings, reason}
+//                 prints any of messages, tools, model, settings
+//   after_model   {reply, usage, finish}; prints reply
+//   before_tool   {id, name, args}; prints name or args, or result to skip
+//                 the tool, which ends the chain. {"decision": "deny",
+//                 "reason"} becomes the result "denied: <reason>" and adds
+//                 "is_error": true to `object`.
+//   after_tool    {call, result, is_error}; prints result. {"note"} is
+//                 appended to the result.
+// A field of the wrong type makes the answer a failure. Each hook event
+// lists the fields that hook changed under "changed", and the names are
+// also added to `changed` (an array; may be NULL). Returns 0 when there is
+// no hook, 1 when hooks ran, and -1 when a `fail: closed` hook failed,
+// which stops the chain.
+int HookChain(struct Agent* a, const char* point, cJSON* object,
+              cJSON* changed);
+
+// True when any layer has an executable hooks/<point>.
+int HookExists(struct Agent* a, const char* point);
 
 // ---- compact.c ----
 

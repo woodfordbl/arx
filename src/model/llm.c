@@ -24,10 +24,11 @@ typedef enum Outcome {
 } Outcome;
 
 // The request body: messages without "_" fields, tools, streaming options,
-// then model_settings on top (a null setting removes the field).
-static char* RequestBody(struct Agent* a, cJSON* messages, cJSON* tools) {
+// then `settings` on top (a null setting removes the field).
+static char* RequestBody(const char* model, cJSON* settings, cJSON* messages,
+                         cJSON* tools) {
   cJSON* body = cJSON_CreateObject();
-  cJSON_AddStringToObject(body, "model", JsonStr(a->spec.root, "model", ""));
+  cJSON_AddStringToObject(body, "model", model);
   cJSON* clean = cJSON_AddArrayToObject(body, "messages");
   for (cJSON* m = messages->child; m; m = m->next) {
     cJSON* copy = cJSON_CreateObject();
@@ -45,7 +46,7 @@ static char* RequestBody(struct Agent* a, cJSON* messages, cJSON* tools) {
   cJSON* options = cJSON_AddObjectToObject(body, "stream_options");
   cJSON_AddTrueToObject(options, "include_usage");
   cJSON* setting;
-  cJSON_ArrayForEach(setting, JsonGet(a->spec.root, "model_settings")) {
+  cJSON_ArrayForEach(setting, settings) {
     cJSON_DeleteItemFromObjectCaseSensitive(body, setting->string);
     if (!cJSON_IsNull(setting)) {
       cJSON_AddItemToObject(body, setting->string, cJSON_Duplicate(setting, 1));
@@ -201,9 +202,18 @@ static LlmStatus StatusOf(Outcome o) {
   }
 }
 
-// Sends one model call with retries; see model.h.
+// Sends one model call with the spec's model and settings; see model.h.
 LlmStatus LlmChat(struct Agent* a, cJSON* messages, cJSON* tools, int show,
                   Reply* reply, Buffer* err) {
+  return LlmChatWith(a, JsonStr(a->spec.root, "model", ""),
+                     JsonGet(a->spec.root, "model_settings"), messages, tools,
+                     show, reply, err);
+}
+
+// Sends one model call with retries; see model.h.
+LlmStatus LlmChatWith(struct Agent* a, const char* model, cJSON* settings,
+                      cJSON* messages, cJSON* tools, int show, Reply* reply,
+                      Buffer* err) {
   cJSON* root = a->spec.root;
   int64_t max_attempts = (int64_t)JsonNum(root, "endpoint.retry_attempts", 0);
   double timeout = JsonDuration(root, "limits.turn_timeout", 600);
@@ -211,7 +221,7 @@ LlmStatus LlmChat(struct Agent* a, cJSON* messages, cJSON* tools, int show,
     double left = a->caps.wall - (Now() - a->start);
     if (left < timeout) timeout = left > 1 ? left : 1;
   }
-  char* body = RequestBody(a, messages, tools);
+  char* body = RequestBody(model, settings, messages, tools);
   memset(reply, 0, sizeof(*reply));
   Outcome o;
   for (int attempt = 1;; attempt++) {
@@ -228,6 +238,10 @@ LlmStatus LlmChat(struct Agent* a, cJSON* messages, cJSON* tools, int show,
       reply->tokens_out = s.tokens_out;
       reply->cost =
           s.has_cost ? s.cost : PriceCost(root, s.tokens_in, s.tokens_out);
+      snprintf(reply->finish, sizeof(reply->finish), "%s",
+               s.finish       ? s.finish
+               : s.call_count ? "tool_calls"
+                              : "stop");
     } else if (o == kOutcomeRetry && max_attempts && attempt >= max_attempts) {
       BufferPrintf(err, "gave up after %d attempts: %s", attempt, why.data);
       o = kOutcomeFatal;

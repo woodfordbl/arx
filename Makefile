@@ -1,8 +1,8 @@
 # Makefile for arx.
 #   make            release binary ./arx (-Os, LTO, dead-code stripped)
 #   make debug      ./arx-debug with AddressSanitizer and UBSan
-#   make test       run tests/run.sh, plugins.sh, layers.sh, cli.sh and
-#                   shell.sh against ./arx-debug
+#   make test       run tests/run.sh, plugins.sh, layers.sh, cli.sh, shell.sh
+#                   and hooks.sh against ./arx-debug
 #   make bench      check the performance budgets against ./arx
 #   make lint       style checks (scripts/lint.sh)
 #   make format     rewrite src/ in Google style
@@ -64,6 +64,7 @@ test: arx-debug
 	ARX=./arx-debug tests/layers.sh
 	ARX=./arx-debug tests/cli.sh
 	ARX=./arx-debug tests/shell.sh
+	ARX=./arx-debug tests/hooks.sh
 
 install: arx
 	mkdir -p $(PREFIX)/bin $(PREFIX)/libexec/arx
