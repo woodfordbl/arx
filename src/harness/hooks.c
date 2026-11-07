@@ -1,5 +1,6 @@
-// hooks.c: runs hook executables, one per layer for each point, in layer
-// order: the spec folder's first, then each plugin's. At the points around
+// hooks.c: runs hook executables, one per layer for each point, by band
+// (policy, normal, final) and then in layer order: the spec folder's first,
+// then each plugin's in the order of the active list. At the points around
 // the model and tool calls the hooks form a chain over one raw object: each
 // hook gets the object as the hook before it left it, and prints the fields
 // it changes. A hook that fails is reported and then ignored (fail-open),
@@ -39,17 +40,48 @@ static char* FailureText(int rc, const ProcResult* r, const Buffer* err) {
   return NULL;
 }
 
-// The options for `point` in this layer: a plugin's come from its
-// plugin.yaml, the others from the spec's hooks.<point>.
-static cJSON* Options(struct Agent* a, const Layer* layer, const char* point) {
+// The bands, in the order they run.
+static const char* const kBandNames[] = {"policy", "normal", "final"};
+
+// The options of a layer's hook; see harness.h.
+cJSON* HookOptions(const Spec* spec, const Layer* layer, const char* point) {
   if (layer->plugin) return JsonGet(layer->hooks, point);
-  return cJSON_GetObjectItemCaseSensitive(JsonGet(a->spec.root, "hooks"),
-                                          point);
+  return cJSON_GetObjectItemCaseSensitive(JsonGet(spec->root, "hooks"), point);
+}
+
+// The band of a layer's hook; see harness.h.
+int HookBand(const Spec* spec, const Layer* layer, const char* point) {
+  const char* band = JsonStr(HookOptions(spec, layer, point), "band", "");
+  for (int b = 0; b < 3; b++) {
+    if (!strcmp(band, kBandNames[b])) return b;
+  }
+  return 1;
+}
+
+// The options for `point` in this layer.
+static cJSON* Options(struct Agent* a, const Layer* layer, const char* point) {
+  return HookOptions(&a->spec, layer, point);
 }
 
 // True when this layer's failed hook for `point` should stop the chain.
 static int FailsClosed(struct Agent* a, const Layer* layer, const char* point) {
   return !strcmp(JsonStr(Options(a, layer, point), "fail", "open"), "closed");
+}
+
+// The environment for a hook: ToolEnv, plus ARX_PLUGIN_SETTINGS (the
+// plugin's settings from the active list, as JSON) for a plugin's hook.
+static char** HookEnv(struct Agent* a, const Layer* layer) {
+  char** env = ToolEnv(a, layer->plugin ? layer->dir : NULL);
+  if (!layer->plugin) return env;
+  int n = 0;
+  while (env[n]) n++;
+  env = XRealloc(env, (size_t)(n + 2) * sizeof(*env));
+  char* json =
+      layer->settings ? cJSON_PrintUnformatted(layer->settings) : XStrdup("{}");
+  env[n] = XAsprintf("ARX_PLUGIN_SETTINGS=%s", json);
+  env[n + 1] = NULL;
+  free(json);
+  return env;
 }
 
 // Runs one hook with `text` on stdin. Sets `*output` to its JSON object, or
@@ -58,7 +90,7 @@ static int FailsClosed(struct Agent* a, const Layer* layer, const char* point) {
 static int RunOne(struct Agent* a, const Layer* layer, const char* point,
                   char* path, const char* text, cJSON** output, cJSON** event) {
   Buffer out = {0}, err = {0};
-  char** env = ToolEnv(a, layer->plugin ? layer->dir : NULL);
+  char** env = HookEnv(a, layer);
   char* argv[] = {path, NULL};
   Proc p = {.argv = argv,
             .in = text,
@@ -74,6 +106,10 @@ static int RunOne(struct Agent* a, const Layer* layer, const char* point,
   *event = EventNew("hook");
   cJSON_AddStringToObject(*event, "point", point);
   if (layer->plugin) cJSON_AddStringToObject(*event, "plugin", layer->plugin);
+  if (HookBand(&a->spec, layer, point) != 1) {
+    cJSON_AddStringToObject(*event, "band",
+                            kBandNames[HookBand(&a->spec, layer, point)]);
+  }
   cJSON_AddNumberToObject(*event, "secs", r.secs);
   char* failure = FailureText(rc, &r, &err);
   *output = NULL;
@@ -155,9 +191,11 @@ int HookRun(struct Agent* a, const char* point, cJSON* input, cJSON** output) {
   char* text = cJSON_PrintUnformatted(input);
   cJSON_Delete(input);
   int result = 0;
-  for (int l = 0; l < a->spec.layer_count; l++) {
-    const Layer* layer = &a->spec.layers[l];
-    char* path = HookPath(layer, point);
+  for (int k = 0; k < 3 * a->spec.layer_count && result >= 0; k++) {
+    const Layer* layer = &a->spec.layers[k % a->spec.layer_count];
+    char* path = HookBand(&a->spec, layer, point) == k / a->spec.layer_count
+                     ? HookPath(layer, point)
+                     : NULL;
     if (!path) continue;
     cJSON *answer = NULL, *event = NULL;
     int rc = RunOne(a, layer, point, path, text, &answer, &event);
@@ -297,13 +335,39 @@ static int Apply(const char* point, cJSON* object, cJSON* answer, cJSON* event,
   return rc;
 }
 
+// True when the hook event lists `field` under "changed".
+static int Changed(cJSON* event, const char* field) {
+  cJSON* name;
+  cJSON_ArrayForEach(name, JsonGet(event, "changed")) {
+    if (!strcmp(name->valuestring, field)) return 1;
+  }
+  return 0;
+}
+
+// A result that a policy hook set is final: drops a later hook's change to
+// it (a result, a note or a denial), and says so in its event.
+static void KeepResult(cJSON* answer, cJSON* event) {
+  const char* keys[] = {"result", "note", "decision"};
+  int dropped = 0;
+  for (int k = 0; k < 3; k++) {
+    if (!cJSON_GetObjectItemCaseSensitive(answer, keys[k])) continue;
+    cJSON_DeleteItemFromObjectCaseSensitive(answer, keys[k]);
+    dropped = 1;
+  }
+  if (dropped) {
+    cJSON_AddStringToObject(event, "ignored",
+                            "result: a policy hook set it, so it is final");
+  }
+}
+
 // Runs every layer's hook for a raw-object point as a chain; see harness.h.
 int HookChain(struct Agent* a, const char* point, cJSON* object,
               cJSON* changed) {
-  int result = 0;
-  for (int l = 0; l < a->spec.layer_count; l++) {
-    const Layer* layer = &a->spec.layers[l];
-    char* path = HookPath(layer, point);
+  int result = 0, final_result = 0, n = a->spec.layer_count;
+  for (int k = 0; k < 3 * n; k++) {
+    const Layer* layer = &a->spec.layers[k % n];
+    int band = HookBand(&a->spec, layer, point);
+    char* path = band == k / n ? HookPath(layer, point) : NULL;
     if (!path) continue;
     cJSON_AddStringToObject(object, "point", point);
     cJSON_AddStringToObject(object, "session", a->session.id);
@@ -314,7 +378,9 @@ int HookChain(struct Agent* a, const char* point, cJSON* object,
     cJSON_DeleteItemFromObjectCaseSensitive(object, "turn");
     cJSON *answer = NULL, *event = NULL;
     int rc = RunOne(a, layer, point, path, text, &answer, &event);
+    if (answer && final_result) KeepResult(answer, event);
     if (answer) rc = Apply(point, object, answer, event, changed);
+    if (band == 0 && Changed(event, "result")) final_result = 1;
     EventSend(event);
     free(text);
     free(path);

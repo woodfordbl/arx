@@ -1,5 +1,7 @@
 name: guard
 version: 0.1.0
 description: A before_tool hook that denies a few destructive shell commands.
-# If the guard itself breaks, deny the call instead of letting it through.
-hooks: {before_tool: {fail: closed}}
+# A denial is a policy: it runs before every other before_tool hook, and the
+# result it sets is final. If the guard itself breaks, deny the call instead
+# of letting it through.
+hooks: {before_tool: {fail: closed, band: policy, changes: [result]}}

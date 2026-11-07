@@ -45,6 +45,10 @@ int ParseOptions(int argc, char** argv, int first, Agent* a) {
       a->resume = value;
     } else if (!strcmp(arg, "--events")) {
       a->events = value;
+    } else if (!strcmp(arg, "--kit")) {
+      // The same as --set kit=NAME, so it stays in force after a reload.
+      cJSON_DeleteItemFromObjectCaseSensitive(a->sets, "kit");
+      cJSON_AddStringToObject(a->sets, "kit", value);
     } else if (!strcmp(arg, "--set")) {
       if (SpecAddSet(a->sets, value)) return UsageError("bad --set", value);
     } else if (!strcmp(arg, "--cap")) {
@@ -84,6 +88,8 @@ void PrintOptions(FILE* out) {
       "  -p TASK|-             run one task (- reads it from stdin)\n"
       "  --spec PATH           agent spec (default ./agent.yaml, else your\n"
       "                        defaults from `arx setup`)\n"
+      "  --kit NAME            use an installed kit (its plugins, in order,\n"
+      "                        and its prompt); the agent cannot change it\n"
       "  --set KEY=VALUE       override a spec value, e.g. model=...\n"
       "  --cap KEY=VALUE       hard limit: turns, tokens, usd, wall, depth\n"
       "  --resume ID|last      continue a session\n"
