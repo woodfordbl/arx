@@ -1,3 +1,5 @@
-cJSON  v1.7.19  https://github.com/DaveGamble/cJSON  (MIT)
 libyaml 0.2.5   https://github.com/yaml/libyaml     (MIT)
 Vendored unmodified. Do not edit; upgrade by replacing the files.
+build.zig compiles it and translates yaml.h for src/harness/yaml.zig. It is
+the only C in arx: Zig's standard library has no YAML parser, and libyaml
+gives the line numbers that error messages need.

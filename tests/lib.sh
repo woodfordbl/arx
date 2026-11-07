@@ -13,8 +13,6 @@ export ARX_DISABLE_KEYCHAIN=1
 # bash and edit come from the shell plugin, as after `arx setup`.
 mkdir -p "$ARX_CONFIG_DIR/plugins"
 ln -s "$ROOT/plugins/shell" "$ARX_CONFIG_DIR/plugins/shell"
-export ASAN_OPTIONS=${ASAN_OPTIONS:-detect_leaks=0:abort_on_error=1}
-export UBSAN_OPTIONS=${UBSAN_OPTIONS:-halt_on_error=1:print_stacktrace=1}
 passed=0
 failed=0
 
@@ -38,12 +36,16 @@ EOF
 }
 
 # Runs arx headless with `-p TASK` and any extra arguments. Sets $code;
-# stdout goes to out.txt and stderr to err.txt.
+# stdout goes to out.txt and stderr to err.txt. With the debug build, a
+# memory leak or a panic fails the test.
 run() {
   local task=$1
   shift
   "$ARX" -p "$task" --quiet "$@" >out.txt 2>err.txt
   code=$?
+  if grep -qE 'error\(SafeAllocator\)|^panic: |^thread [0-9]+ panic' err.txt; then
+    fail "no leaks or panics"
+  fi
 }
 
 # reply N STATUS [HEADER...] < BODY: the response for model call N.

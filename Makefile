@@ -1,65 +1,61 @@
-# Makefile for arx.
-#   make            release binary ./arx (-Os, LTO, dead-code stripped)
-#   make debug      ./arx-debug with AddressSanitizer and UBSan
-#   make test       run tests/run.sh, plugins.sh, layers.sh, cli.sh, shell.sh,
-#                   hooks.sh, runtime.sh and kits.sh against ./arx-debug
+# Makefile for arx: thin wrappers around `zig build` (see build.zig), kept so
+# the commands in the docs and CI stay short.
+#   make            release binary ./arx (optimized for size, stripped)
+#   make debug      ./arx-debug with safety checks and leak reports
+#   make test       the Zig unit tests, then tests/run.sh, plugins.sh,
+#                   layers.sh, cli.sh, shell.sh, hooks.sh, runtime.sh and
+#                   kits.sh against ./arx-debug
 #   make bench      check the performance budgets against ./arx
 #   make lint       style checks (scripts/lint.sh)
-#   make format     rewrite src/ in Google style
+#   make format     rewrite src/ with zig fmt
 #   make install    install arx, its commands, and the plugins and kits of
 #                   this repo into $(PREFIX) (~/.local); `arx setup` turns
 #                   the shell plugin on, and `arx kit add NAME` adds a kit
 #   make uninstall  remove them again
 #   make dist       dist/arx-<os>-<arch>.tar.gz (+ .sha256), as releases ship
-#   make static     static Linux (musl) binary, built in Docker
-CC ?= cc
-UNAME := $(shell uname)
+#   make static     static Linux (musl) binaries for x86_64 and arm64
+#
+# arx builds with exactly one Zig release, ZIG_VERSION below; build.zig and
+# build.zig.zon name the same one. Set ZIG to use a zig that is not on PATH.
+ZIG ?= zig
+ZIG_VERSION := 0.17.0
 PREFIX ?= $(HOME)/.local
-TARGET ?= $(shell uname -s | tr '[:upper:]' '[:lower:]')-$(shell uname -m | sed 's/aarch64/arm64/')
+OS := $(shell uname -s | tr '[:upper:]' '[:lower:]')
+ARCH := $(shell uname -m | sed 's/aarch64/arm64/')
+TARGET ?= $(OS)-$(ARCH)
 SHA256 := $(shell command -v sha256sum >/dev/null 2>&1 && echo sha256sum || echo shasum -a 256)
-
-YAML_DEFS := -DYAML_VERSION_MAJOR=0 -DYAML_VERSION_MINOR=2 \
-  -DYAML_VERSION_PATCH=5 '-DYAML_VERSION_STRING="0.2.5"' -DYAML_DECLARE_STATIC
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/^v//')
-CPPFLAGS := -I. -Ivendor/libyaml/include -D_GNU_SOURCE -D_DARWIN_C_SOURCE \
-  $(YAML_DEFS) '-DARX_VERSION="$(VERSION)"'
-WARN := -std=c11 -Wall -Wextra -Wshadow -Wstrict-prototypes
-REL := -Os -flto -ffunction-sections -fdata-sections
-DBG := -O0 -g -fsanitize=address,undefined -fno-omit-frame-pointer
-ifeq ($(UNAME),Darwin)
-  GC := -Wl,-dead_strip
-else
-  GC := -Wl,--gc-sections
-endif
+VERSION_FLAG := $(if $(VERSION),-Dversion=$(VERSION))
 
-SRC := $(wildcard src/*.c src/*/*.c)
-HDR := $(wildcard src/*/*.h)
-VENDOR := vendor/cjson/cJSON.c $(wildcard vendor/libyaml/src/*.c)
-REL_OBJ := $(patsubst %.c,build/rel/%.o,$(SRC) $(VENDOR))
-DBG_OBJ := $(patsubst %.c,build/dbg/%.o,$(SRC) $(VENDOR))
+# The Zig target for each release target. The Linux ones link musl
+# statically, so the binary runs on any distribution.
+ZIG_TARGET_darwin-arm64 := aarch64-macos
+ZIG_TARGET_darwin-x86_64 := x86_64-macos
+ZIG_TARGET_linux-x86_64 := x86_64-linux-musl
+ZIG_TARGET_linux-arm64 := aarch64-linux-musl
+ZIG_TARGET := $(ZIG_TARGET_$(TARGET))
 
-arx: $(REL_OBJ)
-	$(CC) $(REL) $(GC) $^ -o $@
-	strip $@
+SRC := $(shell find src -name '*.zig') build.zig build.zig.zon
+
+arx: check-zig $(SRC)
+	$(ZIG) build -Doptimize=small -Dtarget=$(ZIG_TARGET) $(VERSION_FLAG) --prefix build/$(TARGET)
+	rm -f $@ && cp build/$(TARGET)/bin/arx $@ # replace, not overwrite: macOS kills an overwritten signed binary
+	strip $@ 2>/dev/null || true
 
 debug: arx-debug
-arx-debug: $(DBG_OBJ)
-	$(CC) -fsanitize=address,undefined $^ -o $@
+arx-debug: check-zig $(SRC)
+	$(ZIG) build -Doptimize=debug $(VERSION_FLAG) --prefix build/debug
+	rm -f $@ && cp build/debug/bin/arx $@
 
-build/rel/src/%.o: src/%.c $(HDR)
-	@mkdir -p $(dir $@)
-	$(CC) $(CPPFLAGS) $(WARN) $(REL) -c $< -o $@
-build/rel/vendor/%.o: vendor/%.c
-	@mkdir -p $(dir $@)
-	$(CC) $(CPPFLAGS) -w $(REL) -c $< -o $@
-build/dbg/src/%.o: src/%.c $(HDR)
-	@mkdir -p $(dir $@)
-	$(CC) $(CPPFLAGS) $(WARN) $(DBG) -c $< -o $@
-build/dbg/vendor/%.o: vendor/%.c
-	@mkdir -p $(dir $@)
-	$(CC) $(CPPFLAGS) -w $(DBG) -c $< -o $@
+# Stops early, with the fix, when the zig on PATH is not the pinned one.
+check-zig:
+	@have=$$($(ZIG) version 2>/dev/null); if [ "$$have" != "$(ZIG_VERSION)" ]; then \
+	  echo "arx builds with Zig $(ZIG_VERSION); found '$${have:-no zig}'." >&2; \
+	  echo "Install it from https://ziglang.org/download/ or set ZIG=/path/to/zig." >&2; \
+	  exit 1; fi
 
 test: arx-debug
+	$(ZIG) build test -Doptimize=debug
 	ARX=./arx-debug tests/run.sh
 	ARX=./arx-debug tests/plugins.sh
 	ARX=./arx-debug tests/layers.sh
@@ -91,21 +87,25 @@ dist: arx
 	tar -C dist -czf dist/arx-$(TARGET).tar.gz arx-$(TARGET)
 	cd dist && $(SHA256) arx-$(TARGET).tar.gz >arx-$(TARGET).tar.gz.sha256
 
+# Zig cross-compiles, so this needs no Docker and works from macOS too.
+static: check-zig
+	for t in linux-x86_64 linux-arm64; do \
+	  $(MAKE) --no-print-directory clean-bin arx TARGET=$$t && mv arx arx-$$t || exit 1; \
+	done
+
 bench: arx
 	tests/bench.sh
 
 lint:
 	scripts/lint.sh
 
-format:
-	clang-format -i $(SRC) $(HDR)
+format: check-zig
+	$(ZIG) fmt src build.zig build.zig.zon
 
-static:
-	docker run --rm -v "$(CURDIR)":/w -w /w alpine:3.20 sh -c \
-	  'apk add -q build-base && make clean arx CC="gcc -static" && \
-	   mv arx arx-linux-$$(uname -m) && rm -rf build'
+clean-bin:
+	rm -f arx
 
 clean:
-	rm -rf build dist arx arx-debug
+	rm -rf build dist zig-out arx arx-debug arx-linux-*
 
-.PHONY: debug test bench lint format install uninstall dist static clean
+.PHONY: debug check-zig test bench lint format install uninstall dist static clean clean-bin
