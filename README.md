@@ -71,11 +71,12 @@ Install the latest release (macOS and Linux, x86_64 and arm64), then set your
 provider, key and default model:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/woodfordbl/arx/main/install.sh | sh
+curl -fsSL https://arx-documentation.vercel.app/install.sh | sh
 arx setup                    # provider, API key (saved in your Keychain), default model
 ```
 
-The installer checks the release's sha256 and installs into `~/.local`. From a
+The installer downloads from the arx site, which serves arx's GitHub
+releases, checks the release's sha256 and installs into `~/.local`. From a
 source checkout, `make install` does the same with your own build.
 
 ```sh
