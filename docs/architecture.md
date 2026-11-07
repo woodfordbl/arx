@@ -26,7 +26,7 @@ decisions, the layout of the sources, and how to build, test and benchmark.
 
 | Budget | Limit | macOS (arm64) | Linux (static, musl) |
 |---|---|---|---|
-| Binary size | 400 KB (macOS), 1 MB (Linux) | 377 KB | 421 KB, libc included |
+| Binary size | 400 KB (macOS), 1 MB (Linux) | 377 KB | 416 KB, libc included |
 | Startup, above `true` | 1 ms | 0.8 ms | within noise |
 | Peak memory over 500 turns | 16 MB | 5 MB | 7 MB |
 | Harness edit to live | 10 ms | 0.11 ms | 0.06 ms |
