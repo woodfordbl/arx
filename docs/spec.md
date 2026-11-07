@@ -28,7 +28,7 @@ agent.yaml:6: modle: unknown key (did you mean "model"?)
   use and the agent is told why.
 
 The validator and the schema are generated from one field table in
-`src/harness/validate.c`, so they always agree.
+`src/harness/validate.zig`, so they always agree.
 
 ## A complete example
 
