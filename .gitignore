@@ -5,3 +5,5 @@
 *.dSYM/
 .arx/
 .claude/
+/zig-out/
+/.zig-cache/

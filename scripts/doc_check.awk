@@ -1,42 +1,37 @@
-# doc_check.awk: documentation rules for src/.
-#   - Every file starts with a // comment that says what it is for.
-#   - Every function definition in a .c file has a // comment right above it.
-#   - Every top-level declaration in a .h file has a // comment right above it.
-# Usage: awk -f scripts/doc_check.awk src/*.c src/*/*.[ch]
-
-# Removes string and char literals and trailing comments, so braces inside
-# them do not count.
-function strip(s) {
-  gsub(/\\./, "", s)
-  gsub(/"[^"]*"/, "", s)
-  gsub(/'[^']*'/, "", s)
-  sub(/\/\/.*/, "", s)
-  return s
-}
+# doc_check.awk: documentation rules for the Zig sources.
+#   - Every file starts with a //! comment that says what it is for.
+#   - Every function, and every pub declaration, has a /// comment right
+#     above it. Functions inside test blocks are exempt, and so is a pub
+#     const that only re-exports another file's declaration.
+# Usage: awk -f scripts/doc_check.awk src/*.zig src/*/*.zig build.zig
 
 FNR == 1 {
-  depth = 0
+  in_test = 0
   prev = ""
-  if ($0 !~ /^\/\//) {
-    printf "%s:1: start the file with a // comment that says what it is for\n",
+  if ($0 !~ /^\/\/!/) {
+    printf "%s:1: start the file with a //! comment that says what it is for\n",
            FILENAME
     bad = 1
   }
 }
 
 {
-  code = strip($0)
-  if (depth == 0 && $0 ~ /^[A-Za-z_]/) {
-    header = FILENAME ~ /\.h$/
-    definition = code ~ /\(/ && code !~ /;[[:space:]]*$/ && code !~ /=/
-    if ((header || definition) && prev !~ /^\/\//) {
-      printf "%s:%d: add a // comment above this %s\n", FILENAME, FNR,
-             header ? "declaration" : "function"
-      bad = 1
-    }
+  line = $0
+  sub(/^[ \t]+/, "", line)
+  if ($0 ~ /^test "/ || $0 ~ /^test \{/) in_test = 1
+  if (in_test && $0 ~ /^\}/) in_test = 0
+  needs = 0
+  if (!in_test && line ~ /^(pub )?(inline )?fn [A-Za-z_]/) needs = 1
+  if (line ~ /^pub (const|var) [A-Za-z_]+ *[:=]/) {
+    reexport = line ~ /= *[A-Za-z_][A-Za-z_0-9]*\.[A-Za-z_][A-Za-z_0-9.]*;$/ ||
+               line ~ /= *@import\(/
+    if (!reexport) needs = 1
   }
-  depth += gsub(/{/, "{", code) - gsub(/}/, "}", code)
-  prev = $0
+  if (needs && prev !~ /^\/\/\//) {
+    printf "%s:%d: add a /// comment above this declaration\n", FILENAME, FNR
+    bad = 1
+  }
+  prev = line
 }
 
 END { exit bad }
