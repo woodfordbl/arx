@@ -4,24 +4,36 @@ set -u
 
 usage() {
   cat <<'EOF'
-usage: arx init [basic|autoresearch] [--force]
+usage: arx init [basic|autoresearch|KIT] [--force]
   basic         agent.yaml, prompts/system.md, and empty tools/ hooks/ skills/
   autoresearch  basic plus program.md, an experiment-loop prompt, a
                 never-stop hook and restart compaction (see examples/tsp)
+  KIT           the files in an installed kit's init/ folder (arx kit list),
+                and an agent.yaml that uses the kit; e.g. arx init research
   --force       overwrite files that already exist
 The model and endpoint come from `arx setup`, so agent.yaml stays short.
 EOF
 }
 
-template=basic force=0
+template=basic force=0 kit=""
 for arg in "$@"; do
   case "$arg" in
     basic | autoresearch) template=$arg ;;
     --force) force=1 ;;
     -h | --help) usage; exit 0 ;;
-    *) echo "arx init: unknown argument $arg" >&2; usage >&2; exit 2 ;;
+    -*) echo "arx init: unknown argument $arg" >&2; usage >&2; exit 2 ;;
+    *) echo "$arg" | grep -qE '^[A-Za-z0-9_-]+$' || { usage >&2; exit 2; }; kit=$arg ;;
   esac
 done
+
+# The same lookup as ConfigDir() in arx.
+if [ -n "${ARX_CONFIG_DIR:-}" ]; then
+  config_dir=$ARX_CONFIG_DIR
+elif [ -n "${XDG_CONFIG_HOME:-}" ]; then
+  config_dir=$XDG_CONFIG_HOME/arx
+else
+  config_dir=$HOME/.config/arx
+fi
 
 # Writes stdin to $1 unless it exists (or --force).
 put() {
@@ -36,6 +48,25 @@ put() {
 }
 
 name=$(basename "$PWD" | tr -c 'A-Za-z0-9_\n-' '-')
+
+# A kit: copy its init/ files, and make sure agent.yaml uses the kit.
+if [ -n "$kit" ]; then
+  dir=$config_dir/kits/$kit
+  [ -f "$dir/kit.yaml" ] || { echo "arx init: kit $kit is not installed: run \`arx kit add $kit\`" >&2; exit 1; }
+  if [ -d "$dir/init" ]; then
+    (cd "$dir/init" && find . -type f) | sed 's|^\./||' | sort | while IFS= read -r f; do
+      put "$f" <"$dir/init/$f"
+    done
+  fi
+  if [ ! -f agent.yaml ]; then
+    printf '# The harness for this folder: kit %s chooses the plugins and the prompt.\nname: %s\nkit: %s\n' "$kit" "$name" "$kit" | put agent.yaml
+  elif [ -z "$("${ARX_BIN:-arx}" config get kit)" ]; then
+    "${ARX_BIN:-arx}" config set kit "$kit" && echo "  set     kit: $kit in agent.yaml"
+  fi
+  grep -qs '^\.arx/$' .gitignore || echo ".arx/" >>.gitignore
+  echo "Ready: kit $kit. Check it with \`arx check\`, then run \`arx\`."
+  exit 0
+fi
 mkdir -p tools hooks skills
 
 if [ "$template" = basic ]; then

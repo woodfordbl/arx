@@ -82,14 +82,14 @@ With `--json`, arx prints one object on stdout when the run ends:
 | `arx models [FILTER] [--json]` | The endpoint's models, with prices per million tokens. `*` marks your default. |
 | `arx sessions [--all]` | The sessions in this folder: id, status, turns, cost and task. |
 | `arx update [--check] [--version V]` | Installs the latest release, after checking its sha256. `--check` only reports, and exits 10 if a newer release exists. |
-| `arx plugin ...` | Installs, lists and removes plugins. See [Plugin folders](plugins.md#plugin-folders). |
+| `arx plugin ...` | Installs, lists and removes plugins. See [Plugin folders](plugins/concepts.md#layer). |
 | `arx request [-X METHOD] [--data JSON\|-] PATH` | An authenticated request to the endpoint, e.g. `arx request /models`. |
 
 **Commands are plugins.** `arx foo` runs an executable named `arx-foo`, the
 way git runs `git-foo`. arx looks in its own commands first, then
 `~/.config/arx/commands/`, then each user plugin's `commands/`, then `PATH`.
 The first match wins, so a plugin can add a command but not replace one. See
-[Commands](plugins.md#commands) to write one.
+[Commands](plugins/commands.md) to write one.
 
 ## Inspecting a harness
 
@@ -142,4 +142,4 @@ macOS Keychain (service `arx`) or in `~/.config/arx/credentials`. The key
 reaches `curl` in a 0600 file, never on a command line.
 
 Plugins get a further set of `ARX_*` variables; see
-[What every plugin gets](plugins.md#what-every-plugin-gets).
+[What every plugin gets](plugins/reference.md#environment).

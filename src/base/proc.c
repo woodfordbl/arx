@@ -1,6 +1,7 @@
 // proc.c: the process runner behind every tool, hook, curl call and
-// subagent. One poll() loop feeds stdin, drains stdout, stderr and fd 3, and
-// enforces the timeout on the child's whole process group.
+// subagent. One poll() loop serves many children at once: it feeds stdin,
+// drains stdout, stderr and fd 3, and enforces each timeout and Ctrl-C on
+// the child's whole process group. ProcRun is the same loop for one child.
 
 #include <errno.h>
 #include <fcntl.h>
@@ -91,10 +92,10 @@ static void ClosePipes(Pipes* p) {
 
 // Starts the child with its pipes, its own process group and default signal
 // handling. Returns 0 or an errno value.
-static int Spawn(const Proc* p, Pipes* io, pid_t* pid) {
+static int Spawn(const Proc* p, Pipes* io, int want_in, pid_t* pid) {
   posix_spawn_file_actions_t fa;
   posix_spawn_file_actions_init(&fa);
-  if (p->in) {
+  if (want_in) {
     posix_spawn_file_actions_adddup2(&fa, io->in[0], 0);
   } else {
     posix_spawn_file_actions_addopen(&fa, 0, "/dev/null", O_RDONLY, 0);
@@ -126,89 +127,185 @@ static int Spawn(const Proc* p, Pipes* io, pid_t* pid) {
   return rc;
 }
 
-// Runs the child to completion; see base.h.
-int ProcRun(const Proc* p, ProcResult* r) {
+// A started child and the state of its loop.
+struct ProcChild {
+  Proc p;  // a copy; its buffers and contexts belong to the caller
+  Pipes io;
+  pid_t pid;
+  Buffer more;  // stdin queued by ProcWrite (Proc.open_in)
+  size_t written;
+  int status, reaped, killed, done;
+  double start, kill_at, drain_until, deadline;
+  ProcResult r;
+};
+
+// Starts a child without waiting; see base.h.
+ProcChild* ProcStart(const Proc* p) {
   Pipes io = {{-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}};
-  memset(r, 0, sizeof(*r));
-  r->code = -1;
-  if ((p->in && PipeCloexec(io.in)) || PipeCloexec(io.out) ||
+  int want_in = p->in || p->open_in;
+  if ((want_in && PipeCloexec(io.in)) || PipeCloexec(io.out) ||
       (p->on_err && PipeCloexec(io.err)) ||
       (p->on_fd3 && PipeCloexec(io.fd3))) {
     ClosePipes(&io);
-    r->spawn_failed = 1;
-    return -1;
+    return NULL;
   }
-  double start = Now();
-  pid_t pid;
-  int rc = Spawn(p, &io, &pid);
-  CloseFd(&io.in[0]);
-  CloseFd(&io.out[1]);
-  CloseFd(&io.err[1]);
-  CloseFd(&io.fd3[1]);
+  ProcChild* c = XMalloc(sizeof(*c));
+  memset(c, 0, sizeof(*c));
+  c->p = *p;
+  c->io = io;
+  c->start = Now();
+  int rc = Spawn(&c->p, &c->io, want_in, &c->pid);
+  CloseFd(&c->io.in[0]);
+  CloseFd(&c->io.out[1]);
+  CloseFd(&c->io.err[1]);
+  CloseFd(&c->io.fd3[1]);
   if (rc) {
-    ClosePipes(&io);
-    r->spawn_failed = 1;
+    ClosePipes(&c->io);
+    free(c);
     errno = rc;
+    return NULL;
+  }
+  if (c->io.in[1] >= 0) fcntl(c->io.in[1], F_SETFL, O_NONBLOCK);
+  c->deadline = p->timeout > 0 ? c->start + p->timeout : 0;
+  return c;
+}
+
+// Queues stdin for a child started with open_in; see base.h.
+void ProcWrite(ProcChild* c, const char* data, size_t n) {
+  if (c->io.in[1] >= 0) BufferAppend(&c->more, data, n);
+}
+
+// True when the child has ended and its output is read; see base.h.
+int ProcDone(const ProcChild* c) { return c->done; }
+
+// The stdin bytes still to write, and how many.
+static const char* Pending(const ProcChild* c, size_t* n) {
+  const char* data = c->p.open_in ? c->more.data : c->p.in;
+  size_t len = c->p.open_in ? c->more.len : c->p.in_len;
+  *n = len - c->written;
+  return data ? data + c->written : NULL;
+}
+
+// Writes what the child can take now; closes a fixed stdin once it is all
+// written.
+static void Feed(ProcChild* c) {
+  size_t n;
+  const char* data = Pending(c, &n);
+  ssize_t w = n ? write(c->io.in[1], data, n) : 0;
+  if (w > 0) c->written += (size_t)w;
+  if (w < 0 && errno != EAGAIN && errno != EINTR) {
+    CloseFd(&c->io.in[1]);
+  } else if (c->p.open_in && c->written == c->more.len) {
+    c->more.len = c->written = 0;
+  } else if (!c->p.open_in && c->written >= c->p.in_len) {
+    CloseFd(&c->io.in[1]);
+  }
+}
+
+// Reaps the child, and stops it at its deadline or on Ctrl-C.
+static void Check(ProcChild* c) {
+  if (!c->reaped && waitpid(c->pid, &c->status, WNOHANG) == c->pid) {
+    c->reaped = 1;
+    c->drain_until = Now() + kDrainSeconds;
+    CloseFd(&c->io.in[1]);
+  }
+  double t = Now();
+  int stop = g_interrupted && !c->p.keep_on_interrupt;
+  if (!c->reaped && !c->killed && (stop || (c->deadline && t > c->deadline))) {
+    if (stop) {
+      c->r.interrupted = 1;
+    } else {
+      c->r.timed_out = 1;
+    }
+    kill(-c->pid, SIGTERM);
+    c->killed = 1;
+    c->kill_at = t + kKillGraceSeconds;
+  } else if (!c->reaped && c->killed && t > c->kill_at) {
+    kill(-c->pid, SIGKILL);
+    c->kill_at = t + 1e9;
+  }
+  int open = c->io.out[0] >= 0 || c->io.err[0] >= 0 || c->io.fd3[0] >= 0;
+  if (c->reaped && (!open || t >= c->drain_until)) c->done = 1;
+}
+
+// Adds a child's open pipes to the poll set; `slot[k]` maps each entry
+// back to its child.
+static void AddChild(ProcChild* c, int k, struct pollfd* pf, int* slot,
+                     int* n) {
+  size_t pending;
+  Pending(c, &pending);
+  int fds[] = {c->io.in[1], c->io.out[0], c->io.err[0], c->io.fd3[0]};
+  for (int i = 0; i < 4; i++) {
+    if (fds[i] < 0 || (i == 0 && c->p.open_in && !pending)) continue;
+    slot[*n] = k;
+    PollAdd(pf, n, fds[i], i ? POLLIN : POLLOUT);
+  }
+}
+
+// Handles the events of one poll entry.
+static void Serve(ProcChild* c, const struct pollfd* e) {
+  if (!e->revents) return;
+  if (e->fd == c->io.in[1]) Feed(c);
+  if (e->fd == c->io.out[0]) Pump(&c->io.out[0], c->p.on_out, c->p.out_ctx);
+  if (e->fd == c->io.err[0]) Pump(&c->io.err[0], c->p.on_err, c->p.err_ctx);
+  if (e->fd == c->io.fd3[0]) Pump(&c->io.fd3[0], c->p.on_fd3, c->p.fd3_ctx);
+}
+
+// One round of the loop for many children; see base.h.
+void ProcPoll(ProcChild* const* kids, int count, double max_wait) {
+  struct pollfd* pf = XMalloc((size_t)(4 * count + 1) * sizeof(*pf));
+  int* slot = XMalloc((size_t)(4 * count + 1) * sizeof(*slot));
+  int n = 0;
+  double wait = max_wait > 0.1 ? 0.1 : max_wait;  // see exits and Ctrl-C
+  for (int k = 0; k < count; k++) {
+    ProcChild* c = kids[k];
+    if (c->done) continue;
+    AddChild(c, k, pf, slot, &n);
+    if (c->reaped && c->drain_until - Now() < wait) {
+      wait = c->drain_until - Now();
+    }
+  }
+  if (wait < 0) wait = 0;
+  int wait_ms = n ? (int)(wait * 1000) + 1 : 1;  // no pipes: wait for exit
+  if (poll(n ? pf : NULL, (nfds_t)n, wait_ms) > 0) {
+    for (int i = 0; i < n; i++) Serve(kids[slot[i]], &pf[i]);
+  }
+  for (int k = 0; k < count; k++) {
+    if (!kids[k]->done) Check(kids[k]);
+  }
+  free(pf);
+  free(slot);
+}
+
+// Stops the child if it still runs, then frees it; see base.h.
+void ProcFinish(ProcChild* c, ProcResult* r) {
+  if (!c->done && !c->killed) {
+    CloseFd(&c->io.in[1]);
+    kill(-c->pid, SIGTERM);
+    c->killed = 1;
+    c->kill_at = Now() + kKillGraceSeconds;
+  }
+  while (!c->done) ProcPoll(&c, 1, 0.1);
+  ClosePipes(&c->io);
+  if (c->killed) kill(-c->pid, SIGKILL);  // anything left in the group
+  c->r.secs = Now() - c->start;
+  int s = c->status;
+  c->r.code = WIFEXITED(s) ? WEXITSTATUS(s) : 128 + WTERMSIG(s);
+  *r = c->r;
+  BufferFree(&c->more);
+  free(c);
+}
+
+// Runs the child to completion; see base.h.
+int ProcRun(const Proc* p, ProcResult* r) {
+  ProcChild* c = ProcStart(p);
+  if (!c) {
+    memset(r, 0, sizeof(*r));
+    r->code = -1;
+    r->spawn_failed = 1;
     return -1;
   }
-  if (io.in[1] >= 0) fcntl(io.in[1], F_SETFL, O_NONBLOCK);
-
-  size_t written = 0;
-  int status = 0, reaped = 0, killed = 0;
-  double kill_at = 0, drain_until = 0;
-  double deadline = p->timeout > 0 ? start + p->timeout : 0;
-  for (;;) {
-    struct pollfd pf[4];
-    int n = 0;
-    int i_in = PollAdd(pf, &n, io.in[1], POLLOUT);
-    int i_out = PollAdd(pf, &n, io.out[0], POLLIN);
-    int i_err = PollAdd(pf, &n, io.err[0], POLLIN);
-    int i_fd3 = PollAdd(pf, &n, io.fd3[0], POLLIN);
-    if (reaped && (n == 0 || Now() >= drain_until)) break;
-    int wait_ms = reaped ? (int)((drain_until - Now()) * 1000) + 1 : 100;
-    if (n && poll(pf, (nfds_t)n, wait_ms) > 0) {
-      if (i_in >= 0 && pf[i_in].revents) {
-        ssize_t w = write(io.in[1], p->in + written, p->in_len - written);
-        if (w > 0) written += (size_t)w;
-        if ((w < 0 && errno != EAGAIN && errno != EINTR) ||
-            written >= p->in_len) {
-          CloseFd(&io.in[1]);
-        }
-      }
-      if (i_out >= 0 && pf[i_out].revents)
-        Pump(&io.out[0], p->on_out, p->out_ctx);
-      if (i_err >= 0 && pf[i_err].revents)
-        Pump(&io.err[0], p->on_err, p->err_ctx);
-      if (i_fd3 >= 0 && pf[i_fd3].revents)
-        Pump(&io.fd3[0], p->on_fd3, p->fd3_ctx);
-    } else if (!n) {
-      struct timespec ms = {0, 1000000};  // all pipes closed: wait for exit
-      nanosleep(&ms, NULL);
-    }
-    if (!reaped && waitpid(pid, &status, WNOHANG) == pid) {
-      reaped = 1;
-      drain_until = Now() + kDrainSeconds;
-      CloseFd(&io.in[1]);
-    }
-    double t = Now();
-    if (!reaped && !killed && (g_interrupted || (deadline && t > deadline))) {
-      if (g_interrupted) {
-        r->interrupted = 1;
-      } else {
-        r->timed_out = 1;
-      }
-      kill(-pid, SIGTERM);
-      killed = 1;
-      kill_at = t + kKillGraceSeconds;
-    } else if (!reaped && killed && t > kill_at) {
-      kill(-pid, SIGKILL);
-      kill_at = t + 1e9;
-    }
-  }
-  ClosePipes(&io);
-  if (!reaped) waitpid(pid, &status, 0);
-  if (killed) kill(-pid, SIGKILL);  // anything left in the group
-  r->secs = Now() - start;
-  r->code = WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
+  while (!c->done) ProcPoll(&c, 1, 0.1);
+  ProcFinish(c, r);
   return 0;
 }

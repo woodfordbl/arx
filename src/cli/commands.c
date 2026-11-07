@@ -1,5 +1,6 @@
 // commands.c: the built-in commands. One table drives both dispatch and
-// `arx help`; everything else is an external `arx-*` command.
+// `arx help`; everything else is an external `arx-*` command. `arx check`
+// and `arx tools` live in check.c.
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,87 +24,6 @@ static int LoadSpec(Agent* a) {
   return failed ? kExitUsage : 0;
 }
 
-// Prints the hooks found next to the spec.
-static void PrintHooks(Agent* a) {
-  printf("\nhooks:");
-  for (const char* const* p = kHookPoints; *p; p++) {
-    Buffer from = {0};
-    int found = 0;
-    for (int l = 0; l < a->spec.layer_count; l++) {
-      const Layer* layer = &a->spec.layers[l];
-      char* path = XAsprintf("%s/hooks/%s", layer->dir, *p);
-      if (!access(path, X_OK)) {
-        found = 1;
-        if (layer->plugin) {
-          BufferPrintf(&from, "%s%s", from.len ? "," : "", layer->plugin);
-        }
-      }
-      free(path);
-    }
-    if (found) printf(" %s", *p);
-    if (from.len) printf("(%s)", from.data);
-    BufferFree(&from);
-  }
-  printf("\n");
-}
-
-// Prints the plugins in use, if there are any.
-static void PrintPlugins(Agent* a) {
-  int any = 0;
-  for (int l = 0; l < a->spec.layer_count; l++) {
-    const Layer* layer = &a->spec.layers[l];
-    if (!layer->plugin) continue;
-    printf("%s%s", any ? " " : "plugins: ", layer->plugin);
-    any = 1;
-  }
-  if (any) printf("\n");
-}
-
-// `arx check --plugin DIR`: checks a plugin without loading it, and prints
-// key=value lines for scripts such as `arx plugin`.
-static int CheckPlugin(const char* dir) {
-  Buffer out = {0}, err = {0};
-  int rc = PluginDescribe(dir, &out, &err);
-  fputs(rc ? err.data : out.data, rc ? stderr : stdout);
-  BufferFree(&out);
-  BufferFree(&err);
-  return rc ? kExitUsage : kExitDone;
-}
-
-// `arx check` and `arx tools`: load the harness without starting a session.
-static int CheckOrTools(int argc, char** argv, Agent* a) {
-  if (argc == 4 && argv[1][0] == 'c' && !strcmp(argv[2], "--plugin")) {
-    return CheckPlugin(argv[3]);
-  }
-  int code = ParseOptions(argc, argv, 2, a);
-  if (code || (code = LoadSpec(a))) return code;
-  ToolsBuild(a);
-  if (argv[1][0] == 't') {
-    cJSON* tools = ToolsJson(&a->tools);
-    char* text = cJSON_Print(tools);
-    puts(text);
-    free(text);
-    cJSON_Delete(tools);
-  } else {
-    printf("ok: %s%s%s (model %s at %s)\ntools:", a->spec.path,
-           a->spec.config && strcmp(a->spec.config, a->spec.path) ? " + " : "",
-           a->spec.config && strcmp(a->spec.config, a->spec.path)
-               ? a->spec.config
-               : "",
-           JsonStr(a->spec.root, "model", ""),
-           JsonStr(a->spec.root, "endpoint.base_url", ""));
-    for (int i = 0; i < a->tools.count; i++) {
-      printf(" %s", a->tools.items[i].name);
-    }
-    PrintHooks(a);
-    PrintPlugins(a);
-    if (a->notes.len) printf("problems:\n%s", a->notes.data);
-  }
-  ToolsFree(&a->tools);
-  SpecFree(&a->spec);
-  return kExitDone;
-}
-
 // `arx schema`.
 static int SchemaCommand(int argc, char** argv, Agent* a) {
   (void)argc;
@@ -114,6 +34,24 @@ static int SchemaCommand(int argc, char** argv, Agent* a) {
   fputs(out.data, stdout);
   BufferFree(&out);
   return kExitDone;
+}
+
+// `arx tool bash|edit [--schema]`: runs a tool of the shell plugin, with
+// the arguments as JSON on stdin, or prints its schema.
+static int ToolCommand(int argc, char** argv, Agent* a) {
+  (void)a;
+  const char* schema = argc > 2 ? ShellToolSchema(argv[2]) : NULL;
+  if (!schema)
+    return UsageError("tool needs bash or edit", argc > 2 ? argv[2] : NULL);
+  if (argc > 3 && !strcmp(argv[3], "--schema")) {
+    puts(schema);
+    return kExitDone;
+  }
+  if (argc > 3) return UsageError("unknown tool argument", argv[3]);
+  char* args = ReadStdin();
+  int code = ShellToolRun(argv[2], args);
+  free(args);
+  return code;
 }
 
 // `arx version`.
@@ -266,11 +204,14 @@ static int RequestCommand(int argc, char** argv, Agent* a) {
 }
 
 const Command kCommands[] = {
-    {"check", "[--spec P] | --plugin DIR",
-     "validate the spec, tools and hooks, or one plugin", CheckOrTools},
+    {"check", "[--spec P] [--kit K] [--list] | --plugin DIR | --kit-dir DIR",
+     "validate the harness (or list its plugins), one plugin or one kit",
+     CheckOrTools},
     {"tools", "[--spec P]", "print the tools as the model sees them",
      CheckOrTools},
     {"schema", "", "print the JSON Schema of agent.yaml", SchemaCommand},
+    {"tool", "bash|edit [--schema]",
+     "run a tool of the shell plugin (JSON arguments on stdin)", ToolCommand},
     {"watch", "[ID|last] [--json] [--from start|now]",
      "follow a session's events", WatchCommand},
     {"ctl", "ID|last stop|note TEXT", "steer a running session", CtlCommand},

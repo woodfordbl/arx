@@ -1,7 +1,7 @@
-// validate.c: the agent.yaml field table, and validation against it. One
-// table drives validation (with line numbers and "did you mean" hints, so an
-// agent editing its own spec can fix it from the message alone) and the JSON
-// Schema in schema.c. Adding a key to the table adds it to both.
+// validate.c: validation against the field tables in fields.c, with line
+// numbers and "did you mean" hints, so an agent editing its own spec can fix
+// it from the message alone. agent.yaml, plugin.yaml and kit.yaml all go
+// through the same checks.
 
 #include <stddef.h>
 #include <stdlib.h>
@@ -11,96 +11,11 @@
 #include "src/base/base.h"
 #include "src/harness/harness.h"
 
-const char* const kHookPoints[] = {"session_start", "before_tool", "after_tool",
-                                   "stop", NULL};
-const char kNameChars[] =
-    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-";
 static const char* const kStrategies[] = {"mask", "summarize", "hybrid",
                                           "restart", NULL};
 static const char* const kTemplateVars[] = {
     "prompt", "harness", "skills", "date", "cwd", "session", "turn", NULL};
-
-static const Field kEndpoint[] = {
-    {"base_url", kString, NULL, "OpenAI-compatible base URL"},
-    {"api_key_env", kString, NULL, "Env var with the API key (OPENAI_API_KEY)"},
-    {"headers", kAnyMap, NULL, "Extra HTTP headers"},
-    {"curl", kString, NULL, "curl executable (default: $ARX_CURL or curl)"},
-    {"retry_base", kDuration, NULL, "First retry delay (default 2s)"},
-    {"retry_max", kDuration, NULL, "Longest retry delay (default 5m)"},
-    {"retry_attempts", kInteger, NULL, "Give up after this many (0 = never)"},
-    {NULL, 0, NULL, NULL}};
-
-static const Field kTool[] = {
-    {"timeout", kDuration, NULL, "Seconds or 10s/5m/1h"},
-    {"agent", kString, NULL, "Spec path: makes this tool a subagent"},
-    {"description", kString, NULL, "Description shown to the model"},
-    {"enabled", kBoolean, NULL, "false hides the tool"},
-    {NULL, 0, NULL, NULL}};
-
-static const Field kToolOutput[] = {
-    {"head", kSize, NULL, "Bytes kept from the start of output (2kb)"},
-    {"tail", kSize, NULL, "Bytes kept from the end of output (6kb)"},
-    {NULL, 0, NULL, NULL}};
-
-static const Field kHook[] = {
-    {"timeout", kDuration, NULL, "Default 10s"},
-    {"fail", kString, NULL, "open (ignore failures) or closed"},
-    {NULL, 0, NULL, NULL}};
-
-static const Field kCompaction[] = {
-    {"strategy", kString, NULL,
-     "mask, summarize, hybrid, restart, a compactors name or a path"},
-    {"trigger", kNumber, NULL, "Fraction of context_window (default 0.7)"},
-    {"keep", kInteger, NULL, "Recent outputs or turns kept intact (5)"},
-    {"exclude_tools", kStringList, NULL, "Tools whose outputs stay"},
-    {"clear_inputs", kBoolean, NULL, "Also clear old tool-call arguments"},
-    {"prompt", kText, NULL, "Instructions for summarize"},
-    {NULL, 0, NULL, NULL}};
-
-static const Field kLimits[] = {
-    {"max_turns", kInteger, NULL, "Model calls per session (200)"},
-    {"turn_timeout", kDuration, NULL, "Longest single model call (10m)"},
-    {NULL, 0, NULL, NULL}};
-
-static const Field kPrices[] = {
-    {"input", kNumber, NULL, "USD per 1M input tokens"},
-    {"output", kNumber, NULL, "USD per 1M output tokens"},
-    {NULL, 0, NULL, NULL}};
-
-const Field kTopFields[] = {
-    {"name", kString, NULL, "Agent name"},
-    {"model", kString, NULL, "Model id your endpoint accepts"},
-    {"endpoint", kMap, kEndpoint, "Where requests go"},
-    {"model_settings", kAnyMap, NULL, "Extra request fields; null removes"},
-    {"context_window", kInteger, NULL, "Context size in tokens (128000)"},
-    {"instructions", kTextList, NULL, "System prompt; {{vars}} allowed"},
-    {"first_message", kText, NULL,
-     "First user message; {{prompt}} is the task"},
-    {"tools", kDict, kTool, "Options per tool, or subagent tools"},
-    {"tool_output", kMap, kToolOutput, "How much tool output the model sees"},
-    {"hooks", kDict, kHook, "Options per hook point (hooks/<point>)"},
-    {"compaction", kMap, kCompaction, "How the context stays in the window"},
-    {"skills", kString, NULL, "Directory of <name>/SKILL.md files"},
-    {"limits", kMap, kLimits, "Per-session limits"},
-    {"observers", kStringList, NULL, "Commands fed the event stream on stdin"},
-    {"prices", kMap, kPrices, "Token prices for cost tracking"},
-    {"plugins", kStringList, NULL,
-     "The only plugins to use (default: all installed); [] for none"},
-    {"compactors", kAnyMap, NULL, "Named compaction programs: name -> path"},
-    {NULL, 0, NULL, NULL}};
-
-// The keys of plugin.yaml.
-static const Field kPluginFields[] = {
-    {"name", kString, NULL, "Must match the plugin's folder name"},
-    {"version", kString, NULL, "The plugin's version"},
-    {"description", kString, NULL, "One line about what it adds"},
-    {"arx", kString, NULL, "The arx versions it works with, e.g. \">=0.2\""},
-    {"requires", kStringList, NULL, "Programs that must be on PATH"},
-    {"tools", kDict, kTool, "Options for its tools, or subagent tools"},
-    {"hooks", kDict, kHook, "Options for its hooks"},
-    {"observers", kStringList, NULL, "Commands fed the event stream"},
-    {"compactors", kAnyMap, NULL, "Named compaction programs: name -> path"},
-    {NULL, 0, NULL, NULL}};
+static const char* const kBands[] = {"policy", "normal", "final", NULL};
 
 // Edit distance between two short strings, for "did you mean" hints.
 static int EditDistance(const char* a, const char* b) {
@@ -154,6 +69,13 @@ static int AllItems(const cJSON* v, int (*check)(const cJSON*)) {
   return 1;
 }
 
+// True for one entry of a plugin list: a name, or {name: {settings}}.
+static int IsPluginEntry(const cJSON* v) {
+  if (cJSON_IsString(v)) return *v->valuestring != 0;
+  return cJSON_IsObject(v) && cJSON_GetArraySize(v) == 1 &&
+         (cJSON_IsObject(v->child) || cJSON_IsNull(v->child));
+}
+
 // True when `v` has the shape that `type` needs.
 static int TypeOk(FieldType type, const cJSON* v) {
   double secs;
@@ -180,6 +102,8 @@ static int TypeOk(FieldType type, const cJSON* v) {
       return IsText(v) || AllItems(v, IsText);
     case kStringList:
       return AllItems(v, cJSON_IsString);
+    case kPluginList:
+      return AllItems(v, IsPluginEntry);
     default:
       return cJSON_IsObject(v);
   }
@@ -206,6 +130,8 @@ static const char* TypeName(FieldType type) {
       return "text, {file: path} or a list of them";
     case kStringList:
       return "a list of strings";
+    case kPluginList:
+      return "a list of plugin names or {name: {settings}}";
     default:
       return "a mapping";
   }
@@ -305,11 +231,17 @@ static void CheckTemplate(const Spec* spec, const char* where, const char* text,
 static void ValidateNames(const Spec* spec, Buffer* err) {
   cJSON* c;
   cJSON_ArrayForEach(c, JsonGet(spec->root, "hooks")) {
+    const char* band = JsonStr(c, "band", "normal");
+    if (!InList(kBands, band)) {
+      char* path = XAsprintf("hooks.%s.band", c->string);
+      Problem(spec, err, path, "must be policy, normal or final");
+      free(path);
+    }
     if (InList(kHookPoints, c->string)) continue;
     char* path = XAsprintf("hooks.%s", c->string);
     Problem(spec, err, path,
-            "unknown hook point (known: session_start, before_tool, "
-            "after_tool, stop)");
+            "unknown hook point (known: session_start, before_model, "
+            "after_model, before_tool, after_tool, stop)");
     free(path);
   }
   cJSON_ArrayForEach(c, JsonGet(spec->root, "tools")) {
@@ -380,6 +312,14 @@ void SpecValidate(const Spec* spec, Buffer* err) {
   ValidateRules(spec, err);
 }
 
+// Checks that a plugin or kit names itself with letters, digits, _ and -.
+static void ValidateOwnName(const Spec* spec, Buffer* err) {
+  const char* name = JsonStr(spec->root, "name", "x");
+  if (!*name || strspn(name, kNameChars) != strlen(name)) {
+    Problem(spec, err, "name", "use letters, digits, _ and -");
+  }
+}
+
 // Validates a plugin.yaml; see harness.h.
 void PluginValidate(const Spec* plugin, Buffer* err) {
   if (!cJSON_IsObject(plugin->root)) {
@@ -389,8 +329,19 @@ void PluginValidate(const Spec* plugin, Buffer* err) {
   ValidateNode(plugin, plugin->root, kPluginFields, "", err);
   ValidateNames(plugin, err);
   ValidateCompactors(plugin, err);
-  const char* name = JsonStr(plugin->root, "name", "x");
-  if (!*name || strspn(name, kNameChars) != strlen(name)) {
-    Problem(plugin, err, "name", "use letters, digits, _ and -");
+  ValidateOwnName(plugin, err);
+}
+
+// Validates a kit.yaml; see harness.h.
+void KitValidate(const Spec* kit, Buffer* err) {
+  if (!cJSON_IsObject(kit->root)) {
+    BufferPrintf(err, "%s: kit.yaml must be a YAML mapping\n", kit->path);
+    return;
+  }
+  ValidateNode(kit, kit->root, kKitFields, "", err);
+  ValidateOwnName(kit, err);
+  if (!JsonStr(kit->root, "extends", NULL) &&
+      !cJSON_IsArray(JsonGet(kit->root, "plugins"))) {
+    Problem(kit, err, "plugins", "required (or extends)");
   }
 }

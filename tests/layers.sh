@@ -187,7 +187,7 @@ EOF
 "$ARX" check >check.txt 2>&1
 check "a project sees the user's tools" has check.txt ' utool'
 check "and the user's plugins, after its own" has check.txt 'plugins: greet mine'
-check "a project plugin hides a user plugin of the same name" test "$(grep -o greet check.txt | wc -l)" -eq 1
+check "a project plugin hides a user plugin of the same name" test "$(grep '^plugins:' check.txt | grep -o greet | wc -l)" -eq 1
 "$ARX" check --set 'plugins=["mine"]' >check.txt 2>&1
 check "a plugins: list keeps the named user plugin" has check.txt 'plugins: mine'
 check "but leaves out the config folder's own tools" lacks check.txt 'utool'

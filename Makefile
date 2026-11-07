@@ -1,12 +1,14 @@
 # Makefile for arx.
 #   make            release binary ./arx (-Os, LTO, dead-code stripped)
 #   make debug      ./arx-debug with AddressSanitizer and UBSan
-#   make test       run tests/run.sh, plugins.sh, layers.sh and cli.sh against
-#                   ./arx-debug
+#   make test       run tests/run.sh, plugins.sh, layers.sh, cli.sh, shell.sh,
+#                   hooks.sh, runtime.sh and kits.sh against ./arx-debug
 #   make bench      check the performance budgets against ./arx
 #   make lint       style checks (scripts/lint.sh)
 #   make format     rewrite src/ in Google style
-#   make install    install arx and its commands into $(PREFIX) (~/.local)
+#   make install    install arx, its commands, and the plugins and kits of
+#                   this repo into $(PREFIX) (~/.local); `arx setup` turns
+#                   the shell plugin on, and `arx kit add NAME` adds a kit
 #   make uninstall  remove them again
 #   make dist       dist/arx-<os>-<arch>.tar.gz (+ .sha256), as releases ship
 #   make static     static Linux (musl) binary, built in Docker
@@ -62,12 +64,18 @@ test: arx-debug
 	ARX=./arx-debug tests/plugins.sh
 	ARX=./arx-debug tests/layers.sh
 	ARX=./arx-debug tests/cli.sh
+	ARX=./arx-debug tests/shell.sh
+	ARX=./arx-debug tests/hooks.sh
+	ARX=./arx-debug tests/runtime.sh
+	ARX=./arx-debug tests/kits.sh
 
 install: arx
 	mkdir -p $(PREFIX)/bin $(PREFIX)/libexec/arx
 	rm -f $(PREFIX)/bin/arx
 	cp arx $(PREFIX)/bin/arx
 	cp commands/arx-* $(PREFIX)/libexec/arx/
+	rm -rf $(PREFIX)/libexec/arx/plugins $(PREFIX)/libexec/arx/kits
+	cp -R plugins kits $(PREFIX)/libexec/arx/
 	chmod 755 $(PREFIX)/bin/arx $(PREFIX)/libexec/arx/arx-*
 	@echo "installed arx $(VERSION) in $(PREFIX)/bin; run \`arx setup\` next"
 
@@ -79,6 +87,7 @@ dist: arx
 	mkdir -p dist/arx-$(TARGET)/bin dist/arx-$(TARGET)/libexec/arx
 	cp arx dist/arx-$(TARGET)/bin/
 	cp commands/arx-* dist/arx-$(TARGET)/libexec/arx/
+	cp -R plugins kits dist/arx-$(TARGET)/libexec/arx/
 	tar -C dist -czf dist/arx-$(TARGET).tar.gz arx-$(TARGET)
 	cd dist && $(SHA256) arx-$(TARGET).tar.gz >arx-$(TARGET).tar.gz.sha256
 

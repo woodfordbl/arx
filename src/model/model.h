@@ -65,7 +65,8 @@ typedef struct Reply {
   cJSON* message;  // the assistant message; the caller owns it
   int64_t tokens_in;
   int64_t tokens_out;
-  double cost;  // from the provider, else from the spec's prices
+  double cost;      // from the provider, else from the spec's prices
+  char finish[32];  // finish_reason: "stop", "tool_calls", "length", ...
 } Reply;
 
 // Sends `messages` and `tools` (NULL or empty for none) to the model in the
@@ -76,6 +77,13 @@ typedef struct Reply {
 // failure, appends the reason to `err`.
 LlmStatus LlmChat(struct Agent* a, cJSON* messages, cJSON* tools, int show,
                   Reply* reply, Buffer* err);
+
+// LlmChat with `model` and `settings` (an object of request fields that
+// replace the defaults; a null value removes one; may be NULL) in place of
+// the spec's model and model_settings, for a before_model hook's changes.
+LlmStatus LlmChatWith(struct Agent* a, const char* model, cJSON* settings,
+                      cJSON* messages, cJSON* tools, int show, Reply* reply,
+                      Buffer* err);
 
 // ---- sse.c (used by llm.c) ----
 

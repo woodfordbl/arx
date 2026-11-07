@@ -1,0 +1,5 @@
+# An explorer for this folder: it reads and answers, and has no edit tool.
+# The explorer kit chooses its plugins and its prompt; the model and endpoint
+# come from `arx setup`.
+name: explorer
+kit: explorer

@@ -1,7 +1,9 @@
 // cli.h: the arx command line, the top layer.
 //   options.c   option parsing, spec lookup and usage errors
-//   commands.c  built-in commands: check, tools, schema, watch, ctl, request,
+//   commands.c  built-in commands: schema, tool, watch, ctl, request,
 //               version, help
+//   check.c     `arx check` and `arx tools`: load the harness and report
+//   shell_tools.c  bash and edit, for `arx tool` (the shell plugin)
 //   external.c  `arx foo` runs `arx-foo` (next to the binary, then on PATH),
 //               and `arx help` lists every command
 
@@ -49,6 +51,15 @@ extern const Command kCommands[];
 // `name` is not a built-in.
 int RunBuiltin(const char* name, int argc, char** argv, Agent* a);
 
+// ---- check.c ----
+
+// `arx check` and `arx tools`: load the harness without starting a
+// session, and print it (check: the spec, kit, tools, hooks, plugins,
+// problems and warnings; --list: the active list; tools: the tools as the
+// model sees them). `arx check --plugin DIR` and `--kit-dir DIR` check one
+// plugin or kit folder and print key=value lines. Returns an ExitCode.
+int CheckOrTools(int argc, char** argv, Agent* a);
+
 // ---- external.c ----
 
 // Returns the path of the external command `arx-<name>`, or NULL. It looks
@@ -64,5 +75,17 @@ int RunExternal(const char* name, int argc, char** argv);
 // `arx help [COMMAND]`: everything, or one command (an external command
 // prints its own help with --help).
 int HelpCommand(int argc, char** argv, Agent* a);
+
+// ---- shell_tools.c ----
+
+// Returns the schema of `arx tool <name>` as JSON text ({"description",
+// "parameters"}, as plugins/shell/tools/<name>.json has it), or NULL when
+// `name` is not bash or edit.
+const char* ShellToolSchema(const char* name);
+
+// Runs `arx tool <name>` with the JSON arguments `args` as a process tool:
+// the result goes to stdout, exit code 0, or 1 for an error. bash execs
+// `sh -c <command>` and returns only if that fails.
+int ShellToolRun(const char* name, const char* args);
 
 #endif  // SRC_CLI_CLI_H_

@@ -27,7 +27,7 @@ check "python tool found" has check.txt 'word_count'
 check "shell tool found" has check.txt ' now'
 check "subagent found" has check.txt 'reviewer'
 check "all four hooks found" has check.txt 'session_start(git-context) before_tool(guard) after_tool(fail-hint) stop'
-check "every plugin loads" has check.txt 'plugins: clock fail-hint git-context guard keep-last notify plugin-authoring reviewer word-count'
+check "every plugin loads" has check.txt 'plugins: clock fail-hint git-context guard keep-last never-stop notify plugin-authoring reviewer shell word-count'
 
 # Tools, every hook, and the observer in one session.
 begin_examples "tools, hooks, observer"
@@ -44,7 +44,7 @@ check "exits 0" exited 0
 check "session_start added git status" has fake/req-01.json 'untracked.txt'
 check "python tool answered" has fake/req-02.json ' words, '
 check "shell tool answered" grep -qE '[0-9]{4}-[0-9]{2}-[0-9]{2}T' fake/req-03.json
-check "before_tool denied a force push" has fake/req-04.json 'denied by the before_tool hook'
+check "before_tool denied a force push" has fake/req-04.json 'denied: destructive command'
 check "after_tool added a note" has fake/req-05.json 'Read the full output file'
 check "stop hook sent it back" has fake/req-06.json 'create the file DONE'
 check "observer reported the end" has err.txt 'ended: done'

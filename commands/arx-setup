@@ -80,6 +80,11 @@ base_url=${base_url:-$url}
 [ -n "$base_url" ] || base_url=$(ask "Base URL (ending in /v1)" "http://localhost:8000/v1")
 key_env=${key_env:-$env}
 
+# The keys that choose plugins (kit:, plugins:, enable:, disable:), which
+# `arx kit add --default` and `arx plugin enable --global` write: kept.
+keep=$(awk '/^(kit|plugins|enable|disable):/ {k = 1; print; next}
+  k && /^[ \t-]/ {print; next} {k = 0}' "$config_dir/config.yaml" 2>/dev/null)
+
 # Writes config.yaml; the previous one is kept as config.yaml.bak.
 write_config() {
   [ -f "$config_dir/config.yaml" ] && cp "$config_dir/config.yaml" "$config_dir/config.yaml.bak"
@@ -93,6 +98,7 @@ write_config() {
       echo "endpoint: {base_url: \"$base_url\"}"
     fi
     if [ -n "${2:-}" ]; then echo "$2"; fi
+    if [ -n "$keep" ]; then echo "$keep"; fi
   } >"$config_dir/config.yaml"
 }
 write_config "${model:-$def}"
@@ -165,6 +171,22 @@ extra=$(printf '%s' "$models" | jq -r --arg m "$model" '
   ] | join("\n")' 2>/dev/null)
 write_config "$model" "$extra"
 echo "Wrote $config_dir/config.yaml (model $model)."
+
+# arx has no tools of its own: bash and edit come from the shell plugin,
+# which ships next to these commands. A link keeps it at the version of arx
+# after `arx update`. Without a copy here, it comes from the arx repo.
+shell_plugin=$config_dir/plugins/shell
+if [ ! -e "$shell_plugin" ] && [ ! -L "$shell_plugin" ]; then
+  shell_ref=shell link=""
+  for dir in "${ARX_LIBEXEC:-.}/plugins/shell" "${ARX_LIBEXEC:-.}/../plugins/shell"; do
+    if [ -n "${ARX_LIBEXEC:-}" ] && [ -f "$dir/plugin.yaml" ]; then shell_ref=$dir link=--link; break; fi
+  done
+  if "$arx" plugin add $link "$shell_ref" --yes >/dev/null; then
+    echo "Turned on the shell plugin: the agent's bash and edit tools."
+  else
+    echo "arx setup: could not add the shell plugin, so the agent has no tools; try \`arx plugin add shell\`." >&2
+  fi
+fi
 
 if [ "$run_test" -eq 1 ]; then
   tmp=$(mktemp -d)

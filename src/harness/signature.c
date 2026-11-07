@@ -1,6 +1,7 @@
 // signature.c: the fingerprint for hot reload. It covers the spec, the
-// prompt files it names, and tools/, hooks/ and skills in every layer, using
-// stat() only, so arx can check it before every model call.
+// prompt files it names, kit.yaml files, and tools/, hooks/ and skills in
+// every layer, using stat() only, so arx can check it before every model
+// call.
 
 #include <dirent.h>
 #include <stdlib.h>
@@ -76,12 +77,16 @@ uint64_t SpecSignature(const Spec* spec) {
     free(dir);
     if (layer->skills) HashDir(&h, layer->skills, "SKILL.md");
   }
-  // A plugin that is added, removed, or changes its plugin.yaml.
+  // A plugin or kit that is added, removed, or changes its plugin.yaml or
+  // kit.yaml.
   char* config = ConfigDir();
   const char* parents[] = {spec->dir, config};
   for (int i = 0; i < 2; i++) {
     char* dir = PathJoin(parents[i], "plugins");
     HashDir(&h, dir, "plugin.yaml");
+    free(dir);
+    dir = PathJoin(parents[i], "kits");
+    HashDir(&h, dir, "kit.yaml");
     free(dir);
   }
   free(config);
