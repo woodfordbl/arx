@@ -22,7 +22,7 @@ the plugins you installed. For tools, the first layer wins, so a tool the
 agent writes always beats a plugin's. Hooks from every layer run in order.
 A spec that lists `plugins: [...]` uses only the spec folder and the plugins it
 names, so a run cannot change because you installed something later. See
-[Plugin folders](plugins.md#plugin-folders).
+[Plugin folders](plugins/concepts.md#layer).
 
 ## The turn loop
 
@@ -155,7 +155,7 @@ current turn.
 Everything that happens is an event: one JSON object per line, with a version
 field (`"v": 1`). The terminal view, `arx watch`, observers and drivers all
 read the same stream. Fields may be added within version 1, but none are
-renamed or removed. The [event reference](plugins.md#events) lists every type.
+renamed or removed. The [event reference](plugins/reference.md#events) lists every type.
 
 ## Subagents
 
@@ -163,7 +163,7 @@ A tool entry with `agent: path/to/spec.yaml` runs arx again as a child
 process, one level deeper. The child has its own harness and starts with no
 context except the task. Its events appear in the parent's stream with a
 higher `depth`, and its final answer is the tool result. See
-[Subagents](plugins.md#subagents).
+[Subagents](plugins/subagents.md).
 
 ## What arx does not do
 

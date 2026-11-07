@@ -19,5 +19,16 @@ the arx you have, so you get the version that CI tested with it.
 
 To work on one, link it from your checkout: `arx plugin add --link
 ./plugins/<name>`. `make test` checks each one against the arx of the same
-commit. Start a new one with `arx plugin new <name>`. The full guide is
-[docs/plugins.md](../docs/plugins.md).
+commit.
+
+**Writing a new one:** start with the
+[plugin quickstart](../docs/plugins/quickstart.md), then read the page for
+its kind in the [plugin guide](../docs/plugins.md). `arx plugin new <name>`
+makes the folder. Before you open a pull request:
+
+- `arx check --plugin plugins/<name>` passes;
+- `plugin.yaml` has `name`, `version`, `description`, and `requires` for any
+  program the plugin needs;
+- [`tests/plugins.sh`](../tests/plugins.sh) lists it in the "every plugin
+  loads" check, and runs it in the demo harness
+  ([`examples/plugins/`](../examples/plugins), which loads every plugin here).
