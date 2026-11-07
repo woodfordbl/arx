@@ -116,6 +116,24 @@ static int SchemaCommand(int argc, char** argv, Agent* a) {
   return kExitDone;
 }
 
+// `arx tool bash|edit [--schema]`: runs a tool of the shell plugin, with
+// the arguments as JSON on stdin, or prints its schema.
+static int ToolCommand(int argc, char** argv, Agent* a) {
+  (void)a;
+  const char* schema = argc > 2 ? ShellToolSchema(argv[2]) : NULL;
+  if (!schema)
+    return UsageError("tool needs bash or edit", argc > 2 ? argv[2] : NULL);
+  if (argc > 3 && !strcmp(argv[3], "--schema")) {
+    puts(schema);
+    return kExitDone;
+  }
+  if (argc > 3) return UsageError("unknown tool argument", argv[3]);
+  char* args = ReadStdin();
+  int code = ShellToolRun(argv[2], args);
+  free(args);
+  return code;
+}
+
 // `arx version`.
 static int VersionCommand(int argc, char** argv, Agent* a) {
   (void)argc;
@@ -271,6 +289,8 @@ const Command kCommands[] = {
     {"tools", "[--spec P]", "print the tools as the model sees them",
      CheckOrTools},
     {"schema", "", "print the JSON Schema of agent.yaml", SchemaCommand},
+    {"tool", "bash|edit [--schema]",
+     "run a tool of the shell plugin (JSON arguments on stdin)", ToolCommand},
     {"watch", "[ID|last] [--json] [--from start|now]",
      "follow a session's events", WatchCommand},
     {"ctl", "ID|last stop|note TEXT", "steer a running session", CtlCommand},

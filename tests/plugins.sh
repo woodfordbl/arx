@@ -27,7 +27,7 @@ check "python tool found" has check.txt 'word_count'
 check "shell tool found" has check.txt ' now'
 check "subagent found" has check.txt 'reviewer'
 check "all four hooks found" has check.txt 'session_start(git-context) before_tool(guard) after_tool(fail-hint) stop'
-check "every plugin loads" has check.txt 'plugins: clock fail-hint git-context guard keep-last notify plugin-authoring reviewer word-count'
+check "every plugin loads" has check.txt 'plugins: clock fail-hint git-context guard keep-last notify plugin-authoring reviewer shell word-count'
 
 # Tools, every hook, and the observer in one session.
 begin_examples "tools, hooks, observer"

@@ -1,7 +1,7 @@
 // tools.c: builds the tool set from the tools/ folder of every layer.
-// Executable tools are found by path and described by `--schema`; the
-// answers are cached by modification time and size, so a reload only re-runs
-// tools that changed.
+// Executable tools are found by path and described by a <name>.json file
+// next to them, or else by `--schema`; the answers are cached by
+// modification time and size, so a reload only reads tools that changed.
 
 #include <errno.h>
 #include <stdlib.h>
@@ -13,16 +13,6 @@
 #include "src/base/base.h"
 #include "src/harness/harness.h"
 
-static const char kBashParams[] =
-    "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\","
-    "\"description\":\"Shell command, run with sh -c in the working "
-    "directory\"}},\"required\":[\"command\"]}";
-static const char kEditParams[] =
-    "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},"
-    "\"old\":{\"type\":\"string\",\"description\":\"Exact text to replace; it "
-    "must occur exactly once. Empty creates a new file.\"},\"new\":{\"type\":"
-    "\"string\",\"description\":\"Replacement text\"}},\"required\":[\"path\","
-    "\"old\",\"new\"]}";
 static const char kAgentParams[] =
     "{\"type\":\"object\",\"properties\":{\"task\":{\"type\":\"string\","
     "\"description\":\"The complete task. The subagent starts with no other "
@@ -31,73 +21,169 @@ static const char kAgentParams[] =
 // How long `<tool> --schema` may take.
 static const double kSchemaTimeout = 2.0;
 
-// One cached `--schema` answer.
+// One cached schema, from <path>.json or `--schema`.
 typedef struct SchemaEntry {
   char* path;
-  int64_t mtime, size;
+  int64_t mtime, size, json_mtime, json_size;
   char* description;
   char* error;  // why the tool is skipped, or NULL
   cJSON* params;
+  char* core;  // the `arx tool NAME` the file hands over to, or NULL
 } SchemaEntry;
 
 static SchemaEntry g_schemas[128];
 static int g_schema_count;
 
-// Runs `--schema` and fills in the entry.
-static void LoadSchema(SchemaEntry* e) {
+// The NAME when the file at `path` only runs `exec "$ARX_BIN" tool NAME`
+// (with an optional "$@", a #! line and comments), else NULL. arx then
+// starts `arx tool NAME` itself: the result is the same, without a shell,
+// which takes about 3 ms on macOS.
+static char* CoreTool(const char* path, int64_t size) {
+  static const char kPrefix[] = "exec \"$ARX_BIN\" tool ";
+  const size_t prefix_len = sizeof(kPrefix) - 1;
+  if (size <= 0 || size > 512) return NULL;
+  char* text = ReadFile(path, NULL);
+  char *save = NULL, *found = NULL;
+  for (char* line = text ? strtok_r(text, "\n", &save) : NULL; line;
+       line = strtok_r(NULL, "\n", &save)) {
+    line += strspn(line, " \t");
+    if (!*line || *line == '#') continue;
+    char *name = NULL, *rest = NULL;
+    size_t n = 0;
+    if (!found && !strncmp(line, kPrefix, prefix_len)) {
+      name = line + prefix_len;
+      n = strspn(name, kNameChars);
+      rest = name + n + strspn(name + n, " \t");
+      if (!strncmp(rest, "\"$@\"", 4)) rest += 4 + strspn(rest + 4, " \t");
+    }
+    if (!n || *rest) {  // anything else: run the file as it is
+      free(found);
+      found = NULL;
+      break;
+    }
+    found = XStrndup(name, n);
+  }
+  free(text);
+  return found;
+}
+
+// Fills in the entry from a parsed schema; `what` names its source in the
+// error.
+static void ReadSchema(SchemaEntry* e, cJSON* j, const char* what) {
+  if (!cJSON_IsObject(j)) {
+    e->error = XAsprintf(
+        "%s must be a JSON object {\"description\": ..., \"parameters\": "
+        "{...}}",
+        what);
+    return;
+  }
+  cJSON* params = cJSON_GetObjectItem(j, "parameters");
+  e->description = XStrdup(JsonStr(j, "description", ""));
+  e->params = cJSON_IsObject(params)
+                  ? cJSON_Duplicate(params, 1)
+                  : cJSON_Parse("{\"type\":\"object\",\"properties\":{}}");
+}
+
+// Reads <path>.json when there is one, else runs `--schema`, and fills in
+// the entry.
+static void LoadSchema(SchemaEntry* e, const char* json) {
+  e->core = CoreTool(e->path, e->size);
+  if (e->json_size >= 0) {
+    char* text = ReadFile(json, NULL);
+    cJSON* j = cJSON_Parse(text ? text : "");
+    ReadSchema(e, j, strrchr(json, '/') + 1);
+    cJSON_Delete(j);
+    free(text);
+    return;
+  }
   Buffer out = {0};
-  char* argv[] = {e->path, "--schema", NULL};
-  Proc p = {.argv = argv,
+  char* file_argv[] = {e->path, "--schema", NULL};
+  char* core_argv[] = {g_self, "tool", e->core, "--schema", NULL};
+  Proc p = {.argv = e->core ? core_argv : file_argv,
             .timeout = kSchemaTimeout,
             .on_out = BufferSink,
             .out_ctx = &out};
   ProcResult r;
-  cJSON* j = NULL;
   if (ProcRun(&p, &r)) {
     e->error = XAsprintf("cannot run it (%s)", strerror(errno));
   } else if (r.timed_out) {
     e->error = XStrdup("--schema took longer than 2s");
   } else if (r.code) {
     e->error = XAsprintf("--schema exited with %d", r.code);
-  } else if (!(j = cJSON_Parse(out.data ? out.data : "")) ||
-             !cJSON_IsObject(j)) {
-    e->error = XStrdup(
-        "--schema must print a JSON object {\"description\": "
-        "..., \"parameters\": {...}}");
   } else {
-    cJSON* params = cJSON_GetObjectItem(j, "parameters");
-    e->description = XStrdup(JsonStr(j, "description", ""));
-    e->params = cJSON_IsObject(params)
-                    ? cJSON_Duplicate(params, 1)
-                    : cJSON_Parse("{\"type\":\"object\",\"properties\":{}}");
+    cJSON* j = cJSON_Parse(out.data ? out.data : "");
+    ReadSchema(e, j, "--schema output");
+    cJSON_Delete(j);
   }
-  cJSON_Delete(j);
   BufferFree(&out);
 }
 
 // Returns the cached schema for `path`, refreshing it if the file changed.
 static SchemaEntry* SchemaFor(const char* path) {
+  char* json = XAsprintf("%s.json", path);
   int64_t size, mtime = MtimeNs(path, &size);
+  int64_t json_size, json_mtime = MtimeNs(json, &json_size);
   SchemaEntry* e = NULL;
   for (int i = 0; i < g_schema_count && !e; i++) {
     if (!strcmp(g_schemas[i].path, path)) e = &g_schemas[i];
   }
-  if (e && e->mtime == mtime && e->size == size) return e;
+  if (e && e->mtime == mtime && e->size == size &&
+      e->json_mtime == json_mtime && e->json_size == json_size) {
+    free(json);
+    return e;
+  }
   if (!e) {
-    if (g_schema_count == 128) return NULL;
+    if (g_schema_count == 128) {
+      free(json);
+      return NULL;
+    }
     e = &g_schemas[g_schema_count++];
     e->path = XStrdup(path);
   } else {
     free(e->description);
     free(e->error);
+    free(e->core);
     cJSON_Delete(e->params);
-    e->description = e->error = NULL;
+    e->description = e->error = e->core = NULL;
     e->params = NULL;
   }
   e->mtime = mtime;
   e->size = size;
-  LoadSchema(e);
+  e->json_mtime = json_mtime;
+  e->json_size = json_size;
+  LoadSchema(e, json);
+  free(json);
   return e;
+}
+
+// Fills in {{timeout}}, {{tool_output.head}} and {{tool_output.tail}}, so a
+// description can give the limits that the spec sets for the tool.
+static char* Describe(const char* text, double timeout, cJSON* root) {
+  static const char* const kFields[] = {"{{timeout}}", "{{tool_output.head}}",
+                                        "{{tool_output.tail}}"};
+  Buffer b = {0};
+  BufferAppendStr(&b, "");
+  for (const char* p = text; *p;) {
+    const char* open = strstr(p, "{{");
+    int field = -1;
+    for (int i = 0; open && i < 3 && field < 0; i++) {
+      if (!strncmp(open, kFields[i], strlen(kFields[i]))) field = i;
+    }
+    if (!open) {
+      BufferAppendStr(&b, p);
+      break;
+    }
+    BufferAppend(&b, p, (size_t)(open - p) + (field < 0 ? 2 : 0));
+    p = open + (field < 0 ? 2 : strlen(kFields[field]));
+    if (field == 0) BufferPrintf(&b, "%.0f", timeout);
+    if (field == 1) {
+      BufferPrintf(&b, "%zu", JsonSize(root, "tool_output.head", 2048));
+    }
+    if (field == 2) {
+      BufferPrintf(&b, "%zu", JsonSize(root, "tool_output.tail", 6144));
+    }
+  }
+  return BufferTake(&b);
 }
 
 // Appends a tool. `params` is JSON text, or NULL when `params_json` is set.
@@ -114,11 +200,13 @@ static void Add(ToolSet* t, ToolKind kind, const char* name, const char* desc,
   tool->path = path ? XStrdup(path) : NULL;
   tool->timeout = timeout;
   tool->plugin_dir = NULL;
+  tool->core = NULL;
 }
 
-// True for the names of built-in tools.
-static int IsBuiltin(const char* name) {
-  return !strcmp(name, "bash") || !strcmp(name, "edit");
+// True for a <name>.json schema file, which sits next to its tool.
+static int IsSchemaFile(const char* name) {
+  size_t n = strlen(name);
+  return n > 5 && !strcmp(name + n - 5, ".json");
 }
 
 // True when the set already has a tool called `name`.
@@ -127,29 +215,6 @@ static int HasTool(const ToolSet* t, const char* name) {
     if (!strcmp(t->items[i].name, name)) return 1;
   }
   return 0;
-}
-
-// Adds the built-in tools unless the spec disables them.
-static void AddBuiltins(struct Agent* a) {
-  cJSON* root = a->spec.root;
-  size_t head = JsonSize(root, "tool_output.head", 2048);
-  size_t tail = JsonSize(root, "tool_output.tail", 6144);
-  double timeout = JsonDuration(root, "tools.bash.timeout", 120);
-  if (JsonBool(root, "tools.bash.enabled", 1)) {
-    char* desc = XAsprintf(
-        "Run a shell command (sh -c) in the working directory. You see the "
-        "first %zu and last %zu bytes of output; the full output is saved to "
-        "a file whose path is shown. Timeout %.0fs.",
-        head, tail, timeout);
-    Add(&a->tools, kToolBash, "bash", desc, kBashParams, NULL, NULL, timeout);
-    free(desc);
-  }
-  if (JsonBool(root, "tools.edit.enabled", 1)) {
-    Add(&a->tools, kToolEdit, "edit",
-        "Replace an exact, unique string in a file, or create a new file "
-        "when `old` is empty.",
-        kEditParams, NULL, NULL, 0);
-  }
 }
 
 // Adds one executable from a layer's tools/, or explains in `notes` why it
@@ -165,10 +230,8 @@ static void AddExecutable(struct Agent* a, const Layer* layer,
   } else if (access(path, X_OK)) {
     BufferPrintf(notes, "- %stools/%s is not executable (chmod +x it)\n", where,
                  name);
-  } else if (IsBuiltin(name) || strspn(name, kNameChars) != strlen(name)) {
-    BufferPrintf(notes,
-                 "- %stools/%s skipped: use letters, digits, _ and -, "
-                 "and not bash or edit\n",
+  } else if (strspn(name, kNameChars) != strlen(name)) {
+    BufferPrintf(notes, "- %stools/%s skipped: use letters, digits, _ and -\n",
                  where, name);
   } else if (JsonBool(a->spec.root, key, 1)) {
     SchemaEntry* s = SchemaFor(path);
@@ -179,11 +242,13 @@ static void AddExecutable(struct Agent* a, const Layer* layer,
     } else if (s->error) {
       BufferPrintf(notes, "- %stools/%s skipped: %s\n", where, name, s->error);
     } else {
-      Add(&a->tools, kToolExec, name, s->description, NULL, s->params, path,
-          JsonDuration(a->spec.root, key, 120));
-      if (layer->plugin) {
-        a->tools.items[a->tools.count - 1].plugin_dir = XStrdup(layer->dir);
-      }
+      double timeout = JsonDuration(a->spec.root, key, 120);
+      char* desc = Describe(s->description, timeout, a->spec.root);
+      Add(&a->tools, kToolExec, name, desc, NULL, s->params, path, timeout);
+      Tool* t = &a->tools.items[a->tools.count - 1];
+      if (layer->plugin) t->plugin_dir = XStrdup(layer->dir);
+      if (s->core) t->core = XStrdup(s->core);
+      free(desc);
     }
   }
   free(path);
@@ -210,9 +275,12 @@ static int AddLayers(struct Agent* a, char*** names, Buffer* notes) {
     char** found;
     int n = ListNames(dir, &found);
     for (int i = 0; i < n; i++) {
-      if (!HasTool(&a->tools, found[i])) {
+      if (IsSchemaFile(found[i])) {
+        free(found[i]);
+        continue;
+      } else if (!HasTool(&a->tools, found[i])) {
         AddExecutable(a, layer, where, found[i], notes);
-      } else if (!IsBuiltin(found[i])) {
+      } else {
         BufferPrintf(notes, "- %stools/%s is hidden by a tool above it\n",
                      where, found[i]);
       }
@@ -231,7 +299,7 @@ static void AddConfigured(struct Agent* a, char** names, int n, Buffer* notes) {
   cJSON* entry;
   cJSON_ArrayForEach(entry, JsonGet(a->spec.root, "tools")) {
     const char* spec = JsonStr(entry, "agent", NULL);
-    int found = IsBuiltin(entry->string);
+    int found = 0;
     for (int i = 0; i < n && !found; i++)
       found = !strcmp(names[i], entry->string);
     if (spec) {
@@ -263,7 +331,6 @@ void ToolsBuild(struct Agent* a) {
   char** names;
   ToolsFree(&a->tools);
   if (a->spec.problems.len) BufferAppendStr(&notes, a->spec.problems.data);
-  AddBuiltins(a);
   int n = AddLayers(a, &names, &notes);
   AddConfigured(a, names, n, &notes);
   for (int i = 0; i < n; i++) free(names[i]);
@@ -287,6 +354,7 @@ void ToolsFree(ToolSet* tools) {
     free(tools->items[i].description);
     free(tools->items[i].path);
     free(tools->items[i].plugin_dir);
+    free(tools->items[i].core);
     cJSON_Delete(tools->items[i].params);
   }
   free(tools->items);

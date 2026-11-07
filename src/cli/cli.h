@@ -1,7 +1,7 @@
 // cli.h: the arx command line, the top layer.
 //   options.c   option parsing, spec lookup and usage errors
-//   commands.c  built-in commands: check, tools, schema, watch, ctl, request,
-//               version, help
+//   commands.c  built-in commands: check, tools, schema, tool, watch, ctl,
+//               request, version, help
 //   external.c  `arx foo` runs `arx-foo` (next to the binary, then on PATH),
 //               and `arx help` lists every command
 

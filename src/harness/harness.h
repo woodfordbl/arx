@@ -7,8 +7,9 @@
 //   signature.c  fingerprints every layer with stat() for hot reload
 //   validate.c   the field table and validation ("did you mean" hints)
 //   schema.c     the JSON Schema for `arx schema`, from the same table
-//   tools.c      finds tools: bash, edit, tools/<name>, subagents
+//   tools.c      finds tools: tools/<name> in every layer, and subagents
 //   tool_exec.c  runs one tool call; subagents run arx again
+//   shell_tools.c  bash and edit, for `arx tool` (the shell plugin)
 //   hooks.c      runs hooks/<point>
 //   compact.c    keeps the conversation inside the context window
 
@@ -169,8 +170,6 @@ void SpecSchema(Buffer* out);
 
 // How a tool runs.
 typedef enum ToolKind {
-  kToolBash,   // sh -c <command>
-  kToolEdit,   // exact string replacement, in process
   kToolExec,   // tools/<name>, arguments as JSON on stdin
   kToolAgent,  // a subagent: arx -p - --spec <path>
 } ToolKind;
@@ -184,6 +183,7 @@ typedef struct Tool {
   ToolKind kind;
   double timeout;
   char* plugin_dir;  // the plugin folder it came from, or NULL
+  char* core;        // NAME when the file only runs `arx tool NAME`, or NULL
 } Tool;
 
 // The tools of the current harness version.
@@ -193,11 +193,14 @@ typedef struct ToolSet {
 } ToolSet;
 
 // Rebuilds a->tools from the spec and the tools/ folder of every layer.
-// Built-ins are bash and edit; any executable in tools/ is a tool named
-// after its file and described by `<tool> --schema`, and the first layer
-// with a working tool of that name wins; a spec entry with `agent: path` is
-// a subagent. Problems, and skipped plugins, become harness notes, once per
-// change.
+// Any executable in tools/ is a tool named after its file and described by
+// <file>.json next to it, or else by `<tool> --schema`; {{timeout}},
+// {{tool_output.head}} and {{tool_output.tail}} in its description become
+// the spec's values. The first layer with a working tool of a name wins. A
+// file that only runs `exec "$ARX_BIN" tool NAME "$@"` is started as
+// `arx tool NAME` directly, without a shell. A spec entry with `agent:
+// path` is a subagent. Problems, and skipped plugins, become harness notes,
+// once per change.
 void ToolsBuild(struct Agent* a);
 
 // Frees every tool and empties the set.
@@ -221,6 +224,19 @@ char** ToolEnv(struct Agent* a, const char* plugin_dir);
 
 // Frees an array from ToolEnv.
 void FreeEnv(char** env);
+
+// ---- shell_tools.c ----
+
+// Returns the schema of `arx tool <name>` as JSON text ({"description",
+// "parameters"}, as plugins/shell/tools/<name>.json has it), or NULL when
+// `name` is not bash or edit.
+const char* ShellToolSchema(const char* name);
+
+// Runs `arx tool <name>` with the JSON arguments `args`, as a process tool:
+// the result goes to stdout, and the exit code is 0 or 1 for an error. bash
+// replaces this process with `sh -c <command>` and does not return unless
+// that fails.
+int ShellToolRun(const char* name, const char* args);
 
 // ---- hooks.c ----
 
