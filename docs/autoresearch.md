@@ -12,18 +12,17 @@ solver faster and better on a CPU.
 
 ## The shape of a run
 
-```
- ┌───────────┐   edit    ┌──────────┐   score   ┌──────────────┐
- │  harness  │──────────▶│   work   │──────────▶│  eval/score  │
- │ (agent's  │           │ solve.py │           └──────┬───────┘
- │  tools,   │◀──┐       └──────────┘                  │
- │  prompts) │   │                                     ▼
- └───────────┘   │                         keep (git commit) or
-       ▲         │                         revert (git reset)
-       │         │                                     │
-       │   improve the harness              results.tsv, notes.md
-       │         │                                     │
-       └─────────┴──────── next experiment ◀───────────┘
+```mermaid
+flowchart TD
+  accTitle: The shape of a run
+  harness["agent<br><b>Harness</b><br>tools, hooks, prompts"]
+  work["task<br><b>Work</b><br>solve.py"]
+  score["eval<br><b>Score, then keep or revert</b><br>eval/score, git commit or reset"]
+  log["memory<br><b>Log</b><br>results.tsv, notes.md"]
+  harness -->|edit| work --> score --> log
+  log -->|next experiment| harness
+  log -.->|improve the harness| harness
+  class harness focus
 ```
 
 A good setup has four parts:

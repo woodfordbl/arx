@@ -29,24 +29,24 @@ names, so a run cannot change because you installed something later. See
 One turn is one model call. Before each call, arx gets the harness and the
 context ready. After it, arx runs the tools the model asked for.
 
-```
-            ┌──────────────────────────────────────────────┐
-            │                                              │
-            ▼                                              │
-   1. check caps ──── cap reached ──▶ exit 3               │
-            │                                              │
-   2. reload harness if any file changed (stat only)       │
-   3. read the inbox (arx ctl note / stop)                 │
-   4. hand queued [harness] notes to the agent             │
-   5. compact the context if it passed the trigger         │
-            │                                              │
-   6. call the model (streamed, with retries)              │
-            │                                              │
-            ├── tool calls ──▶ before_tool ─▶ run ─▶ after_tool
-            │                                              │
-            └── no tool calls ──▶ stop hook                │
-                                   ├── continue / restart ─┘
-                                   └── nothing ──▶ done, exit 0
+```mermaid
+flowchart TD
+  accTitle: The turn loop
+  caps["<b>1 · Check caps</b><br>--cap, limits.max_turns"]
+  ready["<b>Get ready</b><br>2 · reload the harness if a file changed<br>3 · read the inbox<br>4 · hand on [harness] notes<br>5 · compact if past the trigger"]
+  model["<b>6 · Call the model</b><br>streamed, with retries"]
+  tools["<b>Run the tools</b><br>before_tool → run → after_tool"]
+  stop["<b>Stop hook</b><br>hooks/stop"]
+  exit3(["exit 3"])
+  done(["done, exit 0"])
+  caps -->|cap reached| exit3
+  caps --> ready --> model
+  model -->|tool calls| tools
+  model -->|no tool calls| stop
+  tools -->|next turn| caps
+  stop -->|continue / restart| caps
+  stop -->|nothing| done
+  class model focus
 ```
 
 1. **Caps.** If a `--cap` or `limits.max_turns` is reached, the run stops with
