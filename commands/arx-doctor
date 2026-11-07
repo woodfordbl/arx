@@ -30,6 +30,12 @@ echo "harness"
 if [ -f agent.yaml ]; then ok "./agent.yaml"; else warn "no ./agent.yaml; using your defaults (arx init makes one)"; fi
 if check=$("$arx" check 2>&1); then
   ok "$(echo "$check" | head -1)"
+  tools=$(echo "$check" | sed -n 's/^tools: *//p')
+  if [ -n "$tools" ]; then
+    ok "tools: $tools"
+  else
+    warn "the agent has no tools, so it can only chat (arx setup adds bash and edit; or run arx plugin add shell)"
+  fi
 else
   bad "the spec has problems:"
   echo "$check" | sed 's/^/      /'

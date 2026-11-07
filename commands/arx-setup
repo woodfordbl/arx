@@ -166,6 +166,22 @@ extra=$(printf '%s' "$models" | jq -r --arg m "$model" '
 write_config "$model" "$extra"
 echo "Wrote $config_dir/config.yaml (model $model)."
 
+# arx has no tools of its own: bash and edit come from the shell plugin,
+# which ships next to these commands. A link keeps it at the version of arx
+# after `arx update`. Without a copy here, it comes from the arx repo.
+shell_plugin=$config_dir/plugins/shell
+if [ ! -e "$shell_plugin" ] && [ ! -L "$shell_plugin" ]; then
+  shell_ref=shell link=""
+  for dir in "${ARX_LIBEXEC:-.}/plugins/shell" "${ARX_LIBEXEC:-.}/../plugins/shell"; do
+    if [ -n "${ARX_LIBEXEC:-}" ] && [ -f "$dir/plugin.yaml" ]; then shell_ref=$dir link=--link; break; fi
+  done
+  if "$arx" plugin add $link "$shell_ref" --yes >/dev/null; then
+    echo "Turned on the shell plugin: the agent's bash and edit tools."
+  else
+    echo "arx setup: could not add the shell plugin, so the agent has no tools; try \`arx plugin add shell\`." >&2
+  fi
+fi
+
 if [ "$run_test" -eq 1 ]; then
   tmp=$(mktemp -d)
   echo "Test call..."
