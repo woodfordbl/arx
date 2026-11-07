@@ -1,7 +1,8 @@
 // cli.h: the arx command line, the top layer.
 //   options.c   option parsing, spec lookup and usage errors
-//   commands.c  built-in commands: check, tools, schema, tool, watch, ctl,
-//               request, version, help
+//   commands.c  built-in commands: schema, tool, watch, ctl, request,
+//               version, help
+//   check.c     `arx check` and `arx tools`: load the harness and report
 //   external.c  `arx foo` runs `arx-foo` (next to the binary, then on PATH),
 //               and `arx help` lists every command
 
@@ -48,6 +49,15 @@ extern const Command kCommands[];
 // Runs built-in command `name` (argv[1]). Returns its exit code, or -1 if
 // `name` is not a built-in.
 int RunBuiltin(const char* name, int argc, char** argv, Agent* a);
+
+// ---- check.c ----
+
+// `arx check` and `arx tools`: load the harness without starting a
+// session, and print it (check: the spec, kit, tools, hooks, plugins,
+// problems and warnings; --list: the active list; tools: the tools as the
+// model sees them). `arx check --plugin DIR` and `--kit-dir DIR` check one
+// plugin or kit folder and print key=value lines. Returns an ExitCode.
+int CheckOrTools(int argc, char** argv, Agent* a);
 
 // ---- external.c ----
 

@@ -59,6 +59,7 @@ static void MaybeReload(Agent* a) {
   } else {
     SpecFree(&a->spec);
     a->spec = fresh;
+    KitLockWrite(&a->spec);
     ToolsBuild(a);
     char* system = SystemPrompt(a);
     cJSON* first = cJSON_GetArrayItem(a->messages, 0);
@@ -125,6 +126,7 @@ static int StopHook(Agent* a) {
 
 // The loop; see agent.h.
 int RunTurns(Agent* a) {
+  KitLockWrite(&a->spec);  // a kit that pins versions: record the parts
   for (;;) {
     if (g_interrupted) return kExitInterrupted;
     int code = CheckCaps(a);

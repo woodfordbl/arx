@@ -185,6 +185,48 @@ static int LoadDefaults(Spec* config, Buffer* err) {
   return found;
 }
 
+// Merges `from` over `target`; see harness.h.
+void JsonMergeOver(cJSON* target, const cJSON* from) {
+  for (cJSON* f = from ? from->child : NULL; f; f = f->next) {
+    cJSON* t = cJSON_GetObjectItemCaseSensitive(target, f->string);
+    if (t && cJSON_IsObject(t) && cJSON_IsObject(f)) {
+      JsonMergeOver(t, f);
+    } else if (t) {
+      cJSON_ReplaceItemViaPointer(target, t, cJSON_Duplicate(f, 1));
+    } else {
+      cJSON_AddItemToObject(target, f->string, cJSON_Duplicate(f, 1));
+    }
+  }
+}
+
+// Merges the kit's spec values (`kit_root`, consumed) between the user's
+// defaults and the spec: the spec wins over the kit, the kit over config.
+static void MergeKit(Spec* spec, cJSON* kit_root, int spec_is_config) {
+  if (!kit_root) return;
+  if (spec_is_config) {
+    JsonMergeOver(spec->root, kit_root);
+  } else {
+    Spec kit = {.root = kit_root, .lines = cJSON_CreateObject()};
+    kit.path = XAsprintf("%s/kit.yaml", spec->kit_dir);
+    SpecMergeUnder(spec, &kit);
+    SpecFree(&kit);
+    return;
+  }
+  cJSON_Delete(kit_root);
+}
+
+// Builds the active list from config.yaml (`config`, may be empty), the
+// spec (when it is not the defaults) and `sets`, and merges the kit.
+static int BuildList(Spec* spec, Spec* config, int spec_is_config, cJSON* sets,
+                     Buffer* err) {
+  cJSON* kit_root = NULL;
+  int rc =
+      ActiveBuild(spec, spec_is_config ? spec->root : config->root,
+                  spec_is_config ? NULL : spec->root, sets, &kit_root, err);
+  MergeKit(spec, kit_root, spec_is_config);
+  return rc;
+}
+
 // Loads, merges, overrides, validates and fingerprints; see harness.h.
 int SpecLoad(const char* path, cJSON* sets, Spec* spec, Buffer* err) {
   Spec config;
@@ -199,15 +241,21 @@ int SpecLoad(const char* path, cJSON* sets, Spec* spec, Buffer* err) {
         "setup`, or `arx init` to start a harness in this folder\n");
     return -1;
   }
+  int listed = 0;
   if (!path) {
     *spec = config;  // the defaults are the whole spec
     spec->config = XStrdup(spec->path);
+    listed =
+        cJSON_IsObject(spec->root) ? BuildList(spec, NULL, 1, sets, err) : 0;
   } else if (SpecParse(path, spec, err)) {
     SpecFree(&config);
     return -1;
   } else {
     spec->path = XStrdup(path);
     spec->dir = DirName(path);
+    if (cJSON_IsObject(spec->root)) {
+      listed = BuildList(spec, &config, 0, sets, err);
+    }
     if (have_defaults && cJSON_IsObject(spec->root) &&
         cJSON_IsObject(config.root)) {
       MergeDefaults(spec->root, config.root, "", spec, &config);
@@ -215,13 +263,13 @@ int SpecLoad(const char* path, cJSON* sets, Spec* spec, Buffer* err) {
     }
     SpecFree(&config);
   }
-  if (cJSON_IsObject(spec->root)) {
+  if (listed == 0 && cJSON_IsObject(spec->root)) {
     for (cJSON* kv = sets ? sets->child : NULL; kv; kv = kv->next) {
       JsonSet(spec->root, kv->string, cJSON_Duplicate(kv, 1));
     }
     PluginsLoad(spec);
   }
-  SpecValidate(spec, err);
+  if (listed == 0) SpecValidate(spec, err);
   spec->sig = SpecSignature(spec);
   if (err->len > errors_before) {
     SpecFree(spec);
@@ -239,6 +287,13 @@ void SpecFree(Spec* spec) {
   free(spec->config);
   LayersFree(spec);
   BufferFree(&spec->problems);
+  cJSON_Delete(spec->active);
+  cJSON_Delete(spec->off);
+  cJSON_Delete(spec->settings);
+  free(spec->kit);
+  free(spec->kit_dir);
+  free(spec->kit_from);
+  cJSON_Delete(spec->rows);
   memset(spec, 0, sizeof(*spec));
 }
 

@@ -1,6 +1,7 @@
 // plugins.c: the layers a harness is made of. The spec folder comes first;
 // plugins (folders with a plugin.yaml) and the user's config folder add
 // tools/, hooks/ and skills below it, so the agent's own files always win.
+// With an active list (active.c), only its plugins load, in its order.
 
 #include <ctype.h>
 #include <dirent.h>
@@ -16,7 +17,7 @@
 // itself, so they are not merged into the spec.
 static const char* const kOwnKeys[] = {"name",      "version",  "description",
                                        "arx",       "requires", "hooks",
-                                       "observers", NULL};
+                                       "observers", "replaces", NULL};
 
 // qsort comparator for names.
 static int CompareNames(const void* a, const void* b) {
@@ -59,26 +60,28 @@ static Layer* AddLayer(Spec* spec, const char* dir, const char* plugin,
   layer->plugin = plugin ? XStrdup(plugin) : NULL;
   layer->skills = skills;
   layer->hooks = NULL;
+  layer->settings = NULL;
+  layer->replaces = NULL;
   return layer;
 }
 
-// True when a plugin named `name` is already a layer: a project plugin hides
-// a user plugin with the same name.
-static int HavePlugin(const Spec* spec, const char* name) {
-  for (int i = 0; i < spec->layer_count; i++) {
-    const char* plugin = spec->layers[i].plugin;
-    if (plugin && !strcmp(plugin, name)) return 1;
-  }
-  return 0;
+// Adds a row for `arx check --list`.
+static void AddRow(Spec* spec, const char* name, const char* state,
+                   const char* why, const char* dir) {
+  if (!spec->rows) spec->rows = cJSON_CreateArray();
+  cJSON* row = cJSON_CreateObject();
+  cJSON_AddStringToObject(row, "name", name);
+  cJSON_AddStringToObject(row, "state", state);
+  cJSON_AddStringToObject(row, "why", why);
+  cJSON_AddStringToObject(row, "dir", dir ? dir : "");
+  cJSON_AddItemToArray(spec->rows, row);
 }
 
-// True when the spec's `plugins:` list names `name`, or there is no list.
-static int Allowed(const Spec* spec, const char* name) {
-  cJSON* list = JsonGet(spec->root, "plugins");
-  cJSON* c;
-  if (!cJSON_IsArray(list)) return 1;
-  cJSON_ArrayForEach(c, list) {
-    if (cJSON_IsString(c) && !strcmp(c->valuestring, name)) return 1;
+// True when the rows already have `name`.
+static int HaveRow(const Spec* spec, const char* name) {
+  cJSON* row;
+  cJSON_ArrayForEach(row, spec->rows) {
+    if (!strcmp(JsonStr(row, "name", ""), name)) return 1;
   }
   return 0;
 }
@@ -143,7 +146,22 @@ static void Adopt(Spec* spec, Spec* plugin, const char* dir, const char* name) {
   cJSON* root = plugin->root;
   cJSON* c;
   Layer* layer = AddLayer(spec, dir, name, PathJoin(dir, "skills"));
+  cJSON* settings = cJSON_GetObjectItemCaseSensitive(spec->settings, name);
+  // Settings may set the plugin's own tool and hook options.
+  const char* own[] = {"tools", "hooks"};
+  for (int i = 0; i < 2; i++) {
+    cJSON* over = JsonGet(settings, own[i]);
+    if (!cJSON_IsObject(over)) continue;
+    cJSON* base = JsonGet(root, own[i]);
+    if (!cJSON_IsObject(base)) {
+      cJSON_DeleteItemFromObjectCaseSensitive(root, own[i]);
+      base = cJSON_AddObjectToObject(root, own[i]);
+    }
+    JsonMergeOver(base, over);
+  }
+  layer->settings = settings ? cJSON_Duplicate(settings, 1) : NULL;
   layer->hooks = cJSON_DetachItemFromObjectCaseSensitive(root, "hooks");
+  layer->replaces = cJSON_DetachItemFromObjectCaseSensitive(root, "replaces");
   cJSON_ArrayForEach(c, JsonGet(root, "tools")) {
     Absolute(JsonGet(c, "agent"), dir);
   }
@@ -164,9 +182,8 @@ static void Adopt(Spec* spec, Spec* plugin, const char* dir, const char* name) {
   SpecMergeUnder(spec, plugin);
 }
 
-// Parses and checks `dir`/plugin.yaml into `plugin`. Returns 0, or -1 with
-// the problems in `err`.
-static int ReadPlugin(const char* dir, Spec* plugin, Buffer* err) {
+// Reads and checks a plugin.yaml; see harness.h.
+int PluginRead(const char* dir, Spec* plugin, Buffer* err) {
   size_t before = err->len;
   memset(plugin, 0, sizeof(*plugin));
   plugin->path = XAsprintf("%s/plugin.yaml", dir);
@@ -182,13 +199,15 @@ static int ReadPlugin(const char* dir, Spec* plugin, Buffer* err) {
   return err->len == before ? 0 : -1;
 }
 
-// Loads the plugin in `dir`, named after its folder. A problem skips it.
-static void LoadPlugin(Spec* spec, const char* dir, const char* name) {
+// Loads the plugin in `dir`, named after its folder; `why` says why it is
+// on. A problem skips it.
+static void LoadPlugin(Spec* spec, const char* dir, const char* name,
+                       const char* why) {
   Spec plugin;
   Buffer err = {0};
   char* real = realpath(dir, NULL);  // so ARX_PLUGIN_DIR is absolute
   const char* where = real ? real : dir;
-  if (ReadPlugin(where, &plugin, &err) == 0) {
+  if (PluginRead(where, &plugin, &err) == 0) {
     const char* own = JsonStr(plugin.root, "name", name);
     if (strcmp(own, name)) {
       BufferPrintf(&err, "%s: name \"%s\" must match the folder name\n",
@@ -198,25 +217,41 @@ static void LoadPlugin(Spec* spec, const char* dir, const char* name) {
   if (err.len) {
     BufferPrintf(&spec->problems, "- plugin %s was skipped:\n%s", name,
                  err.data);
+    AddRow(spec, name, "broken", "skipped: see arx check", where);
   } else {
     Adopt(spec, &plugin, where, name);
+    AddRow(spec, name, "on", why, where);
   }
   SpecFree(&plugin);
   BufferFree(&err);
   free(real);
 }
 
-// Loads every plugin folder in `parent`, in name order. Folders without a
-// plugin.yaml are not plugins and are passed over.
-static void LoadPlugins(Spec* spec, const char* parent) {
+// Why an installed plugin that is not in the active list is off.
+static char* OffWhy(const Spec* spec, const char* name) {
+  const char* off = JsonStr(spec->off, name, NULL);
+  if (off) return XStrdup(off);
+  if (spec->kit) return XAsprintf("not in kit %s", spec->kit);
+  return XStrdup("not in the plugins list");
+}
+
+// Loads every plugin folder in `parent`, in name order, when there is no
+// active list (`load`), or else adds a row for each one that is off.
+// Folders without a plugin.yaml are not plugins and are passed over.
+static void LoadPlugins(Spec* spec, const char* parent, int load) {
   char** names;
   int n = ListNames(parent, &names);
   for (int i = 0; i < n; i++) {
     char* dir = XAsprintf("%s/%s", parent, names[i]);
     char* yaml = XAsprintf("%s/plugin.yaml", dir);
-    if (!access(yaml, F_OK) && Allowed(spec, names[i]) &&
-        !HavePlugin(spec, names[i])) {
-      LoadPlugin(spec, dir, names[i]);
+    if (access(yaml, F_OK) || HaveRow(spec, names[i])) {
+      // not a plugin, or a project plugin hides it
+    } else if (load && !JsonStr(spec->off, names[i], NULL)) {
+      LoadPlugin(spec, dir, names[i], "installed");
+    } else {
+      char* why = OffWhy(spec, names[i]);
+      AddRow(spec, names[i], "off", why, dir);
+      free(why);
     }
     free(yaml);
     free(dir);
@@ -225,22 +260,51 @@ static void LoadPlugins(Spec* spec, const char* parent) {
   free(names);
 }
 
+// Loads the plugins of the active list, in its order: each from the spec's
+// plugins/ folder, else from the config folder's.
+static void LoadActive(Spec* spec, const char* config) {
+  cJSON* row;
+  cJSON_ArrayForEach(row, spec->active) {
+    const char* name = JsonStr(row, "name", "");
+    const char* why = JsonStr(row, "why", "");
+    char* dir = NULL;
+    const char* parents[] = {spec->dir, config};
+    for (int i = 0; i < 2 && !dir && parents[i]; i++) {
+      char* yaml = XAsprintf("%s/plugins/%s/plugin.yaml", parents[i], name);
+      if (!access(yaml, F_OK))
+        dir = XAsprintf("%s/plugins/%s", parents[i], name);
+      free(yaml);
+    }
+    if (dir) {
+      LoadPlugin(spec, dir, name, why);
+    } else {
+      BufferPrintf(&spec->problems,
+                   "- plugin %s (%s) is not installed: run `arx plugin add "
+                   "%s`\n",
+                   name, why, name);
+      AddRow(spec, name, "missing", why, NULL);
+    }
+    free(dir);
+  }
+}
+
 // Builds the layers; see harness.h.
 void PluginsLoad(Spec* spec) {
   const char* skills = JsonStr(spec->root, "skills", NULL);
   char* config = ConfigDir();
   char* plugins = PathJoin(spec->dir, "plugins");
+  int all = spec->active == NULL;
+  int other = !SameDir(spec->dir, config);
   AddLayer(spec, spec->dir, NULL, skills ? PathJoin(spec->dir, skills) : NULL);
-  LoadPlugins(spec, plugins);
+  if (!all) LoadActive(spec, other ? config : NULL);
+  LoadPlugins(spec, plugins, all);
   free(plugins);
-  if (!SameDir(spec->dir, config)) {
-    // A `plugins:` list makes the harness exact: the spec folder and the
+  if (other) {
+    // A kit or a list makes the harness exact: the spec folder and the
     // plugins it names, without loose files in the config folder.
-    if (!cJSON_IsArray(JsonGet(spec->root, "plugins"))) {
-      AddLayer(spec, config, NULL, PathJoin(config, "skills"));
-    }
+    if (all) AddLayer(spec, config, NULL, PathJoin(config, "skills"));
     plugins = PathJoin(config, "plugins");
-    LoadPlugins(spec, plugins);
+    LoadPlugins(spec, plugins, all);
     free(plugins);
   }
   free(config);
@@ -254,95 +318,10 @@ void LayersFree(Spec* spec) {
     free(layer->plugin);
     free(layer->skills);
     cJSON_Delete(layer->hooks);
+    cJSON_Delete(layer->settings);
+    cJSON_Delete(layer->replaces);
   }
   free(spec->layers);
   spec->layers = NULL;
   spec->layer_count = 0;
-}
-
-// True when `program` is an executable on PATH, or at its path when it
-// has a '/'.
-static int OnPath(const char* program) {
-  if (strchr(program, '/')) return access(program, X_OK) == 0;
-  const char* path = getenv("PATH");
-  for (const char* p = path ? path : ""; *p;) {
-    size_t len = strcspn(p, ":");
-    char* full = XAsprintf("%.*s/%s", (int)len, p, program);
-    int found = len && access(full, X_OK) == 0;
-    free(full);
-    if (found) return 1;
-    p += len + (p[len] == ':');
-  }
-  return 0;
-}
-
-// Appends "key=value", with line breaks turned into spaces.
-static void AppendField(Buffer* out, const char* key, const char* value) {
-  BufferPrintf(out, "%s=", key);
-  for (const char* p = value ? value : ""; *p; p++) {
-    BufferAppend(out, *p == '\n' || *p == '\r' ? " " : p, 1);
-  }
-  BufferAppendStr(out, "\n");
-}
-
-// Appends "key=" and the entries of `dir`, space-separated. With `inner`,
-// only entries that have `dir/<entry>/<inner>`.
-static void AppendNames(Buffer* out, const char* key, const char* dir,
-                        const char* inner) {
-  char** names;
-  int n = ListNames(dir, &names);
-  Buffer list = {0};
-  for (int i = 0; i < n; i++) {
-    char* path = inner ? XAsprintf("%s/%s/%s", dir, names[i], inner) : NULL;
-    size_t len = strlen(names[i]);
-    // tools/<name>.json is the schema of a tool, not a tool.
-    int schema = !strcmp(key, "tools") && len > 5 &&
-                 !strcmp(names[i] + len - 5, ".json");
-    if (!schema && (!path || !access(path, R_OK))) {
-      BufferPrintf(&list, "%s%s", list.len ? " " : "", names[i]);
-    }
-    free(path);
-    free(names[i]);
-  }
-  free(names);
-  AppendField(out, key, list.data);
-  BufferFree(&list);
-}
-
-// Describes a plugin; see harness.h.
-int PluginDescribe(const char* dir, Buffer* out, Buffer* err) {
-  Spec plugin;
-  int rc = ReadPlugin(dir, &plugin, err);
-  if (rc == 0) {
-    cJSON* root = plugin.root;
-    char* real = realpath(dir, NULL);
-    const char* base = strrchr(real ? real : dir, '/');
-    Buffer
-      requires
-    = {0}, missing = {0};
-    cJSON* c;
-    AppendField(out, "name", JsonStr(root, "name", base ? base + 1 : dir));
-    AppendField(out, "version", JsonStr(root, "version", ""));
-    AppendField(out, "description", JsonStr(root, "description", ""));
-    AppendField(out, "arx", JsonStr(root, "arx", ""));
-    cJSON_ArrayForEach(c, JsonGet(root, "requires")) {
-      BufferPrintf(&requires, "%s%s", requires.len ? " " : "", c->valuestring);
-      if (!OnPath(c->valuestring)) {
-        BufferPrintf(&missing, "%s%s", missing.len ? " " : "", c->valuestring);
-      }
-    }
-    AppendField(out, "requires", requires.data);
-    AppendField(out, "missing", missing.data);
-    const char* parts[] = {"tools", "hooks", "skills", "commands"};
-    for (int i = 0; i < 4; i++) {
-      char* sub = PathJoin(dir, parts[i]);
-      AppendNames(out, parts[i], sub, i == 2 ? "SKILL.md" : NULL);
-      free(sub);
-    }
-    BufferFree(&requires);
-    BufferFree(&missing);
-    free(real);
-  }
-  SpecFree(&plugin);
-  return rc;
 }

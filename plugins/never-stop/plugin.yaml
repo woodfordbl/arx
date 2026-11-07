@@ -1,0 +1,6 @@
+name: never-stop
+version: 0.1.0
+description: A stop hook for experiment loops that sends the agent on with the message from its settings.
+# It does nothing without a message, so installing it changes no run. A kit
+# turns it on: `- never-stop: {message: "Next experiment."}` (kits/research).
+hooks: {stop: {changes: [decision]}}

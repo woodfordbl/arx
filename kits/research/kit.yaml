@@ -1,0 +1,12 @@
+# The research kit: an experiment loop that improves a score and never stops
+# (what `arx init autoresearch` makes, as a kit). `arx init research` copies
+# init/: program.md, the first message and an agent.yaml with restart
+# compaction. never-stop sends the agent on after each experiment.
+name: research
+version: 0.1.0
+description: An experiment loop that improves a score, keeps what helps and never stops.
+plugins:
+  - shell
+  - never-stop: {message: "Next experiment. Log it in results.tsv."}
+  - git-context
+prompt: prompts/system.md

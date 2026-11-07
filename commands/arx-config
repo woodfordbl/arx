@@ -1,0 +1,149 @@
+#!/usr/bin/env bash
+# arx-config: read and change top-level keys of agent.yaml or config.yaml
+#
+# Other commands use it to change `kit:`, `enable:` and `disable:` without a
+# YAML library: it edits only the lines of one top-level key, keeps every
+# other line and comment, and writes a list back as a flow list ([a, b]).
+set -u
+
+usage() {
+  cat <<'EOF'
+usage: arx config get KEY [--global | --file PATH]
+       arx config set KEY VALUE [--global | --file PATH]
+       arx config unset KEY [--global | --file PATH]
+       arx config add KEY ITEM [--global | --file PATH]
+       arx config remove KEY NAME [--global | --file PATH]
+KEY is a top-level key. add and remove change a list, such as enable,
+disable or plugins; get prints a list one item per line.
+  --global     change your defaults (config.yaml in the arx config folder)
+  --file PATH  change PATH (default: ./agent.yaml)
+EOF
+}
+
+die() { echo "arx config: $*" >&2; exit 1; }
+
+# The same lookup as ConfigDir() in arx.
+if [ -n "${ARX_CONFIG_DIR:-}" ]; then
+  config_dir=$ARX_CONFIG_DIR
+elif [ -n "${XDG_CONFIG_HOME:-}" ]; then
+  config_dir=$XDG_CONFIG_HOME/arx
+else
+  config_dir=$HOME/.config/arx
+fi
+
+# Prints the value of top-level KEY ($1) in FILE ($2): a list one item per
+# line, or a scalar. Items keep their text ("guard", "lint: {x: 1}").
+get_key() {
+  awk -v key="$1" '
+    function emit(s) {
+      sub(/[ \t]+#.*$/, "", s); gsub(/^[ \t]+|[ \t]+$/, "", s)
+      if (s != "") print s
+    }
+    function flow(text,   i, c, depth, item) {
+      sub(/^[ \t]*\[/, "", text); sub(/\][ \t]*(#.*)?$/, "", text)
+      for (i = 1; i <= length(text); i++) {
+        c = substr(text, i, 1)
+        if (c == "{" || c == "[") depth++
+        if (c == "}" || c == "]") depth--
+        if (c == "," && depth == 0) { emit(item); item = "" } else item = item c
+      }
+      emit(item)
+    }
+    inside && ($0 ~ /^[^ \t-]/ || $0 == "") { inside = 0 }
+    inside {
+      if (is_flow) text = text " " $0
+      else if (match($0, /^[ \t]*- /)) emit(substr($0, RSTART + RLENGTH))
+      next
+    }
+    index($0, key ":") == 1 {
+      v = substr($0, length(key) + 2); sub(/^[ \t]+/, "", v); inside = 1
+      if (v ~ /^\[/) { is_flow = 1; text = v }
+      else if (v != "" && v !~ /^#/) { sub(/[ \t]+#.*$/, "", v); gsub(/^["\x27]|["\x27]$/, "", v); print v }
+    }
+    END { if (is_flow) flow(text) }
+  ' "$2" 2>/dev/null
+}
+
+# Replaces the lines of KEY ($1) in FILE ($2) with TEXT ($3), or deletes
+# them when TEXT is empty. A new key goes at the end.
+put_key() {
+  local tmp=$2.arx-config.$$
+  awk -v key="$1" -v text="$3" '
+    skip && ($0 ~ /^[^ \t-]/ || $0 == "") { skip = 0 }
+    skip { next }
+    index($0, key ":") == 1 { if (text != "") print text; done = 1; skip = 1; next }
+    { print }
+    END { if (!done && text != "") print text }
+  ' "$2" >"$tmp" 2>/dev/null || { rm -f "$tmp"; die "cannot write $2"; }
+  # cat keeps the file's mode and owner.
+  cat "$tmp" >"$2" && rm -f "$tmp" || die "cannot write $2"
+}
+
+# The plugin name of a list item: "acme/tools/lint@v1" and "lint: {x: 1}"
+# are both "lint".
+item_name() {
+  local s=${1#\{}
+  s=${s%%:*} s=${s##*/} s=${s%%@*}
+  echo "$s" | tr -d ' "'\'
+}
+
+# Writes the list KEY ($1) in FILE ($2) from the remaining arguments.
+put_list() {
+  local key=$1 file=$2 text="" item
+  shift 2
+  for item in "$@"; do
+    case "$item" in *:* | *'{'*) case "$item" in '{'*) ;; *) item="{$item}" ;; esac ;; esac
+    text="${text:+$text, }$item"
+  done
+  if [ $# -eq 0 ]; then put_key "$key" "$file" ""; else put_key "$key" "$file" "$key: [$text]"; fi
+}
+
+[ $# -gt 0 ] || { usage >&2; exit 2; }
+action=$1
+shift
+file=agent.yaml args=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --global) file=$config_dir/config.yaml ;;
+    --file) [ $# -gt 1 ] || { usage >&2; exit 2; }; file=$2; shift ;;
+    -h | --help) usage; exit 0 ;;
+    *) args+=("$1") ;;
+  esac
+  shift
+done
+key=${args[0]:-}
+echo "$key" | grep -qE '^[A-Za-z_][A-Za-z0-9_]*$' || { usage >&2; exit 2; }
+
+case "$action" in
+  get) get_key "$key" "$file" ;;
+  set | add | remove | unset)
+    [ -f "$file" ] || [ "$action" = add ] || [ "$action" = set ] || exit 0
+    if [ ! -f "$file" ]; then
+      mkdir -p "$(dirname "$file")" && : >"$file" || die "cannot create $file"
+    fi
+    ;;
+  -h | --help | help) usage; exit 0 ;;
+  *) usage >&2; exit 2 ;;
+esac
+
+case "$action" in
+  set) [ ${#args[@]} -eq 2 ] || { usage >&2; exit 2; }; put_key "$key" "$file" "$key: ${args[1]}" ;;
+  unset) put_key "$key" "$file" "" ;;
+  add | remove)
+    [ ${#args[@]} -eq 2 ] || { usage >&2; exit 2; }
+    name=$(item_name "${args[1]}") items=() found=0
+    while IFS= read -r item; do
+      [ -n "$item" ] || continue
+      if [ "$(item_name "$item")" = "$name" ]; then
+        found=1
+        [ "$action" = remove ] && continue
+      fi
+      items+=("$item")
+    done < <(get_key "$key" "$file")
+    if [ "$action" = add ] && [ "$found" -eq 0 ]; then items+=("${args[1]}"); fi
+    if [ "$action" = add ] && [ "$found" -eq 1 ]; then exit 0; fi
+    if [ "$action" = remove ] && [ "$found" -eq 0 ]; then exit 0; fi
+    put_list "$key" "$file" ${items[@]+"${items[@]}"}
+    ;;
+esac
+exit 0

@@ -1,0 +1,5 @@
+# A coding agent for this folder. The coding kit chooses its plugins and its
+# prompt; the model and endpoint come from `arx setup`. Add a plugin with
+# `enable: [name]`, leave one out with `disable: [name]` (arx plugin list).
+name: coding-agent
+kit: coding

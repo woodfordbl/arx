@@ -34,6 +34,18 @@ static cJSON* SchemaType(FieldType type, const Field* sub) {
     cJSON_AddItemToObject(list, "items", cJSON_Parse(kTextSchema));
     cJSON_AddItemToArray(any, cJSON_Parse(kTextSchema));
     cJSON_AddItemToArray(any, list);
+  } else if (type == kPluginList) {
+    cJSON_AddStringToObject(o, "type", "array");
+    cJSON* items = cJSON_AddObjectToObject(o, "items");
+    cJSON* any = cJSON_AddArrayToObject(items, "anyOf");
+    cJSON* name = cJSON_CreateObject();
+    cJSON_AddStringToObject(name, "type", "string");
+    cJSON_AddItemToArray(any, name);
+    cJSON* entry = cJSON_CreateObject();
+    cJSON_AddStringToObject(entry, "type", "object");
+    cJSON_AddNumberToObject(entry, "minProperties", 1);
+    cJSON_AddNumberToObject(entry, "maxProperties", 1);
+    cJSON_AddItemToArray(any, entry);
   } else if (type == kStringList) {
     cJSON_AddStringToObject(o, "type", "array");
     cJSON* items = cJSON_AddObjectToObject(o, "items");
