@@ -163,6 +163,8 @@ typedef struct Proc {
   void* err_ctx;
   DataFn on_fd3;  // the child's fd 3 (subagent events)
   void* fd3_ctx;
+  int open_in;            // stdin stays open for ProcWrite (`in` is NULL)
+  int keep_on_interrupt;  // Ctrl-C does not stop it (a long-lived helper)
 } Proc;
 
 // How the child finished.
@@ -179,6 +181,31 @@ typedef struct ProcResult {
 // SIGKILL after a grace period). Returns 0, or -1 if the child could not be
 // started.
 int ProcRun(const Proc* p, ProcResult* r);
+
+// A child started by ProcStart.
+typedef struct ProcChild ProcChild;
+
+// Starts `p` and returns at once; ProcPoll then runs it. `p.in` and the
+// contexts it names must stay valid until ProcFinish. Returns NULL if the
+// child could not be started (errno says why).
+ProcChild* ProcStart(const Proc* p);
+
+// Runs one round of the loop for `n` children at once: waits up to
+// `max_wait` seconds (at most 0.1) for any of them, feeds stdin, drains
+// output, reaps them, and stops each at its timeout or on Ctrl-C, as
+// ProcRun does. Call it again until the children are done (ProcDone).
+void ProcPoll(ProcChild* const* kids, int n, double max_wait);
+
+// True when the child has exited and its output has been read.
+int ProcDone(const ProcChild* c);
+
+// Queues `n` bytes for the stdin of a child started with `open_in`; ProcPoll
+// writes them.
+void ProcWrite(ProcChild* c, const char* data, size_t n);
+
+// Fills `r` and frees the child. A child that still runs is stopped first
+// (SIGTERM to its group, then SIGKILL after a grace period).
+void ProcFinish(ProcChild* c, ProcResult* r);
 
 // Returns a copy of the environment with `extra` ("KEY=value", NULL-terminated)
 // added or replaced. Free only the array; the strings are borrowed.

@@ -25,8 +25,8 @@ typedef struct RawPoint {
 static const RawPoint kRawPoints[] = {
     {"before_model", {"messages", "tools", "model", "settings", NULL}},
     {"after_model", {"reply", NULL}},
-    {"before_tool", {"name", "args", "result", NULL}},
-    {"after_tool", {"result", NULL}},
+    {"before_tool", {"name", "args", "keys", "result", NULL}},
+    {"after_tool", {"result", "backoff", NULL}},
 };
 
 // Describes why a hook failed, or returns NULL if it did not.
@@ -194,6 +194,8 @@ static int FieldOk(const char* key, cJSON* value) {
   }
   if (!strcmp(key, "tools")) return cJSON_IsArray(value);
   if (!strcmp(key, "settings")) return cJSON_IsObject(value);
+  if (!strcmp(key, "keys")) return KeysValid(value);
+  if (!strcmp(key, "backoff")) return cJSON_IsObject(value);
   if (!strcmp(key, "reply")) return JsonStr(value, "role", NULL) != NULL;
   if (!strcmp(key, "args")) {
     return cJSON_IsObject(value) || cJSON_IsString(value);

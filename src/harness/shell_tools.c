@@ -31,7 +31,7 @@ static const char kEditSchema[] =
     "\"string\",\"description\":\"Exact text to replace; it must occur "
     "exactly once. Empty creates a new file.\"},\"new\":{\"type\":\"string\","
     "\"description\":\"Replacement text\"}},\"required\":[\"path\",\"old\","
-    "\"new\"]}}";
+    "\"new\"]},\"keys\":[\"file:{path}\"]}";
 
 // Returns the schema of `arx tool <name>`; see harness.h.
 const char* ShellToolSchema(const char* name) {

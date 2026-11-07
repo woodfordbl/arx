@@ -1,10 +1,12 @@
-// tool_calls.c: runs the tool calls of one reply, one at a time, through
-// their hooks. before_tool gets the raw call {id, name, args} and may change
-// the name and arguments, or give the result itself so the tool does not
-// run. after_tool gets {call, result, is_error} and may change the result;
-// it runs for every call that before_tool let through, also after an error,
-// a timeout or Ctrl-C. When a hook changed the call, the result says what
-// ran, since the model only knows the call it made.
+// tool_calls.c: the tool runtime for the calls of one reply. Hooks decide
+// if a call may run; the runtime decides when. before_tool gets the raw call
+// {id, name, args, keys} and may change it, or give the result itself so
+// the tool does not run. The allowed calls wait in a queue and start by
+// their keys, or when a scheduler plugin says so. after_tool gets {call,
+// result, is_error} as each call ends and may change the result; it runs
+// for every call that ran, also after an error, a timeout or Ctrl-C. When a
+// hook changed the call, the result says what ran, since the model only
+// knows the call it made. Results go into the history in call order.
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -37,16 +39,35 @@ static char* ArgsText(cJSON* call) {
   return args ? cJSON_PrintUnformatted(args) : XStrdup("{}");
 }
 
-// The raw call a before_tool hook gets: {id, name, args}, with the
-// arguments parsed when they are JSON.
-static cJSON* NewCall(const char* id, const char* name, const char* args) {
+// The raw call a before_tool hook gets: {id, name, args, keys}, with the
+// arguments parsed when they are JSON and the keys from the tool's schema.
+static cJSON* NewCall(Agent* a, const char* id, const char* name,
+                      const char* args) {
   cJSON* call = cJSON_CreateObject();
   cJSON_AddStringToObject(call, "id", id);
   cJSON_AddStringToObject(call, "name", name);
   cJSON* parsed = cJSON_Parse(args);
+  cJSON* keys = KeysFor(ToolFind(a, name), parsed);
   cJSON_AddItemToObject(call, "args",
                         parsed ? parsed : cJSON_CreateString(args));
+  cJSON_AddItemToObject(call, "keys", keys);
   return call;
+}
+
+// The keys the call runs with: the ones a hook printed, else the tool's
+// keys for the call as it is now (a hook may have changed the name or the
+// arguments).
+static void FinalKeys(Agent* a, cJSON* model_call, cJSON* call) {
+  cJSON* keys = cJSON_GetObjectItem(call, "keys");
+  if (KeysValid(keys) &&
+      !cJSON_Compare(keys, cJSON_GetObjectItem(model_call, "keys"), 1)) {
+    return;
+  }
+  cJSON* args = cJSON_GetObjectItem(call, "args");
+  cJSON* fresh = KeysFor(ToolFind(a, JsonStr(call, "name", "")),
+                         cJSON_IsObject(args) ? args : NULL);
+  cJSON_DeleteItemFromObjectCaseSensitive(call, "keys");
+  cJSON_AddItemToObject(call, "keys", fresh);
 }
 
 // Runs the before_tool hooks on `call`. Returns the result that takes the
@@ -61,9 +82,20 @@ static char* BeforeTool(Agent* a, cJSON* call, int* is_error) {
   return XStrdup(result);
 }
 
+// A backoff that an after_tool hook printed ({"key", "secs"}), detached
+// from `in`, or NULL. Only a scheduler plugin uses it.
+static cJSON* Backoff(cJSON* in) {
+  cJSON* b = cJSON_GetObjectItem(in, "backoff");
+  if (!JsonStr(b, "key", NULL) || !cJSON_IsNumber(JsonGet(b, "secs"))) {
+    return NULL;
+  }
+  return cJSON_DetachItemViaPointer(in, b);
+}
+
 // Runs the after_tool hooks on the result `text` (consumed). Returns the
-// result to keep.
-static char* AfterTool(Agent* a, cJSON* call, char* text, int is_error) {
+// result to keep, and the backoff the hooks printed in `*backoff`.
+static char* AfterTool(Agent* a, cJSON* call, char* text, int is_error,
+                       cJSON** backoff) {
   if (!HookExists(a, "after_tool")) return text;
   cJSON* in = cJSON_CreateObject();
   cJSON* c = cJSON_AddObjectToObject(in, "call");
@@ -79,6 +111,7 @@ static char* AfterTool(Agent* a, cJSON* call, char* text, int is_error) {
   HookChain(a, "after_tool", in, NULL);
   if (interrupted) g_interrupted = 1;
   char* result = XStrdup(JsonStr(in, "result", text));
+  *backoff = Backoff(in);
   cJSON_Delete(in);
   free(text);
   return result;
@@ -102,80 +135,211 @@ static char* RanAs(cJSON* model_call, cJSON* call) {
   return line;
 }
 
-// Runs one tool call with its hooks and sends `end` (consumed) as soon as
-// the tool finishes, before the after_tool hooks. Returns the result.
-static char* RunOne(Agent* a, const char* id, const char* name,
-                    const char* args, char** out_path, cJSON* end) {
-  int is_error = 1;
-  char* preview = Preview(args);
+// Where a call is in the runtime.
+typedef enum CallState { kQueued, kRunning, kDone } CallState;
+
+// One call of the reply, from its before_tool hooks to its result.
+typedef struct Call {
+  const char* id;     // borrowed from the reply
+  const char* args;   // the arguments as the model wrote them
+  cJSON* model_call;  // {id, name, args, keys} as the model made it
+  cJSON* call;        // the same after the before_tool hooks
+  CallState state;
+  ToolRun* run;  // while it runs
+  char* text;    // the result
+  int is_error;
+  char* out_path;  // the full output, or NULL
+  cJSON* end;      // the tool.end event, until it is sent
+} Call;
+
+// Sends the call's tool.end event with its error flag and the first line of
+// its result.
+static void SendEnd(Call* c) {
+  cJSON_AddBoolToObject(c->end, "error", c->is_error);
+  char* first_line = XStrndup(c->text, strcspn(c->text, "\n"));
+  JsonAddTruncated(c->end, "preview", first_line, 100);
+  free(first_line);
+  EventSend(c->end);
+  c->end = NULL;
+}
+
+// Finishes a call whose tool ended (or could not start): sends tool.end
+// before the after_tool hooks, so the view shows the end at once, then
+// runs them and tells a scheduler plugin.
+static void Complete(Agent* a, Call* c, double secs) {
+  SendEnd(c);
+  cJSON* backoff = NULL;
+  c->text = AfterTool(a, c->call, c->text, c->is_error, &backoff);
+  char* line = RanAs(c->model_call, c->call);
+  if (line) {
+    size_t len = strlen(c->text);
+    char* joined = XAsprintf("%s%s%s", c->text,
+                             len && c->text[len - 1] == '\n' ? "" : "\n", line);
+    free(c->text);
+    free(line);
+    c->text = joined;
+  }
+  c->state = kDone;
+  SchedDone(c->id, secs, c->is_error, backoff);
+  cJSON_Delete(backoff);
+}
+
+// Ends a call without a run, with the result `text` (consumed).
+static void EndWithout(Call* c, char* text, int is_error) {
+  c->text = text;
+  c->is_error = is_error;
+  c->state = kDone;
+  SendEnd(c);
+}
+
+// Starts a queued call's tool.
+static void Launch(Agent* a, Call* c) {
+  // Unchanged arguments go to the tool exactly as the model wrote them.
+  char* input = cJSON_Compare(cJSON_GetObjectItem(c->call, "args"),
+                              cJSON_GetObjectItem(c->model_call, "args"), 1)
+                    ? XStrdup(c->args)
+                    : ArgsText(c->call);
+  c->run = ToolStart(a, JsonStr(c->call, "name", ""), input, &c->text,
+                     &c->is_error, &c->out_path, c->end);
+  free(input);
+  c->state = kRunning;
+  if (!c->run) Complete(a, c, 0);
+}
+
+// Runs the before_tool hooks of one call and sends tool.start. Leaves the
+// call queued, or done when a hook gave the result.
+static void Prepare(Agent* a, Call* c, cJSON* raw) {
+  const char* name = JsonStr(raw, "function.name", "");
+  c->id = JsonStr(raw, "id", "");
+  c->args = JsonStr(raw, "function.arguments", "{}");
+  c->end = EventNew("tool.end");
+  cJSON_AddStringToObject(c->end, "id", c->id);
+  cJSON_AddStringToObject(c->end, "name", name);
+  if (g_interrupted) {
+    EndWithout(c, XStrdup("[interrupted before this tool ran]"), 1);
+    return;
+  }
+  char* preview = Preview(c->args);
   cJSON* start = EventNew("tool.start");
-  cJSON_AddStringToObject(start, "id", id);
+  cJSON_AddStringToObject(start, "id", c->id);
   cJSON_AddStringToObject(start, "name", name);
   cJSON_AddStringToObject(start, "preview", preview);
   EventSend(start);
   free(preview);
-  cJSON* model_call = NewCall(id, name, args);
-  cJSON* call = cJSON_Duplicate(model_call, 1);
-  char* text = BeforeTool(a, call, &is_error);
-  int ran = !text;
-  if (ran) {
-    // Unchanged arguments go to the tool exactly as the model wrote them.
-    char* input = cJSON_Compare(cJSON_GetObjectItem(call, "args"),
-                                cJSON_GetObjectItem(model_call, "args"), 1)
-                      ? XStrdup(args)
-                      : ArgsText(call);
-    text =
-        ToolCall(a, JsonStr(call, "name", ""), input, &is_error, out_path, end);
-    free(input);
+  c->model_call = NewCall(a, c->id, name, c->args);
+  c->call = cJSON_Duplicate(c->model_call, 1);
+  int is_error = 1;
+  char* text = BeforeTool(a, c->call, &is_error);
+  if (text) {
+    EndWithout(c, text, is_error);
+    return;
   }
-  cJSON_AddBoolToObject(end, "error", is_error);
-  char* first_line = XStrndup(text, strcspn(text, "\n"));
-  JsonAddTruncated(end, "preview", first_line, 100);
-  free(first_line);
-  EventSend(end);
-  if (ran) {
-    text = AfterTool(a, call, text, is_error);
-    char* line = RanAs(model_call, call);
-    if (line) {
-      size_t len = strlen(text);
-      char* joined = XAsprintf("%s%s%s", text,
-                               len && text[len - 1] == '\n' ? "" : "\n", line);
-      free(text);
-      free(line);
-      text = joined;
+  FinalKeys(a, c->model_call, c->call);
+  c->state = kQueued;
+}
+
+// The built-in scheduler: starts each queued call, in call order, whose
+// keys conflict with no running call and no call queued before it. So
+// calls that conflict run in the order the model gave them.
+static void StartByKeys(Agent* a, Call* calls, int n) {
+  for (int i = 0; i < n; i++) {
+    if (calls[i].state != kQueued) continue;
+    cJSON* keys = cJSON_GetObjectItem(calls[i].call, "keys");
+    int free_to_run = 1;
+    for (int j = 0; j < n && free_to_run; j++) {
+      int before =
+          calls[j].state == kRunning || (calls[j].state == kQueued && j < i);
+      if (j != i && before &&
+          KeysConflict(keys, cJSON_GetObjectItem(calls[j].call, "keys"))) {
+        free_to_run = 0;
+      }
+    }
+    if (free_to_run) Launch(a, &calls[i]);
+  }
+}
+
+// Applies what a scheduler plugin said: the calls to start and the
+// results that end calls without a run. Unknown ids are ignored.
+static void StartByPlugin(Agent* a, Call* calls, int n) {
+  cJSON* start = cJSON_CreateArray();
+  cJSON* results = cJSON_CreateObject();
+  SchedPoll(start, results);
+  for (int i = 0; i < n; i++) {
+    if (calls[i].state != kQueued) continue;
+    const char* text = JsonStr(results, calls[i].id, NULL);
+    cJSON* id;
+    cJSON_ArrayForEach(id, start) {
+      if (calls[i].state == kQueued && !strcmp(id->valuestring, calls[i].id))
+        Launch(a, &calls[i]);
+    }
+    if (text && calls[i].state == kQueued) {
+      EndWithout(&calls[i], XStrdup(text), 1);
     }
   }
-  cJSON_Delete(call);
-  cJSON_Delete(model_call);
-  return text;
+  cJSON_Delete(start);
+  cJSON_Delete(results);
+}
+
+// Runs the queued calls until every call is done.
+static void RunQueue(Agent* a, Call* calls, int n) {
+  ProcChild** kids = XMalloc((size_t)(n + 1) * sizeof(*kids));
+  for (;;) {
+    // After Ctrl-C nothing new starts; running calls are stopped by
+    // ProcPoll and still get their after_tool hooks.
+    for (int i = 0; i < n && g_interrupted; i++) {
+      if (calls[i].state == kQueued) {
+        EndWithout(&calls[i], XStrdup("[interrupted before this tool ran]"), 1);
+      }
+    }
+    if (SchedActive()) StartByPlugin(a, calls, n);
+    if (!SchedActive()) StartByKeys(a, calls, n);
+    int k = 0, queued = 0;
+    for (int i = 0; i < n; i++) {
+      if (calls[i].state == kRunning) kids[k++] = ToolChild(calls[i].run);
+      queued += calls[i].state == kQueued;
+    }
+    if (!k && !queued) break;
+    double wait = SchedWait(0.1);
+    if (SchedActive()) kids[k++] = SchedChild();
+    ProcPoll(kids, k, wait);
+    for (int i = 0; i < n; i++) {
+      Call* c = &calls[i];
+      if (c->state != kRunning || !ProcDone(ToolChild(c->run))) continue;
+      c->text = ToolFinish(c->run, &c->is_error, c->end);
+      c->run = NULL;
+      Complete(a, c, JsonNum(c->end, "secs", 0));
+    }
+  }
+  free(kids);
 }
 
 // Runs every tool call of an assistant message; see agent.h.
 void RunToolCalls(Agent* a, cJSON* calls) {
-  cJSON* call;
-  cJSON_ArrayForEach(call, calls) {
-    const char* id = JsonStr(call, "id", "");
-    const char* name = JsonStr(call, "function.name", "");
-    const char* args = JsonStr(call, "function.arguments", "{}");
-    char* out_path = NULL;
-    cJSON* end = EventNew("tool.end");
-    cJSON_AddStringToObject(end, "id", id);
-    cJSON_AddStringToObject(end, "name", name);
-    char* text;
-    if (g_interrupted) {
-      text = XStrdup("[interrupted before this tool ran]");
-      EventSend(end);
-    } else {
-      text = RunOne(a, id, name, args, &out_path, end);
+  int n = cJSON_GetArraySize(calls);
+  Call* list = XMalloc((size_t)(n ? n : 1) * sizeof(*list));
+  memset(list, 0, (size_t)(n ? n : 1) * sizeof(*list));
+  int plugin = SchedOpen(a);
+  for (int i = 0; i < n; i++) {
+    Prepare(a, &list[i], cJSON_GetArrayItem(calls, i));
+    if (plugin && list[i].state == kQueued) {
+      SchedReady(list[i].id, JsonStr(list[i].call, "name", ""),
+                 cJSON_GetObjectItem(list[i].call, "keys"));
     }
+  }
+  RunQueue(a, list, n);
+  for (int i = 0; i < n; i++) {
+    Call* c = &list[i];
     cJSON* m = cJSON_CreateObject();
     cJSON_AddStringToObject(m, "role", "tool");
-    cJSON_AddStringToObject(m, "tool_call_id", id);
-    cJSON_AddStringToObject(m, "content", text);
-    if (out_path) cJSON_AddStringToObject(m, "_out", out_path);
+    cJSON_AddStringToObject(m, "tool_call_id", c->id);
+    cJSON_AddStringToObject(m, "content", c->text);
+    if (c->out_path) cJSON_AddStringToObject(m, "_out", c->out_path);
     cJSON_AddItemToArray(a->messages, m);
     SessionAppend(&a->session, m);
-    free(text);
-    free(out_path);
+    free(c->text);
+    free(c->out_path);
+    cJSON_Delete(c->call);
+    cJSON_Delete(c->model_call);
   }
+  free(list);
 }
