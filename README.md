@@ -60,7 +60,7 @@ next turn.</sub>
 
 | Measured | macOS (arm64) | Linux (static, musl) |
 |---|---|---|
-| Binary | 377 KB | 421 KB, libc included |
+| Binary | 377 KB | 416 KB, libc included |
 | Startup | 0.8 ms above `true` | within noise of `true` |
 | Peak memory over 500 turns | 5 MB | 7 MB |
 | Harness edit to live | 0.11 ms | 0.06 ms |
