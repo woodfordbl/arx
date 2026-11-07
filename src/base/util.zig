@@ -64,8 +64,23 @@ pub fn leadingNumber(s: []const u8) ?struct { value: f64, rest: []const u8 } {
         while (j < s.len and std.ascii.isDigit(s[j])) j += 1;
         if (j > exp_start) i = j;
     }
-    const value = std.fmt.parseFloat(f64, s[start..i]) catch return null;
+    const value = parseFloat(s[start..i]) orelse return null;
     return .{ .value = value, .rest = s[i..] };
+}
+
+extern "c" fn strtod(text: [*:0]const u8, end: ?*[*:0]const u8) f64;
+
+/// Parses all of `s` as a decimal number with the C library's strtod,
+/// which the system already has, so arx carries no float parser of its
+/// own. Null when `s` is not a number or is longer than 127 bytes.
+pub fn parseFloat(s: []const u8) ?f64 {
+    var buf: [128]u8 = undefined;
+    if (s.len == 0 or s.len >= buf.len) return null;
+    @memcpy(buf[0..s.len], s);
+    buf[s.len] = 0;
+    var end: [*:0]const u8 = undefined;
+    const value = strtod(buf[0..s.len :0], &end);
+    return if (@intFromPtr(end) == @intFromPtr(&buf) + s.len) value else null;
 }
 
 /// Parses "30", "10s", "250ms", "5m" or "1h" into seconds.

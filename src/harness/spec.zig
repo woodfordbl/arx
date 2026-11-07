@@ -1,7 +1,8 @@
 //! spec.zig: loads agent.yaml into JSON (remembering the line of every
-//! key), merges the user's defaults under it, and applies --set overrides.
-//! Validation lives in validate.zig; plugins in plugins.zig; the
-//! fingerprint for hot reload in signature.zig.
+//! key), merges the kit and the user's defaults under it, and applies --set
+//! overrides. Validation lives in validate.zig; the active list in
+//! active.zig; plugins in plugins.zig; the fingerprint for hot reload in
+//! signature.zig.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -12,6 +13,7 @@ const Context = @import("../base/context.zig").Context;
 const yaml = @import("yaml.zig");
 const plugins = @import("plugins.zig");
 const validate = @import("validate.zig");
+const active = @import("active.zig");
 const signature = @import("signature.zig");
 
 /// One folder that adds tools/, hooks/ and skills to the harness: the spec
@@ -24,6 +26,10 @@ pub const Layer = struct {
     skills: ?[]const u8 = null,
     /// A plugin's hook options (from plugin.yaml), or null.
     hooks: ?json.Value = null,
+    /// A plugin's settings from the active list, or null.
+    settings: ?json.Value = null,
+    /// The tools a plugin hides on purpose, or null.
+    replaces: ?json.Value = null,
 };
 
 /// A parsed YAML file: its values, the lines of its keys, and where it is.
@@ -53,6 +59,21 @@ pub const Spec = struct {
     layers: []Layer = &.{},
     /// Plugins that were skipped, and why.
     problems: []const u8 = "",
+    /// [{name, why}]: only these plugins load; null: every installed one.
+    active: ?json.Value = null,
+    /// {name: why} for the plugins `disable` turned off.
+    off: json.Value = .null,
+    /// {name: settings}, merged from every source.
+    settings: json.Value = .null,
+    /// The kit in use, its folder, and where it was named (config.yaml,
+    /// agent.yaml or --kit).
+    kit: ?[]const u8 = null,
+    kit_dir: []const u8 = "",
+    kit_from: []const u8 = "",
+    /// The kit's plugins name exact versions (@ref): write kit.lock.
+    kit_pinned: bool = false,
+    /// For `arx check --list`: [{name, state, why, dir}].
+    rows: json.Value = .null,
 
     /// The spec as a document, for validation and text lookups.
     pub fn doc(s: *const Spec) Doc {
@@ -117,6 +138,21 @@ fn mergeDefaults(arena: Allocator, target: *json.Value, defaults: json.Value, pr
     }
 }
 
+/// Merges `from` over `target`, recursing into mappings that both have, so
+/// `from` wins. Copies the values into `a`; `from` is not changed.
+pub fn mergeOver(a: Allocator, target: *json.Value, from: json.Value) Allocator.Error!void {
+    if (target.* != .object) return;
+    for (json.keys(from), json.values(from)) |key, value| {
+        if (target.object.getPtr(key)) |existing| {
+            if (existing.* == .object and value == .object) {
+                try mergeOver(a, existing, value);
+                continue;
+            }
+        }
+        try json.put(a, target, key, try json.copy(a, value));
+    }
+}
+
 /// Merges `from` under `spec` key by key, so the spec wins. Both must live
 /// in the spec's arena. Keeps line numbers for errors.
 pub fn mergeUnder(spec: *Spec, from: Doc) Allocator.Error!void {
@@ -141,9 +177,11 @@ fn loadDefaults(ctx: *const Context, arena: Allocator, err: *std.ArrayList(u8)) 
     return .{ .found = d };
 }
 
-/// Loads and validates the spec at `path`, merged over the user's defaults
-/// in config.yaml (the spec wins key by key), then applies `sets` (from
-/// --set), then adds the plugins. With `path` null the defaults are the
+/// Loads and validates the spec at `path`, merged over the kit and the
+/// user's defaults in config.yaml (the spec wins key by key, and the kit
+/// wins over the defaults), then applies `sets` (from --set and --kit,
+/// which is `kit=NAME`), then builds the active list and adds the plugins.
+/// A kit that is missing is an error. With `path` null the defaults are the
 /// whole spec, and tools/ and hooks/ come from the config folder. Returns
 /// null, with one line per problem in `err` ("file:line: path: message"),
 /// when the spec cannot be used.
@@ -176,6 +214,20 @@ fn build(ctx: *const Context, spec: *Spec, path: ?[]const u8, sets: json.Value, 
     spec.lines = if (d.lines == .object) d.lines else json.object();
     spec.path = d.path;
     spec.dir = d.dir;
+    if (spec.root == .object) {
+        const config: json.Value = if (path == null) spec.root else if (defaults == .found) defaults.found.root else .null;
+        const kit_root = active.build(ctx, spec, config, if (path == null) .null else spec.root, sets, err) catch |e| switch (e) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.Invalid => return error.Invalid,
+        };
+        if (kit_root) |root| {
+            if (path == null) {
+                try mergeOver(arena, &spec.root, root);
+            } else {
+                try mergeUnder(spec, .{ .root = root, .lines = json.object(), .path = try std.mem.concat(arena, u8, &.{ spec.kit_dir, "/kit.yaml" }), .dir = spec.kit_dir });
+            }
+        }
+    }
     if (defaults == .found and (path == null or (spec.root == .object and defaults.found.root == .object))) {
         if (path != null) try mergeDefaults(arena, &spec.root, defaults.found.root, "", &spec.lines, defaults.found);
         spec.config = defaults.found.path;

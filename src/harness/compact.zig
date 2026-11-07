@@ -140,7 +140,7 @@ fn summarize(a: *Agent) !bool {
     try request.append(try Message.text(gpa, "system", prompt orelse default_summary_prompt));
     try request.append(try Message.text(gpa, "user", try plainHistory(t, &a.messages, 1, cut)));
     var why: std.ArrayList(u8) = .empty;
-    const reply = switch (try llm.chat(a, &request, null, false, &why)) {
+    const reply = switch (try llm.chat(a, &request, .fromSpec(a.spec.root, null), false, &why)) {
         .ok => |r| r,
         else => {
             defer why.deinit(gpa);

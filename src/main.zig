@@ -121,4 +121,6 @@ test {
     _ = @import("harness/plugins.zig");
     _ = @import("model/llm.zig");
     _ = @import("agent/agent.zig");
+    _ = @import("harness/active.zig");
+    _ = @import("harness/keys.zig");
 }

@@ -75,7 +75,7 @@ pub fn asNumber(v: Value) ?f64 {
     return switch (v) {
         .integer => |i| @floatFromInt(i),
         .float => |f| f,
-        .number_string => |s| std.fmt.parseFloat(f64, s) catch null,
+        .number_string => |s| util.parseFloat(s),
         else => null,
     };
 }
@@ -233,12 +233,15 @@ fn nestingDepth(text: []const u8) usize {
 pub const ParseError = error{ OutOfMemory, SyntaxError, TooDeep };
 
 /// Parses `text` into a value in `arena`. Strings are copied, so `text` can
-/// be freed afterwards. A duplicate key keeps its first value.
+/// be freed afterwards. A duplicate key keeps its first value. Numbers stay
+/// as their text (number_string), so they print back exactly as written,
+/// and `asNumber` reads them.
 pub fn parse(arena: Allocator, text: []const u8) ParseError!Value {
     if (nestingDepth(text) > max_depth) return error.TooDeep;
     return std.json.parseFromSliceLeaky(Value, arena, text, .{
         .duplicate_field_behavior = .use_first,
         .allocate = .alloc_always,
+        .parse_numbers = false,
     }) catch |err| switch (err) {
         error.OutOfMemory => error.OutOfMemory,
         else => error.SyntaxError,

@@ -5,6 +5,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const util = @import("../base/util.zig");
+const json = @import("../base/json.zig");
 const render = @import("../io/render.zig");
 const spec_mod = @import("../harness/spec.zig");
 const Agent = @import("../agent/agent.zig").Agent;
@@ -16,6 +17,8 @@ pub const help =
     \\  -p TASK|-             run one task (- reads it from stdin)
     \\  --spec PATH           agent spec (default ./agent.yaml, else your
     \\                        defaults from `arx setup`)
+    \\  --kit NAME            use an installed kit (its plugins, in order,
+    \\                        and its prompt); the agent cannot change it
     \\  --set KEY=VALUE       override a spec value, e.g. model=...
     \\  --cap KEY=VALUE       hard limit: turns, tokens, usd, wall, depth
     \\  --resume ID|last      continue a session
@@ -57,6 +60,10 @@ pub fn parse(a: *Agent, args: []const []const u8, first: usize) Allocator.Error!
             a.resume_ref = value;
         } else if (std.mem.eql(u8, arg, "--events")) {
             a.events_target = value;
+        } else if (std.mem.eql(u8, arg, "--kit")) {
+            // The same as --set kit=NAME, so it stays in force after a reload.
+            _ = a.sets.object.orderedRemove("kit");
+            try json.putString(a.sets_arena.allocator(), &a.sets, "kit", value);
         } else if (std.mem.eql(u8, arg, "--set")) {
             if (!try spec_mod.addSet(a.sets_arena.allocator(), &a.sets, value)) return usageError(a, "bad --set", value);
         } else if (std.mem.eql(u8, arg, "--cap")) {

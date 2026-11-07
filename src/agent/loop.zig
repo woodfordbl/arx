@@ -1,7 +1,7 @@
 //! loop.zig: the turn loop. Before each model call it hot-reloads the
 //! harness if any of its files changed, reads the inbox, hands harness
-//! notes to the agent and compacts the context. After the call it runs the
-//! tool calls through the before_tool and after_tool hooks, and asks the
+//! notes to the agent and compacts the context. Then it calls the model
+//! (model_call.zig), runs the tool calls (tool_calls.zig), and asks the
 //! stop hook whether to go on when the agent stops calling tools.
 
 const std = @import("std");
@@ -16,10 +16,11 @@ const Message = @import("../io/history.zig").Message;
 const spec_mod = @import("../harness/spec.zig");
 const signature = @import("../harness/signature.zig");
 const tools = @import("../harness/tools.zig");
-const tool_exec = @import("../harness/tool_exec.zig");
 const hooks = @import("../harness/hooks.zig");
+const kits = @import("../harness/kits.zig");
 const compact = @import("../harness/compact.zig");
-const llm = @import("../model/llm.zig");
+const model_call = @import("model_call.zig");
+const tool_calls = @import("tool_calls.zig");
 const agent_mod = @import("agent.zig");
 const Agent = agent_mod.Agent;
 const Exit = util.Exit;
@@ -62,6 +63,7 @@ fn maybeReload(a: *Agent) Allocator.Error!void {
     if (try spec_mod.load(ctx, a.spec_path, a.sets, &err)) |fresh| {
         a.spec.deinit(gpa);
         a.spec = fresh;
+        try kits.lockWrite(ctx, &a.spec);
         try tools.build(a);
         const system = try agent_mod.systemPrompt(a);
         defer gpa.free(system);
@@ -111,81 +113,6 @@ fn flushNotes(a: *Agent) Allocator.Error!void {
     a.notes.clearRetainingCapacity();
 }
 
-/// A one-line summary of a tool call for the terminal view: the command,
-/// path or task when there is one, else the raw arguments.
-fn preview(arena: Allocator, args: []const u8) Allocator.Error![]u8 {
-    const parsed = try json.parseObject(arena, args);
-    const s = json.str(parsed, "command") orelse json.str(parsed, "path") orelse json.str(parsed, "task") orelse args;
-    const text = try util.truncate(arena, s, 120);
-    std.mem.replaceScalar(u8, text, '\n', ' ');
-    return text;
-}
-
-/// Runs the before_tool hook. Returns a denial message, or null to go on.
-fn beforeTool(a: *Agent, arena: Allocator, name: []const u8, args: []const u8) Allocator.Error!?[]const u8 {
-    // Arguments that are not valid JSON go to the hook as a string.
-    const parsed = json.parse(arena, args) catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => json.Value{ .string = args },
-    };
-    const fields = try arena.print("\"tool\":{{\"name\":{f},\"args\":{f}}}", .{ json.fmt(.{ .string = name }), json.fmt(parsed) });
-    const outcome = try hooks.run(a, arena, "before_tool", fields);
-    if (outcome.status == .failed) return "denied: the before_tool hook failed (fail: closed)";
-    if (std.mem.eql(u8, json.strOr(outcome.output, "decision", ""), "deny")) {
-        return try arena.print("denied by the before_tool hook: {s}", .{json.strOr(outcome.output, "reason", "no reason given")});
-    }
-    return null;
-}
-
-/// Runs the after_tool hook. Returns a note to append, or null.
-fn afterTool(a: *Agent, arena: Allocator, name: []const u8, result: []const u8, is_error: bool) Allocator.Error!?[]const u8 {
-    const fields = try arena.print("\"tool\":{{\"name\":{f}}},\"result\":{{\"text\":{f},\"error\":{}}}", .{
-        json.fmt(.{ .string = name }), json.fmt(.{ .string = try util.truncate(arena, result, 8192) }), is_error,
-    });
-    const outcome = try hooks.run(a, arena, "after_tool", fields);
-    return json.str(outcome.output, "note");
-}
-
-/// Runs one tool call with its hooks and records the result. `end` is sent
-/// as soon as the tool finishes, before the after_tool hook. A call after a
-/// Ctrl-C still gets a result, so the history stays valid.
-fn runToolCall(a: *Agent, call: json.Value) !void {
-    var arena: std.heap.ArenaAllocator = .init(a.ctx.gpa);
-    defer arena.deinit();
-    const t = arena.allocator();
-    const id = json.strOr(call, "id", "");
-    const name = json.strOr(call, "function.name", "");
-    const args = json.strOr(call, "function.arguments", "{}");
-    var end = try a.events.begin("tool.end");
-    defer end.deinit();
-    try end.str("id", id);
-    try end.str("name", name);
-    var outcome: tool_exec.Outcome = .{ .text = "[interrupted before this tool ran]" };
-    if (sys.isInterrupted()) {
-        try a.events.send(&end);
-    } else {
-        var start = try a.events.begin("tool.start");
-        defer start.deinit();
-        try start.str("id", id);
-        try start.str("name", name);
-        try start.str("preview", try preview(t, args));
-        try a.events.send(&start);
-        outcome = if (try beforeTool(a, t, name, args)) |denial| .{ .text = denial } else try tool_exec.call(a, t, name, args, &end);
-        try end.boolean("error", outcome.is_error);
-        try end.truncated("preview", outcome.text[0 .. std.mem.findScalar(u8, outcome.text, '\n') orelse outcome.text.len], 100);
-        try a.events.send(&end);
-        if (try afterTool(a, t, name, outcome.text, outcome.is_error)) |note| outcome.text = try t.print("{s}\n[after_tool] {s}", .{ outcome.text, note });
-    }
-    const m = try Message.text(a.ctx.gpa, "tool", outcome.text);
-    {
-        errdefer m.destroy(a.ctx.gpa);
-        try json.putString(m.allocator(), &m.value, "tool_call_id", id);
-        if (outcome.output_path) |p| try json.putString(m.allocator(), &m.value, "_out", p);
-    }
-    try a.messages.append(m);
-    try a.record(m);
-}
-
 /// Asks the stop hook whether to go on. Returns true to keep going.
 fn stopHook(a: *Agent) !bool {
     var arena: std.heap.ArenaAllocator = .init(a.ctx.gpa);
@@ -205,57 +132,10 @@ fn stopHook(a: *Agent) !bool {
     return false;
 }
 
-/// Calls the model; if the prompt is too long, compacts once and retries.
-/// Returns the reply, or the exit code to stop with.
-fn callModel(a: *Agent) !union(enum) { reply: llm.Reply, exit: Exit } {
-    const gpa = a.ctx.gpa;
-    const tools_json = try a.tools.toJson(gpa);
-    defer gpa.free(tools_json);
-    var why: std.ArrayList(u8) = .empty;
-    defer why.deinit(gpa);
-    a.estimate_at_call = a.messages.estimateTokens();
-    var result = try llm.chat(a, &a.messages, tools_json, true, &why);
-    if (result == .context) {
-        const s = json.strOr(a.spec.root, "compaction.strategy", "mask");
-        if (try compact.compact(a, if (std.mem.eql(u8, s, "mask")) "hybrid" else s, null)) {
-            why.clearRetainingCapacity();
-            a.estimate_at_call = a.messages.estimateTokens();
-            result = try llm.chat(a, &a.messages, tools_json, true, &why);
-        }
-    }
-    switch (result) {
-        .ok => |reply| return .{ .reply = reply },
-        .interrupted => return .{ .exit = .interrupted },
-        else => {},
-    }
-    const message = if (why.items.len > 0) why.items else "the model call failed";
-    var event = try a.events.begin("error");
-    defer event.deinit();
-    try event.truncated("error", message, 1000);
-    try a.events.send(&event);
-    if (!a.events.view.enabled) render.printErr(a.ctx.io, "arx: {s}\n", .{why.items});
-    return .{ .exit = if (result == .auth) .auth else .@"error" };
-}
-
-/// Adds a reply's usage to the session and reports it.
-fn account(a: *Agent, r: llm.Reply) Allocator.Error!void {
-    const s = &a.session.?;
-    s.tokens_in += r.tokens_in;
-    s.tokens_out += r.tokens_out;
-    s.cost += r.cost;
-    a.tokens_at_call = r.tokens_in;
-    var event = try a.events.begin("model.message");
-    defer event.deinit();
-    try event.int("tokens_in", r.tokens_in);
-    try event.int("tokens_out", r.tokens_out);
-    try event.num("cost", r.cost);
-    try event.int("tool_calls", @intCast(json.items(json.field(r.message.value, "tool_calls")).len));
-    try a.events.send(&event);
-}
-
 /// Runs model turns until the agent stops (no tool calls and the stop hook
 /// does not continue), a cap is reached, or an error or interrupt happens.
 pub fn runTurns(a: *Agent) !Exit {
+    try kits.lockWrite(a.ctx, &a.spec); // a kit that pins versions: record the parts
     while (true) {
         if (sys.isInterrupted()) return .interrupted;
         if (try checkCaps(a)) |code| return code;
@@ -268,18 +148,17 @@ pub fn runTurns(a: *Agent) !Exit {
         s.turns += 1;
         a.events.turn = s.turns;
         try a.events.sendPlain("turn.start");
-        const reply = switch (try callModel(a)) {
-            .reply => |r| r,
+        const message = switch (try model_call.turn(a)) {
+            .message => |m| m,
             .exit => |code| return code,
         };
-        try a.messages.append(reply.message);
-        try account(a, reply);
-        try a.record(reply.message);
-        const calls = json.items(json.field(reply.message.value, "tool_calls"));
+        try a.messages.append(message);
+        try a.record(message);
+        const calls = json.items(json.field(message.value, "tool_calls"));
         if (calls.len > 0) {
-            for (calls) |call| try runToolCall(a, call);
+            try tool_calls.run(a, calls);
         } else {
-            const answer = try a.ctx.gpa.dupe(u8, json.strOr(reply.message.value, "content", ""));
+            const answer = try a.ctx.gpa.dupe(u8, json.strOr(message.value, "content", ""));
             if (a.final_output) |old| a.ctx.gpa.free(old);
             a.final_output = answer;
             if (!try stopHook(a)) return .done;

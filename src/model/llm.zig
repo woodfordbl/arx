@@ -25,6 +25,23 @@ pub const Reply = struct {
     tokens_out: i64,
     /// From the provider, else from the spec's prices.
     cost: f64,
+    /// finish_reason: "stop", "tool_calls", "length", ... (in the
+    /// message's arena).
+    finish: []const u8,
+};
+
+/// What a call sends besides the messages.
+pub const Request = struct {
+    model: []const u8,
+    /// Request fields that replace the defaults; a null value removes one.
+    settings: ?json.Value = null,
+    /// A JSON array, or null for no tools.
+    tools_json: ?[]const u8 = null,
+
+    /// The spec's model and model_settings, with `tools_json`.
+    pub fn fromSpec(root: json.Value, tools_json: ?[]const u8) Request {
+        return .{ .model = json.strOr(root, "model", ""), .settings = json.field(root, "model_settings"), .tools_json = tools_json };
+    }
 };
 
 /// How a model call ended.
@@ -44,23 +61,23 @@ pub const Result = union(enum) {
 const Outcome = enum { ok, retry, auth, context, fatal, interrupted };
 
 /// The request body: the model, the messages without "_" fields, the tools,
-/// streaming options, then model_settings on top (a null setting removes
-/// the field). Caller owns the result.
-fn requestBody(gpa: Allocator, root: json.Value, messages: *const History, tools_json: ?[]const u8) Allocator.Error![]u8 {
+/// streaming options, then the settings on top (a null setting removes the
+/// field). Caller owns the result.
+fn requestBody(gpa: Allocator, request: Request, messages: *const History) Allocator.Error![]u8 {
     var out: Writer.Allocating = .init(gpa);
     defer out.deinit();
-    writeBody(&out.writer, root, messages, tools_json) catch return error.OutOfMemory;
+    writeBody(&out.writer, request, messages) catch return error.OutOfMemory;
     return out.toOwnedSlice();
 }
 
 /// Writes the request body; see `requestBody`.
-fn writeBody(w: *Writer, root: json.Value, messages: *const History, tools_json: ?[]const u8) Writer.Error!void {
-    const settings = json.field(root, "model_settings");
+fn writeBody(w: *Writer, request: Request, messages: *const History) Writer.Error!void {
+    const settings = request.settings;
     var body: BodyWriter = .{ .w = w, .settings = settings };
     try w.writeByte('{');
-    if (try body.key("model")) try json.writeString(w, json.strOr(root, "model", ""));
+    if (try body.key("model")) try json.writeString(w, request.model);
     if (try body.key("messages")) try messages.write(w, true);
-    if (tools_json) |t| if (t.len > 2) if (try body.key("tools")) try w.writeAll(t);
+    if (request.tools_json) |t| if (t.len > 2) if (try body.key("tools")) try w.writeAll(t);
     if (try body.key("stream")) try w.writeAll("true");
     if (try body.key("stream_options")) try w.writeAll("{\"include_usage\":true}");
     for (json.keys(settings), json.values(settings)) |k, v| {
@@ -147,13 +164,13 @@ fn retryWait(root: json.Value, n: usize, retry_after: ?f64) f64 {
     return @min(wait, max_wait);
 }
 
-/// Sends `messages` and `tools_json` (a JSON array, or null for none) to the
-/// spec's model. Fields whose names start with "_" are stripped from the
+/// Sends `messages` with `request` (the model, settings and tools; see
+/// Request.fromSpec). Fields whose names start with "_" are stripped from the
 /// messages first. With `show` set, text streams to the terminal and the
 /// event stream as it arrives. Retries 429, 5xx, timeouts and network
 /// errors with backoff (honoring Retry-After), sending a model.retry event
 /// each time. On failure, appends the reason to `why`.
-pub fn chat(a: *Agent, messages: *const History, tools_json: ?[]const u8, show: bool, why: *std.ArrayList(u8)) !Result {
+pub fn chat(a: *Agent, messages: *const History, request: Request, show: bool, why: *std.ArrayList(u8)) !Result {
     const ctx = a.ctx;
     const gpa = ctx.gpa;
     const root = a.spec.root;
@@ -161,7 +178,7 @@ pub fn chat(a: *Agent, messages: *const History, tools_json: ?[]const u8, show: 
     const cwd = std.Io.Dir.cwd();
     var timeout = json.duration(root, "limits.turn_timeout", 600);
     if (a.caps.wall > 0) timeout = @max(@min(timeout, a.caps.wall - (util.now(ctx.io) - a.start)), 1);
-    const body = try requestBody(gpa, root, messages, tools_json);
+    const body = try requestBody(gpa, request, messages);
     defer gpa.free(body);
     var n: usize = 1;
     while (true) : (n += 1) {
@@ -191,13 +208,19 @@ pub fn chat(a: *Agent, messages: *const History, tools_json: ?[]const u8, show: 
         const response_headers = try auth.readResponseHeaders(ctx, response);
         var reason: std.ArrayList(u8) = .empty;
         switch (try classify(t, r, curl_err.output(), response_headers.status, &stream, &reason)) {
-            .ok => return .{ .ok = .{
-                .message = try stream.message(gpa, a.turns()),
-                .tokens_in = stream.tokens_in,
-                .tokens_out = stream.tokens_out,
-                .cost = stream.cost orelse (json.num(root, "prices.input", 0) * @as(f64, @floatFromInt(stream.tokens_in)) +
-                    json.num(root, "prices.output", 0) * @as(f64, @floatFromInt(stream.tokens_out))) / 1e6,
-            } },
+            .ok => {
+                const message = try stream.message(gpa, a.turns());
+                errdefer message.destroy(gpa);
+                const finish = stream.finish_reason orelse if (stream.call_count > 0) "tool_calls" else "stop";
+                return .{ .ok = .{
+                    .message = message,
+                    .tokens_in = stream.tokens_in,
+                    .tokens_out = stream.tokens_out,
+                    .cost = stream.cost orelse (json.num(root, "prices.input", 0) * @as(f64, @floatFromInt(stream.tokens_in)) +
+                        json.num(root, "prices.output", 0) * @as(f64, @floatFromInt(stream.tokens_out))) / 1e6,
+                    .finish = try message.allocator().dupe(u8, finish),
+                } };
+            },
             .interrupted => return .interrupted,
             .retry => {
                 const max_attempts = json.int(root, "endpoint.retry_attempts", 0);
@@ -233,7 +256,7 @@ test "request body with model_settings" {
     var h: History = .init(gpa);
     defer h.deinit();
     try h.append(try Message.text(gpa, "user", "hi"));
-    const body = try requestBody(gpa, root, &h, "[]");
+    const body = try requestBody(gpa, .fromSpec(root, "[]"), &h);
     defer gpa.free(body);
     try std.testing.expectEqualStrings(
         "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"stream_options\":{\"include_usage\":true},\"temperature\":0.5}",

@@ -1,6 +1,6 @@
 //! signature.zig: the fingerprint for hot reload. It covers the spec, the
 //! prompt files it names, and tools/, hooks/ and skills in every layer,
-//! plus each plugin.yaml, using stat() only, so arx can check it before
+//! plus each plugin.yaml and kit.yaml, using stat() only, so arx can check it before
 //! every model call.
 
 const std = @import("std");
@@ -80,13 +80,16 @@ pub fn compute(ctx: *const Context, spec: *const Spec) Allocator.Error!u64 {
         }
         if (layer.skills) |skills| try f.dir(skills, "SKILL.md");
     }
-    // A plugin that is added, removed, or changes its plugin.yaml.
+    // A plugin or kit that is added, removed, or changes its plugin.yaml or
+    // kit.yaml.
     const config = try util.configDir(ctx, gpa);
     defer gpa.free(config);
     for ([_][]const u8{ spec.dir, config }) |parent| {
-        const path = try util.pathJoin(gpa, parent, "plugins");
-        defer gpa.free(path);
-        try f.dir(path, "plugin.yaml");
+        for ([_][2][]const u8{ .{ "plugins", "plugin.yaml" }, .{ "kits", "kit.yaml" } }) |kind| {
+            const path = try util.pathJoin(gpa, parent, kind[0]);
+            defer gpa.free(path);
+            try f.dir(path, kind[1]);
+        }
     }
     return f.h.final();
 }

@@ -18,6 +18,11 @@ pub fn isInterrupted() bool {
     return interrupted.load(.monotonic);
 }
 
+/// Marks an interrupt again, after a step that had to run without it.
+pub fn setInterrupted() void {
+    interrupted.store(true, .monotonic);
+}
+
 /// Forgets an earlier interrupt, so the next prompt can be interrupted again.
 pub fn clearInterrupted() void {
     interrupted.store(false, .monotonic);
@@ -29,16 +34,24 @@ fn onSignal(sig: posix.SIG) callconv(.c) void {
     interrupted.store(true, .monotonic);
 }
 
-/// Installs the SIGINT and SIGTERM handlers. No SA_RESTART, so a blocking
-/// read returns and the caller can notice the signal.
+/// Does nothing: a write to a closed pipe then fails with EPIPE, where the
+/// default action would kill arx.
+fn onPipe(_: posix.SIG) callconv(.c) void {}
+
+/// Installs the SIGINT and SIGTERM handlers, and catches SIGPIPE. No
+/// SA_RESTART, so a blocking read returns and the caller can notice the
+/// signal. Caught signals go back to their default action in a child after
+/// exec, so tools still get the usual SIGPIPE (an ignored one would not).
 pub fn installSignals() void {
-    const action: posix.Sigaction = .{
+    var action: posix.Sigaction = .{
         .handler = .{ .handler = onSignal },
         .mask = posix.sigemptyset(),
         .flags = 0,
     };
     posix.sigaction(.INT, &action, null);
     posix.sigaction(.TERM, &action, null);
+    action.handler = .{ .handler = onPipe };
+    posix.sigaction(.PIPE, &action, null);
 }
 
 /// The calls below fail with this one error; no caller needs more detail.

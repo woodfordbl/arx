@@ -18,6 +18,7 @@ const Auth = @import("../model/auth.zig").Auth;
 const spec_mod = @import("../harness/spec.zig");
 const Spec = spec_mod.Spec;
 const tools = @import("../harness/tools.zig");
+const Scheduler = @import("scheduler.zig").Scheduler;
 
 /// Used when the spec has no instructions.
 const default_instructions =
@@ -119,6 +120,8 @@ pub const Agent = struct {
     stop_requested: bool = false,
     events: Events,
     auth: Auth,
+    /// The scheduler plugin of the session, when a layer has one.
+    sched: Scheduler = .{},
 
     /// An agent with no spec, session or history yet.
     pub fn init(ctx: *const Context) Agent {
@@ -134,6 +137,7 @@ pub const Agent = struct {
     /// Frees everything the agent holds.
     pub fn deinit(a: *Agent) void {
         const gpa = a.ctx.gpa;
+        a.sched.deinit(gpa);
         a.tools.deinit(gpa);
         a.schemas.deinit(gpa);
         a.spec.deinit(gpa);
@@ -221,7 +225,7 @@ fn harnessText(a: *Agent, t: Allocator, out: *std.ArrayList(u8)) Allocator.Error
         "- Spec: {s} (YAML: model settings, tools, hooks, compaction, limits). Check edits with `{s} check --spec {s}`.\n" ++
         "- Tools: {s}/tools/<name>, any executable (chmod +x). `<name> --schema` prints {{\"description\": ..., \"parameters\": <JSON Schema>}}; " ++
         "a call gets its arguments as JSON on stdin; stdout and stderr are the result; a non-zero exit marks an error.\n" ++
-        "- Hooks: {s}/hooks/<point> for session_start, before_tool, after_tool and stop: JSON on stdin, an optional JSON decision on stdout.\n" ++
+        "- Hooks: {s}/hooks/<point> for session_start, before_model, after_model, before_tool, after_tool and stop: JSON on stdin; print the fields to change, or a decision, as JSON on stdout.\n" ++
         "- Skills: {s}{s}<name>/SKILL.md with name and description front matter.\n" ++
         "- Session files (full tool outputs, transcript): {s}", .{
         a.spec.path,
@@ -237,7 +241,9 @@ fn harnessText(a: *Agent, t: Allocator, out: *std.ArrayList(u8)) Allocator.Error
     for (a.spec.layers) |layer| if (layer.plugin) |plugin| {
         try plugins.print(t, "{s}{s} ({s})", .{ if (plugins.items.len > 0) ", " else "", plugin, layer.dir });
     };
-    if (plugins.items.len > 0) try out.print(t, "\n- Plugins add tools, hooks and skills below yours: {s}. A tool of yours with the same name wins; hooks all run, yours first.", .{plugins.items});
+    if (plugins.items.len == 0) return;
+    try out.print(t, "\n- Plugins add tools, hooks and skills below yours: {s}. A tool of yours with the same name wins; hooks all run by band (policy, normal, final) and then in this order, yours first.", .{plugins.items});
+    if (a.spec.kit) |kit| try out.print(t, " The kit {s} ({s}) chose them.", .{ kit, a.spec.kit_dir });
 }
 
 /// {{file:PATH}}, {{file:PATH:tail=N}} or {{file:PATH:max=SIZE}}.

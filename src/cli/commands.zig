@@ -1,5 +1,6 @@
 //! commands.zig: the built-in commands. One table drives both dispatch and
-//! `arx help`; everything else is an external `arx-*` command.
+//! `arx help`; everything else is an external `arx-*` command. `arx check`
+//! and `arx tools` live in check.zig, and `arx tool` in shell_tools.zig.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -12,14 +13,13 @@ const proc = @import("../base/proc.zig");
 const render = @import("../io/render.zig");
 const session = @import("../io/session.zig");
 const spec_mod = @import("../harness/spec.zig");
-const plugins = @import("../harness/plugins.zig");
 const schema = @import("../harness/schema.zig");
-const tools = @import("../harness/tools.zig");
-const validate = @import("../harness/validate.zig");
 const auth = @import("../model/auth.zig");
 const Agent = @import("../agent/agent.zig").Agent;
 const options = @import("options.zig");
 const external = @import("external.zig");
+const check = @import("check.zig");
+const shell_tools = @import("shell_tools.zig");
 const Exit = util.Exit;
 
 /// One built-in command, for dispatch and `arx help`.
@@ -32,9 +32,10 @@ pub const Command = struct {
 
 /// The built-in commands.
 pub const all = [_]Command{
-    .{ .name = "check", .args = "[--spec P] | --plugin DIR", .summary = "validate the spec, tools and hooks, or one plugin", .run = checkOrTools },
-    .{ .name = "tools", .args = "[--spec P]", .summary = "print the tools as the model sees them", .run = checkOrTools },
+    .{ .name = "check", .args = "[--spec P] [--kit K] [--list] | --plugin DIR | --kit-dir DIR", .summary = "validate the harness (or list its plugins), one plugin or one kit", .run = check.checkOrTools },
+    .{ .name = "tools", .args = "[--spec P]", .summary = "print the tools as the model sees them", .run = check.checkOrTools },
     .{ .name = "schema", .args = "", .summary = "print the JSON Schema of agent.yaml", .run = schemaCommand },
+    .{ .name = "tool", .args = "bash|edit [--schema]", .summary = "run a tool of the shell plugin (JSON arguments on stdin)", .run = shell_tools.command },
     .{ .name = "watch", .args = "[ID|last] [--json] [--from start|now]", .summary = "follow a session's events", .run = watchCommand },
     .{ .name = "ctl", .args = "ID|last stop|note TEXT", .summary = "steer a running session", .run = ctlCommand },
     .{ .name = "request", .args = "[-X METHOD] [--data JSON|-] [--auth-source] PATH", .summary = "call your endpoint with your key, e.g. /models", .run = requestCommand },
@@ -54,80 +55,6 @@ pub fn run(a: *Agent, name: []const u8, args: []const []const u8) anyerror!?Exit
         return try c.run(a, args);
     }
     return null;
-}
-
-/// Loads the spec for a command and prints its problems.
-fn loadSpec(a: *Agent) Allocator.Error!?Exit {
-    var err: std.ArrayList(u8) = .empty;
-    defer err.deinit(a.ctx.gpa);
-    options.resolveSpec(a);
-    a.spec = (try spec_mod.load(a.ctx, a.spec_path, a.sets, &err)) orelse {
-        render.printErr(a.ctx.io, "{s}", .{err.items});
-        return .usage;
-    };
-    return null;
-}
-
-/// `arx check --plugin DIR`: checks a plugin without loading it, and prints
-/// key=value lines for scripts such as `arx plugin`.
-fn checkPlugin(a: *Agent, dir: []const u8) !Exit {
-    var out: std.ArrayList(u8) = .empty;
-    defer out.deinit(a.ctx.gpa);
-    var err: std.ArrayList(u8) = .empty;
-    defer err.deinit(a.ctx.gpa);
-    const ok = try plugins.describe(a.ctx, dir, &out, &err);
-    if (ok) render.printOut(a.ctx.io, "{s}", .{out.items}) else render.printErr(a.ctx.io, "{s}", .{err.items});
-    return if (ok) .done else .usage;
-}
-
-/// `arx check` and `arx tools`: load the harness without starting a session.
-fn checkOrTools(a: *Agent, args: []const []const u8) !Exit {
-    const is_check = std.mem.eql(u8, args[1], "check");
-    if (is_check and args.len == 4 and std.mem.eql(u8, args[2], "--plugin")) return checkPlugin(a, args[3]);
-    if (try options.parse(a, args, 2)) |code| return code;
-    if (try loadSpec(a)) |code| return code;
-    try tools.build(a);
-    var arena: std.heap.ArenaAllocator = .init(a.ctx.gpa);
-    defer arena.deinit();
-    const t = arena.allocator();
-    if (!is_check) {
-        render.printOut(a.ctx.io, "{s}\n", .{try json.stringifyPretty(t, try json.parseTrusted(t, try a.tools.toJson(t)))});
-        return .done;
-    }
-    var out: std.ArrayList(u8) = .empty;
-    const config = a.spec.config orelse a.spec.path;
-    const merged = !std.mem.eql(u8, config, a.spec.path);
-    try out.print(t, "ok: {s}{s}{s} (model {s} at {s})\ntools:", .{
-        a.spec.path,
-        if (merged) " + " else "",
-        if (merged) config else "",
-        json.strOr(a.spec.root, "model", ""),
-        json.strOr(a.spec.root, "endpoint.base_url", ""),
-    });
-    for (a.tools.items) |tool| try out.print(t, " {s}", .{tool.name});
-    // The hooks found in the layers, naming the plugins they come from.
-    try out.appendSlice(t, "\nhooks:");
-    for (validate.hook_points) |point| {
-        var from: std.ArrayList(u8) = .empty;
-        var found = false;
-        for (a.spec.layers) |layer| {
-            if (!util.isExecutable(a.ctx.io, try std.mem.concat(t, u8, &.{ layer.dir, "/hooks/", point }))) continue;
-            found = true;
-            if (layer.plugin) |plugin| try from.print(t, "{s}{s}", .{ if (from.items.len > 0) "," else "", plugin });
-        }
-        if (found) try out.print(t, " {s}", .{point});
-        if (from.items.len > 0) try out.print(t, "({s})", .{from.items});
-    }
-    try out.append(t, '\n');
-    var any = false;
-    for (a.spec.layers) |layer| if (layer.plugin) |plugin| {
-        try out.print(t, "{s}{s}", .{ if (any) " " else "plugins: ", plugin });
-        any = true;
-    };
-    if (any) try out.append(t, '\n');
-    if (a.notes.items.len > 0) try out.print(t, "problems:\n{s}", .{a.notes.items});
-    render.printOut(a.ctx.io, "{s}", .{out.items});
-    return .done;
 }
 
 /// `arx schema`.
@@ -223,7 +150,7 @@ fn requestCommand(a: *Agent, args: []const []const u8) !Exit {
         }
         i += 1;
     }
-    if (try loadSpec(a)) |code| return code;
+    if (try check.loadSpec(a)) |code| return code;
     const root = a.spec.root;
     if (auth_source) {
         const key = try a.auth.apiKey(ctx, root);

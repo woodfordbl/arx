@@ -1,8 +1,8 @@
-//! tools.zig: builds the tool set: the built-ins (bash and edit), every
-//! executable in a layer's tools/ folder, and subagent tools from the spec.
-//! Executable tools describe themselves with `--schema`; the answers are
-//! cached by modification time and size, so a reload only re-runs tools
-//! that changed.
+//! tools.zig: builds the tool set: every executable in a layer's tools/
+//! folder, and subagent tools from the spec. An executable is described by
+//! a <name>.json file next to it, or else by `--schema` (description,
+//! parameters and keys); the answers are cached by modification time and
+//! size, so a reload only reads tools that changed.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -12,15 +12,10 @@ const json = @import("../base/json.zig");
 const proc = @import("../base/proc.zig");
 const Context = @import("../base/context.zig").Context;
 const Layer = @import("spec.zig").Layer;
-const validate = @import("validate.zig");
+const fields = @import("fields.zig");
+const keys_mod = @import("keys.zig");
 const Agent = @import("../agent/agent.zig").Agent;
 
-const bash_params =
-    \\{"type":"object","properties":{"command":{"type":"string","description":"Shell command, run with sh -c in the working directory"}},"required":["command"]}
-;
-const edit_params =
-    \\{"type":"object","properties":{"path":{"type":"string"},"old":{"type":"string","description":"Exact text to replace; it must occur exactly once. Empty creates a new file."},"new":{"type":"string","description":"Replacement text"}},"required":["path","old","new"]}
-;
 const agent_params =
     \\{"type":"object","properties":{"task":{"type":"string","description":"The complete task. The subagent starts with no other context."}},"required":["task"]}
 ;
@@ -36,10 +31,6 @@ const max_schemas = 128;
 
 /// How a tool runs.
 pub const Kind = enum {
-    /// sh -c <command>
-    bash,
-    /// Exact string replacement, in process.
-    edit,
     /// tools/<name>, arguments as JSON on stdin.
     exec,
     /// A subagent: arx -p - --spec <path>.
@@ -58,6 +49,10 @@ pub const Tool = struct {
     timeout: f64,
     /// The plugin folder it came from, or null.
     plugin_dir: ?[]const u8 = null,
+    /// NAME when the file only runs `arx tool NAME`, or null.
+    core: ?[]const u8 = null,
+    /// Key templates from the schema; null means ["*"].
+    keys: ?json.Value = null,
 };
 
 /// The tools of the current harness version. Everything lives in its arena.
@@ -94,17 +89,27 @@ pub const ToolSet = struct {
     }
 };
 
-/// One cached `--schema` answer.
+/// One cached schema, from <path>.json or `--schema`.
 const SchemaEntry = struct {
     path: []u8,
-    mtime: i64,
-    size: i64,
+    /// stat() of the tool and of its .json file, to see changes.
+    stamp: [4]i64,
     arena: std.heap.ArenaAllocator,
     description: []const u8 = "",
     /// Why the tool is skipped, or null.
     problem: ?[]const u8 = null,
     params: json.Value = .null,
+    /// The `arx tool NAME` the file hands over to, or null.
+    core: ?[]const u8 = null,
+    /// The declared keys, or null.
+    keys: ?json.Value = null,
 };
+
+/// The modification time and size of `path`; -1s when it is missing.
+fn stamp(ctx: *const Context, path: []const u8) [2]i64 {
+    const info = util.stat(ctx.io, path) orelse return .{ -1, -1 };
+    return .{ info.mtime, info.size };
+}
 
 /// `--schema` answers, by path. Entries are heap-allocated so their arenas
 /// stay put.
@@ -125,48 +130,122 @@ pub const SchemaCache = struct {
     /// the cache is full.
     fn get(c: *SchemaCache, ctx: *const Context, path: []const u8) Allocator.Error!?*SchemaEntry {
         const gpa = ctx.gpa;
-        const info = util.stat(ctx.io, path);
-        const mtime: i64 = if (info) |i| i.mtime else -1;
-        const size: i64 = if (info) |i| i.size else -1;
+        var json_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const json_path = std.fmt.bufPrint(&json_path_buf, "{s}.json", .{path}) catch return null;
+        const now = stamp(ctx, path) ++ stamp(ctx, json_path);
         const entry = for (c.entries.items) |e| {
             if (std.mem.eql(u8, e.path, path)) break e;
         } else blk: {
             if (c.entries.items.len >= max_schemas) return null;
             const e = try gpa.create(SchemaEntry);
             errdefer gpa.destroy(e);
-            e.* = .{ .path = try gpa.dupe(u8, path), .mtime = 0, .size = -2, .arena = .init(gpa) };
+            e.* = .{ .path = try gpa.dupe(u8, path), .stamp = @splat(-2), .arena = .init(gpa) };
             c.entries.append(gpa, e) catch |err| {
                 gpa.free(e.path);
                 return err;
             };
             break :blk e;
         };
-        if (entry.mtime == mtime and entry.size == size) return entry;
+        if (std.mem.eql(i64, &entry.stamp, &now)) return entry;
         _ = entry.arena.reset(.free_all);
-        entry.* = .{ .path = entry.path, .mtime = mtime, .size = size, .arena = entry.arena };
-        try load(ctx, entry);
+        entry.* = .{ .path = entry.path, .stamp = now, .arena = entry.arena };
+        try load(ctx, entry, json_path, now[1], now[3] >= 0);
         return entry;
     }
 };
 
-/// Runs `<tool> --schema` and fills in the entry.
-fn load(ctx: *const Context, e: *SchemaEntry) Allocator.Error!void {
+/// The NAME when the file at `path` only runs `exec "$ARX_BIN" tool NAME`
+/// (with an optional "$@", a #! line and comments), else null. arx then
+/// starts `arx tool NAME` itself: the result is the same, without a shell,
+/// which takes about 3 ms on macOS.
+fn coreTool(ctx: *const Context, a: Allocator, path: []const u8, size: i64) Allocator.Error!?[]const u8 {
+    const prefix = "exec \"$ARX_BIN\" tool ";
+    if (size <= 0 or size > 512) return null;
+    const text = (try util.readFile(ctx.io, a, path)) orelse return null;
+    var found: ?[]const u8 = null;
+    var lines = std.mem.tokenizeScalar(u8, text, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trimStart(u8, raw, " \t");
+        if (line.len == 0 or line[0] == '#') continue;
+        if (found != null or !std.mem.startsWith(u8, line, prefix)) return null; // anything else: run the file as it is
+        const name = line[prefix.len..];
+        const n = std.mem.findNone(u8, name, fields.name_chars) orelse name.len;
+        var rest = std.mem.trimStart(u8, name[n..], " \t");
+        if (std.mem.startsWith(u8, rest, "\"$@\"")) rest = std.mem.trimStart(u8, rest[4..], " \t");
+        if (n == 0 or rest.len > 0) return null;
+        found = name[0..n];
+    }
+    return found;
+}
+
+/// Fills in the entry from a parsed schema; `what` names its source in the
+/// error.
+fn readSchema(e: *SchemaEntry, schema: ?json.Value, what: []const u8) Allocator.Error!void {
     const a = e.arena.allocator();
+    const j = schema orelse {
+        e.problem = try a.print("{s} must be a JSON object {{\"description\": ..., \"parameters\": {{...}}}}", .{what});
+        return;
+    };
+    if (json.field(j, "keys")) |keys| {
+        if (!keys_mod.valid(keys)) {
+            e.problem = try a.print("{s}: \"keys\" must be a list of strings", .{what});
+            return;
+        }
+        e.keys = keys;
+    }
+    e.description = json.strOr(j, "description", "");
+    const params = json.field(j, "parameters");
+    e.params = if (params != null and params.? == .object) params.? else try json.parseTrusted(a, empty_params);
+}
+
+/// Reads <path>.json when there is one, else runs `--schema`, and fills in
+/// the entry.
+fn load(ctx: *const Context, e: *SchemaEntry, json_path: []const u8, size: i64, has_json: bool) Allocator.Error!void {
+    const a = e.arena.allocator();
+    e.core = try coreTool(ctx, a, e.path, size);
+    if (has_json) {
+        const text = (try util.readFile(ctx.io, a, json_path)) orelse "";
+        return readSchema(e, try json.parseObject(a, text), util.baseName(json_path));
+    }
     var out: proc.Collector = .init(a);
-    const r = try proc.run(ctx, .{ .argv = &.{ e.path, "--schema" }, .timeout = schema_timeout, .stdout = out.sink() });
+    const argv: []const []const u8 = if (e.core) |core| &.{ ctx.self_path, "tool", core, "--schema" } else &.{ e.path, "--schema" };
+    const r = try proc.run(ctx, .{ .argv = argv, .timeout = schema_timeout, .stdout = out.sink() });
     if (r.spawn_error) |err| {
         e.problem = try a.print("cannot run it ({s})", .{util.describeError(err)});
     } else if (r.timed_out) {
         e.problem = "--schema took longer than 2s";
     } else if (r.code != 0) {
         e.problem = try a.print("--schema exited with {d}", .{r.code});
-    } else if (try json.parseObject(a, out.output())) |schema| {
-        e.description = json.strOr(schema, "description", "");
-        const params = json.field(schema, "parameters");
-        e.params = if ((params != null and params.? == .object)) params.? else try json.parseTrusted(a, empty_params);
     } else {
-        e.problem = "--schema must print a JSON object {\"description\": ..., \"parameters\": {...}}";
+        try readSchema(e, try json.parseObject(a, out.output()), "--schema output");
     }
+}
+
+/// Fills in {{timeout}}, {{tool_output.head}} and {{tool_output.tail}}, so a
+/// description can give the limits that the spec sets for the tool.
+fn describe(a: Allocator, text: []const u8, timeout: f64, root: json.Value) Allocator.Error![]const u8 {
+    if (std.mem.find(u8, text, "{{") == null) return a.dupe(u8, text);
+    var out: std.ArrayList(u8) = .empty;
+    var rest = text;
+    while (std.mem.find(u8, rest, "{{")) |open| {
+        try out.appendSlice(a, rest[0..open]);
+        rest = rest[open..];
+        if (std.mem.startsWith(u8, rest, "{{timeout}}")) {
+            try out.print(a, "{d:.0}", .{timeout});
+            rest = rest["{{timeout}}".len..];
+        } else if (std.mem.startsWith(u8, rest, "{{tool_output.head}}")) {
+            try out.print(a, "{d}", .{json.size(root, "tool_output.head", 2048)});
+            rest = rest["{{tool_output.head}}".len..];
+        } else if (std.mem.startsWith(u8, rest, "{{tool_output.tail}}")) {
+            try out.print(a, "{d}", .{json.size(root, "tool_output.tail", 6144)});
+            rest = rest["{{tool_output.tail}}".len..];
+        } else {
+            try out.appendSlice(a, "{{");
+            rest = rest[2..];
+        }
+    }
+    try out.appendSlice(a, rest);
+    return out.items;
 }
 
 /// Builds a tool set for `a`, collecting problems in `notes`.
@@ -192,32 +271,6 @@ const Builder = struct {
         try b.tools.append(b.arena, tool);
     }
 
-    /// Adds the built-in tools unless the spec disables them.
-    fn builtins(b: *Builder) Allocator.Error!void {
-        const root = b.a.spec.root;
-        const head = json.size(root, "tool_output.head", 2048);
-        const tail = json.size(root, "tool_output.tail", 6144);
-        const timeout = json.duration(root, "tools.bash.timeout", 120);
-        if (json.boolean(root, "tools.bash.enabled", true)) {
-            try b.add(.{
-                .name = "bash",
-                .description = try b.arena.print("Run a shell command (sh -c) in the working directory. You see the first {d} and last {d} bytes of output; the full output is saved to a file whose path is shown. Timeout {d:.0}s.", .{ head, tail, timeout }),
-                .params = try json.parseTrusted(b.arena, bash_params),
-                .kind = .bash,
-                .timeout = timeout,
-            });
-        }
-        if (json.boolean(root, "tools.edit.enabled", true)) {
-            try b.add(.{
-                .name = "edit",
-                .description = "Replace an exact, unique string in a file, or create a new file when `old` is empty.",
-                .params = try json.parseTrusted(b.arena, edit_params),
-                .kind = .edit,
-                .timeout = 0,
-            });
-        }
-    }
-
     /// Adds one executable from a layer's tools/, or explains in the notes
     /// why it is skipped. `where` names the layer ("" for the spec folder).
     fn executable(b: *Builder, layer: Layer, where: []const u8, name: []const u8) Allocator.Error!void {
@@ -228,8 +281,8 @@ const Builder = struct {
         if (!util.isExecutable(ctx.io, path)) {
             return b.note("- {s}tools/{s} is not executable (chmod +x it)\n", .{ where, name });
         }
-        if (isBuiltin(name) or std.mem.findNone(u8, name, validate.name_chars) != null) {
-            return b.note("- {s}tools/{s} skipped: use letters, digits, _ and -, and not bash or edit\n", .{ where, name });
+        if (std.mem.findNone(u8, name, fields.name_chars) != null) {
+            return b.note("- {s}tools/{s} skipped: use letters, digits, _ and -\n", .{ where, name });
         }
         const options = json.field(json.field(b.a.spec.root, "tools"), name);
         if (!json.boolean(options, "enabled", true)) return;
@@ -237,14 +290,17 @@ const Builder = struct {
             return b.note("- {s}tools/{s} skipped: too many tools\n", .{ where, name });
         };
         if (entry.problem) |problem| return b.note("- {s}tools/{s} skipped: {s}\n", .{ where, name, problem });
+        const timeout = json.duration(options, "timeout", 120);
         try b.add(.{
             .name = try b.arena.dupe(u8, name),
-            .description = try b.arena.dupe(u8, entry.description),
+            .description = try describe(b.arena, entry.description, timeout, b.a.spec.root),
             .path = path,
             .params = try json.copy(b.arena, entry.params),
             .kind = .exec,
-            .timeout = json.duration(options, "timeout", 120),
+            .timeout = timeout,
             .plugin_dir = if (layer.plugin != null) layer.dir else null,
+            .core = if (entry.core) |core| try b.arena.dupe(u8, core) else null,
+            .keys = if (entry.keys) |keys| try json.copy(b.arena, keys) else null,
         });
     }
 
@@ -263,9 +319,10 @@ const Builder = struct {
             const dir = try util.pathJoin(b.arena, layer.dir, "tools");
             const names = try util.listNames(ctx.io, b.arena, dir);
             for (names) |name| {
+                if (name.len > 5 and std.mem.endsWith(u8, name, ".json")) continue; // a schema, which sits next to its tool
                 if (!b.has(name)) {
                     try b.executable(layer, where, name);
-                } else if (!isBuiltin(name)) {
+                } else {
                     try b.note("- {s}tools/{s} is hidden by a tool above it\n", .{ where, name });
                 }
                 try found.append(b.arena, name);
@@ -279,7 +336,7 @@ const Builder = struct {
         const ctx = b.a.ctx;
         const entries = json.field(b.a.spec.root, "tools");
         for (json.keys(entries), json.values(entries)) |name, entry| {
-            const found = isBuiltin(name) or for (names) |n| {
+            const found = for (names) |n| {
                 if (std.mem.eql(u8, n, name)) break true;
             } else false;
             if (json.str(entry, "agent")) |spec_file| {
@@ -296,6 +353,7 @@ const Builder = struct {
                     .params = try json.parseTrusted(b.arena, agent_params),
                     .kind = .agent,
                     .timeout = json.duration(entry, "timeout", 1800),
+                    .keys = json.array(b.arena),
                 });
             } else if (!found and json.boolean(entry, "enabled", true)) {
                 try b.note("- tools.{s} is configured but tools/{s} is missing\n", .{ name, name });
@@ -304,13 +362,13 @@ const Builder = struct {
     }
 };
 
-/// True for the names of built-in tools.
-fn isBuiltin(name: []const u8) bool {
-    return std.mem.eql(u8, name, "bash") or std.mem.eql(u8, name, "edit");
-}
-
-/// Rebuilds a.tools from the spec and the tools/ folder of every layer.
-/// Problems, and skipped plugins, become harness notes, once per change.
+/// Rebuilds a.tools from the spec and the tools/ folder of every layer. An
+/// executable in tools/ is a tool named after its file; {{timeout}} and
+/// {{tool_output.*}} in its description become the spec's values. The first
+/// layer with a working tool of a name wins. A file that only runs `exec
+/// "$ARX_BIN" tool NAME "$@"` starts as `arx tool NAME` with no shell. A
+/// spec entry with `agent: path` is a subagent. Problems, and skipped
+/// plugins, become harness notes, once per change.
 pub fn build(a: *Agent) Allocator.Error!void {
     const gpa = a.ctx.gpa;
     const arena = try gpa.create(std.heap.ArenaAllocator);
@@ -319,7 +377,6 @@ pub fn build(a: *Agent) Allocator.Error!void {
     errdefer set.deinit(gpa);
     var b: Builder = .{ .a = a, .arena = arena.allocator() };
     try b.notes.appendSlice(b.arena, a.spec.problems);
-    try b.builtins();
     const names = try b.layers();
     try b.configured(names);
     set.items = b.tools.items;

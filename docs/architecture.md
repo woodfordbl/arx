@@ -26,14 +26,16 @@ decisions, the layout of the sources, and how to build, test and benchmark.
 
 | Budget | Limit | macOS (arm64) | Linux (static, musl) |
 |---|---|---|---|
-| Binary size | 400 KB (macOS), 1 MB (Linux) | 377 KB | 416 KB, libc included |
+| Binary size | 400 KB (macOS), 1 MB (Linux) | 393 KB | 449 KB, libc included |
 | Startup, above `true` | 1 ms | 0.8 ms | within noise |
 | Peak memory over 500 turns | 16 MB | 5 MB | 7 MB |
-| Harness edit to live | 10 ms | 0.11 ms | 0.06 ms |
+| Harness edit to live | 10 ms | 0.28 ms | 0.09 ms |
 
 The release build is optimized for size, single-threaded (children are
 processes, not threads), and prints a panic's message without a stack trace,
-which keeps the stack-trace machinery out of the binary.
+which keeps the stack-trace machinery out of the binary. JSON numbers stay as
+text until arx reads them, with the C library's `strtod`, so the binary
+carries no float parser and its tables.
 
 On macOS, a tool the agent has just created takes about 40 ms to go live,
 because the OS checks every new executable the first time it runs. On Linux it
@@ -63,20 +65,30 @@ flowchart TD
 |---|---|---|
 | | `main.zig` | the entry point: signals, then the command line |
 | `cli/` | `options.zig` | option parsing, spec lookup and usage errors |
-| | `commands.zig` | built-in commands: `check`, `tools`, `schema`, `watch`, `ctl`, `request`, `version`, `help` |
+| | `commands.zig` | built-in commands: `schema`, `tool`, `watch`, `ctl`, `request`, `version`, `help` |
+| | `check.zig` | `arx check` and `arx tools`: load the harness and report it, with warnings |
+| | `shell_tools.zig` | `bash` and `edit`, which the shell plugin runs as `arx tool NAME` |
 | | `external.zig` | `arx foo` runs `arx-foo`; `arx help` lists every command |
-| `agent/` | `loop.zig` | the turn loop: caps, reload, inbox, notes, compaction, tool calls, stop hook |
+| `agent/` | `loop.zig` | the turn loop: caps, reload, inbox, notes, compaction, stop hook |
+| | `model_call.zig` | one model call through the `before_model` and `after_model` hooks |
+| | `tool_calls.zig` | the tool runtime: `before_tool`, the queue by keys, `after_tool`, results in call order |
+| | `scheduler.zig` | a scheduler plugin: one process that decides when queued calls start |
 | | `run.zig` | session lifecycle: load, open or resume, observers, headless or interactive, result |
 | | `agent.zig` | the `Agent`, caps parsing, notes, the system prompt and `{{templates}}` |
 | `harness/` | `yaml.zig` | libyaml to JSON, with the line of every key |
-| | `spec.zig` | loading the spec, `--set`, merging over `config.yaml`, text files |
-| | `plugins.zig` | the layers: spec folder, project plugins, config folder, user plugins |
+| | `spec.zig` | loading the spec, `--set`, merging over the kit and `config.yaml`, text files |
+| | `active.zig` | the active list: which plugins a run uses, in which order |
+| | `kits.zig` | kits: `kit.yaml`, `extends`, `kit.lock` |
+| | `plugins.zig` | the layers: spec folder, then the active list, or every installed plugin |
+| | `describe.zig` | `arx check --plugin`: one plugin, without loading it |
 | | `signature.zig` | the hot-reload fingerprint, over every layer, by `stat()` |
-| | `validate.zig` | the field tables (spec and `plugin.yaml`) and validation |
+| | `fields.zig` | the field tables of `agent.yaml`, `plugin.yaml` and `kit.yaml` |
+| | `validate.zig` | validation against them, with "did you mean" hints |
 | | `schema.zig` | the JSON Schema, from the same table |
-| | `tools.zig` | finds tools and caches their `--schema` |
-| | `tool_exec.zig` | runs one tool call; subagents run arx again |
-| | `hooks.zig` | runs `hooks/<point>` |
+| | `tools.zig` | finds tools and caches their schemas (`<name>.json` or `--schema`) |
+| | `keys.zig` | the keys of a tool call, which say what may run together |
+| | `tool_exec.zig` | starts and ends one tool call; subagents run arx again |
+| | `hooks.zig` | runs `hooks/<point>` by band, as a chain over raw objects |
 | | `compact.zig` | the compaction strategies |
 | `model/` | `llm.zig` | builds the request, runs curl, classifies errors, retries |
 | | `auth.zig` | finds the API key (environment, Keychain or credentials file) and writes the 0600 header file |
@@ -88,7 +100,7 @@ flowchart TD
 | `base/` | `context.zig` | the allocator, `std.Io`, environment and binary path every layer gets |
 | | `util.zig` | files, paths, durations, sizes, UTF-8 and time |
 | | `json.zig`, `json_write.zig` | dotted-path lookups on `std.json` values, and writing them |
-| | `proc.zig` | the process runner: pipes, timeouts, process groups |
+| | `proc.zig` | the process runner: one `poll()` loop for many children, timeouts, process groups |
 | | `sys.zig` | the few POSIX calls `std.Io` does not cover, and the interrupt flag |
 
 ## Building and testing

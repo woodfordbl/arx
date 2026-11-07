@@ -1,12 +1,12 @@
 //! schema.zig: generates the JSON Schema for agent.yaml (`arx schema`) from
-//! the field table in validate.zig, for editor completion and validation.
+//! the field table in fields.zig, for editor completion and validation.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const json = @import("../base/json.zig");
-const validate = @import("validate.zig");
-const Field = validate.Field;
+const fields_mod = @import("fields.zig");
+const Field = fields_mod.Field;
 
 /// The schema of a text node: a string or {file: path}.
 const text_schema =
@@ -31,6 +31,7 @@ fn fieldSchema(a: Allocator, f: Field) Allocator.Error!json.Value {
         .text_list => "{\"anyOf\":[" ++ text_schema ++ ",{\"type\":\"array\",\"items\":" ++ text_schema ++ "}]}",
         .string_list => "{\"type\":\"array\",\"items\":{\"type\":\"string\"}}",
         .any_map => "{\"type\":\"object\"}",
+        .plugin_list => "{\"type\":\"array\",\"items\":{\"anyOf\":[{\"type\":\"string\"},{\"type\":\"object\",\"minProperties\":1,\"maxProperties\":1}]}}",
     };
     return json.parseTrusted(a, fixed);
 }
@@ -55,7 +56,7 @@ pub fn text(gpa: Allocator) Allocator.Error![]u8 {
     var arena: std.heap.ArenaAllocator = .init(gpa);
     defer arena.deinit();
     const a = arena.allocator();
-    var s = try fieldsSchema(a, &validate.top_fields);
+    var s = try fieldsSchema(a, &fields_mod.top_fields);
     try json.putString(a, &s, "$schema", "https://json-schema.org/draft/2020-12/schema");
     try json.putString(a, &s, "title", "arx agent spec");
     try json.put(a, &s, "required", try json.parseTrusted(a, "[\"model\",\"endpoint\"]"));

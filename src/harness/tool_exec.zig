@@ -1,6 +1,7 @@
-//! tool_exec.zig: runs one tool call. Output goes to a file in the session,
-//! and the model sees only its head and tail. Subagents are this same
-//! binary run one level deeper, with their events forwarded into ours.
+//! tool_exec.zig: starts and ends one tool call; the runtime runs many at
+//! once. Output goes to a file in the session, and the model sees only its
+//! head and tail. Subagents are this same binary run one level deeper, with
+//! their events forwarded into ours.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -97,39 +98,6 @@ const Capture = struct {
     }
 };
 
-/// The edit tool: replace one exact, unique occurrence, or create a file
-/// when `old` is empty.
-fn edit(a: *Agent, t: Allocator, args: json.Value) Allocator.Error!Outcome {
-    const io = a.ctx.io;
-    const path = json.str(args, "path");
-    const old = json.str(args, "old");
-    const new = json.str(args, "new");
-    if (path == null or old == null or new == null) return .{ .text = "edit needs string arguments path, old and new" };
-    const p = path.?;
-    const updated = if (std.Io.Dir.cwd().readFileAlloc(io, p, t, .unlimited)) |text| blk: {
-        if (old.?.len == 0) return .{ .text = try t.print("{s} exists; pass the exact text to replace in `old`", .{p}) };
-        const count = std.mem.count(u8, text, old.?);
-        if (count == 0) return .{ .text = try t.print("`old` was not found in {s} (it must match exactly, including whitespace)", .{p}) };
-        if (count > 1) return .{ .text = try t.print("`old` occurs {d} times in {s}; include more context so it is unique", .{ count, p }) };
-        const hit = std.mem.find(u8, text, old.?).?;
-        break :blk try std.mem.concat(t, u8, &.{ text[0..hit], new.?, text[hit + old.?.len ..] });
-    } else |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => blk: {
-            if (old.?.len > 0) return .{ .text = try t.print("cannot read {s}: {s}", .{ p, util.describeError(err) }) };
-            std.Io.Dir.cwd().createDirPath(io, util.dirName(p)) catch {};
-            break :blk new.?;
-        },
-    };
-    const created = old.?.len == 0;
-    util.writeFileAtomic(io, t, p, updated) catch |err| {
-        if (err == error.OutOfMemory) return error.OutOfMemory;
-        return .{ .text = try t.print("cannot {s} {s}: {s}", .{ if (created) "create" else "write", p, util.describeError(err) }) };
-    };
-    const text = if (created) try t.print("created {s} ({d} bytes)", .{ p, updated.len }) else try t.print("edited {s}", .{p});
-    return .{ .text = text, .is_error = false };
-}
-
 /// Forwards each complete event line from a subagent's event pipe.
 const Forwarder = struct {
     gpa: Allocator,
@@ -139,94 +107,141 @@ const Forwarder = struct {
     /// Splits the pipe's bytes into event lines and forwards them.
     fn forward(f: *Forwarder, bytes: []const u8) Allocator.Error!void {
         try f.pending.appendSlice(f.gpa, bytes);
-        var start: usize = 0;
-        while (std.mem.findScalarPos(u8, f.pending.items, start, '\n')) |nl| {
-            try f.events.forward(f.pending.items[start .. nl + 1]);
-            start = nl + 1;
+        var at: usize = 0;
+        while (std.mem.findScalarPos(u8, f.pending.items, at, '\n')) |nl| {
+            try f.events.forward(f.pending.items[at .. nl + 1]);
+            at = nl + 1;
         }
-        f.pending.replaceRangeAssumeCapacity(0, start, &.{});
+        f.pending.replaceRangeAssumeCapacity(0, at, &.{});
     }
 };
 
-/// Runs a subagent: `arx -p - --spec <path> --json --quiet --events fd:N`,
-/// with our caps and one more level of depth, and turns its --json output
-/// into the tool result.
-fn runSubagent(a: *Agent, t: Allocator, tool: *const tools.Tool, task: []const u8, cap: *Capture, path: []const u8) Allocator.Error!struct { proc.Result, []const u8 } {
-    var forwarder: Forwarder = .{ .gpa = a.ctx.gpa, .events = &a.events };
-    defer forwarder.pending.deinit(a.ctx.gpa);
-    const side = proc.SidePipe.open(.init(&forwarder, Forwarder.forward)) catch |err| return .{ .{ .spawn_error = err, .code = 127 }, "" };
-    errdefer for (side.fds) |fd| sys.close(fd); // proc.run closes them once it starts
-    var argv: std.ArrayList([]const u8) = .empty;
-    try argv.appendSlice(t, &.{ a.ctx.self_path, "-p", "-", "--spec", tool.path.?, "--json", "--quiet", "--events", try t.print("fd:{d}", .{side.fds[1]}) });
-    for (a.cap_args.items) |cap_arg| try argv.appendSlice(t, &.{ "--cap", cap_arg });
-    var env = try environ(a, tool.plugin_dir, a.depth + 1);
-    defer env.deinit();
-    var out: proc.Collector = .init(t);
-    const r = try proc.run(a.ctx, .{ .argv = argv.items, .stdin = task, .timeout = tool.timeout, .environ = &env, .stdout = out.sink(), .stderr = cap.sink(), .side = side });
-    const answer = json.strOr(try json.parseObject(t, out.output()), "final_output", "");
-    const text = switch (r.code) {
-        @backingInt(util.Exit.done) => answer,
-        @backingInt(util.Exit.cap) => try t.print("[the subagent stopped at a cap]\n{s}", .{answer}),
-        else => try t.print("[the subagent failed with exit {d}]\n{s}{s}", .{ r.code, answer, try cap.text(t, path) }),
-    };
-    return .{ r, text };
-}
+/// A tool call that runs: its process and what it collects. Heap-allocated,
+/// so the sinks stay put while the process runs.
+pub const Run = struct {
+    a: *Agent,
+    arena: std.heap.ArenaAllocator,
+    kind: tools.Kind,
+    timeout: f64,
+    cap: Capture,
+    /// A subagent's --json answer.
+    out: proc.Collector,
+    forwarder: Forwarder,
+    env: Environ.Map,
+    path: []const u8,
+    file: ?std.Io.File = null,
+    child: *proc.Child,
 
-/// Runs a process-backed tool (bash, executable or subagent).
-fn runProcess(a: *Agent, t: Allocator, tool: *const tools.Tool, args: json.Value, raw: []const u8, path: []const u8, end: *Event) Allocator.Error!Outcome {
-    const io = a.ctx.io;
-    var cap: Capture = .{
-        .gpa = a.ctx.gpa,
-        .head_max = json.size(a.spec.root, "tool_output.head", 2048),
-        .tail_max = json.size(a.spec.root, "tool_output.tail", 6144),
-    };
-    defer cap.deinit();
-    const file = std.Io.Dir.cwd().createFile(io, path, .{}) catch null;
-    defer if (file) |f| f.close(io);
-    if (file) |f| cap.fd = f.handle;
-    var r: proc.Result = undefined;
-    var text: []const u8 = undefined;
-    if (tool.kind == .agent) {
-        r, text = try runSubagent(a, t, tool, json.strOr(args, "task", ""), &cap, path);
-    } else {
-        var env = try environ(a, tool.plugin_dir, a.depth);
-        defer env.deinit();
-        const argv: []const []const u8 = if (tool.kind == .bash) &.{ "sh", "-c", json.strOr(args, "command", "") } else &.{tool.path.?};
-        r = try proc.run(a.ctx, .{ .argv = argv, .stdin = if (tool.kind == .exec) raw else null, .timeout = tool.timeout, .environ = &env, .stdout = cap.sink() });
-        const body = try cap.text(t, path);
-        text = try t.print("{s}{s}", .{ if (body.len > 0 or r.code != 0) body else "(no output)", if (r.timed_out)
-            try t.print("\n[timed out after {d:.0}s; the process group was killed]", .{tool.timeout})
-        else if (r.interrupted)
-            "\n[interrupted]"
-        else if (r.code != 0)
-            try t.print("\n[exit code {d}]", .{r.code})
-        else
-            "" });
+    /// Ends the call (stopping its process if it still runs) and frees the
+    /// run. Adds exit, secs, bytes and path to `end`. The outcome lives in
+    /// `t`.
+    pub fn finish(run: *Run, t: Allocator, end: *Event) Allocator.Error!Outcome {
+        const a = run.a;
+        const gpa = a.ctx.gpa;
+        defer {
+            run.cap.deinit();
+            run.forwarder.pending.deinit(gpa);
+            run.env.deinit();
+            if (run.file) |f| f.close(a.ctx.io);
+            run.arena.deinit();
+            gpa.destroy(run);
+        }
+        const r = try proc.finish(run.child);
+        const path = try t.dupe(u8, run.path);
+        var text: []const u8 = undefined;
+        if (r.spawn_error) |err| {
+            text = try t.print("could not start the tool: {s}", .{util.describeError(err)});
+        } else if (run.kind == .agent) {
+            const answer = json.strOr(try json.parseObject(t, run.out.output()), "final_output", "");
+            text = switch (r.code) {
+                @backingInt(util.Exit.done) => answer,
+                @backingInt(util.Exit.cap) => try t.print("[the subagent stopped at a cap]\n{s}", .{answer}),
+                else => try t.print("[the subagent failed with exit {d}]\n{s}{s}", .{ r.code, answer, try run.cap.text(t, path) }),
+            };
+        } else {
+            const body = try run.cap.text(t, path);
+            text = try t.print("{s}{s}", .{ if (body.len > 0 or r.code != 0) body else "(no output)", if (r.timed_out)
+                try t.print("\n[timed out after {d:.0}s; the process group was killed]", .{run.timeout})
+            else if (r.interrupted)
+                "\n[interrupted]"
+            else if (r.code != 0)
+                try t.print("\n[exit code {d}]", .{r.code})
+            else
+                "" });
+        }
+        try end.int("exit", r.code);
+        try end.num("secs", r.secs);
+        try end.int("bytes", @intCast(run.cap.total));
+        try end.str("path", path);
+        return .{ .text = text, .is_error = r.spawn_error != null or r.code != 0 or r.timed_out, .output_path = path };
     }
-    if (r.spawn_error) |err| text = try t.print("could not start the tool: {s}", .{util.describeError(err)});
-    try end.int("exit", r.code);
-    try end.num("secs", r.secs);
-    try end.int("bytes", @intCast(cap.total));
-    try end.str("path", path);
-    return .{ .text = text, .is_error = r.spawn_error != null or r.code != 0 or r.timed_out, .output_path = path };
+};
+
+/// A call either ends at once or runs.
+pub const Started = union(enum) {
+    /// An unknown tool or bad arguments: the result, in the caller's arena.
+    done: Outcome,
+    /// Poll `run.child`, then call `run.finish`.
+    running: *Run,
+};
+
+/// Starts the process of a call: the tool's file (or `arx tool NAME` for a
+/// file that only hands over to it), or a subagent: `arx -p - --spec
+/// <path> --json --quiet --events fd:N`, with our caps and one more level
+/// of depth.
+fn startProcess(a: *Agent, tool: *const tools.Tool, args: json.Value, input: []const u8) Allocator.Error!*Run {
+    const gpa = a.ctx.gpa;
+    const run = try gpa.create(Run);
+    run.* = .{
+        .a = a,
+        .arena = .init(gpa),
+        .kind = tool.kind,
+        .timeout = tool.timeout,
+        .cap = .{ .gpa = gpa, .head_max = json.size(a.spec.root, "tool_output.head", 2048), .tail_max = json.size(a.spec.root, "tool_output.tail", 6144) },
+        .out = undefined,
+        .forwarder = .{ .gpa = gpa, .events = &a.events },
+        .env = undefined,
+        .path = "",
+        .child = undefined,
+    };
+    const t = run.arena.allocator();
+    run.out = .init(t);
+    run.path = try a.session.?.nextOutputPath(t);
+    run.file = std.Io.Dir.cwd().createFile(a.ctx.io, run.path, .{}) catch null;
+    if (run.file) |f| run.cap.fd = f.handle;
+    const agent = tool.kind == .agent;
+    run.env = try environ(a, tool.plugin_dir, a.depth + @intFromBool(agent));
+    var opts: proc.Options = .{ .argv = &.{}, .timeout = tool.timeout, .environ = &run.env, .stdout = run.cap.sink() };
+    if (agent) {
+        var argv: std.ArrayList([]const u8) = .empty;
+        opts.side = proc.SidePipe.open(.init(&run.forwarder, Forwarder.forward)) catch null;
+        const fd: i64 = if (opts.side) |side| side.fds[1] else -1;
+        try argv.appendSlice(t, &.{ a.ctx.self_path, "-p", "-", "--spec", tool.path.?, "--json", "--quiet", "--events", try t.print("fd:{d}", .{fd}) });
+        for (a.cap_args.items) |cap_arg| try argv.appendSlice(t, &.{ "--cap", cap_arg });
+        opts.argv = argv.items;
+        opts.stdin = try t.dupe(u8, json.strOr(args, "task", ""));
+        opts.stdout = run.out.sink();
+        opts.stderr = run.cap.sink();
+    } else {
+        opts.argv = if (tool.core) |core| try t.dupe([]const u8, &.{ a.ctx.self_path, "tool", core }) else try t.dupe([]const u8, &.{tool.path.?});
+        opts.stdin = try t.dupe(u8, input);
+    }
+    run.child = try proc.start(a.ctx, opts);
+    return run;
 }
 
-/// Runs tool `name` with JSON `args` and adds exit, secs, bytes and path to
-/// `end` (the tool.end event). The outcome lives in `t`.
-pub fn call(a: *Agent, t: Allocator, name: []const u8, args: []const u8, end: *Event) Allocator.Error!Outcome {
+/// Starts tool `name` with JSON `args` and returns at once, or ends the
+/// call at once for an unknown tool or bad arguments (the outcome then
+/// lives in `t`).
+pub fn start(a: *Agent, t: Allocator, name: []const u8, args: []const u8) Allocator.Error!Started {
     const tool = a.tools.find(name) orelse {
         var names: std.ArrayList(u8) = .empty;
         for (a.tools.items, 0..) |tool, i| try names.print(t, "{s}{s}", .{ if (i > 0) ", " else "", tool.name });
-        return .{ .text = try t.print("unknown tool \"{s}\" (available: {s})", .{ name, if (names.items.len > 0) names.items else "none" }) };
+        return .{ .done = .{ .text = try t.print("unknown tool \"{s}\" (available: {s})", .{ name, if (names.items.len > 0) names.items else "none" }) } };
     };
     const raw = if (args.len > 0) args else "{}";
     const parsed = try json.parseObject(t, raw) orelse
-        return .{ .text = try t.print("the arguments are not a valid JSON object: {s}", .{util.cutPrefix(raw, 200)}) };
-    switch (tool.kind) {
-        .edit => return edit(a, t, parsed),
-        .bash => if (json.str(parsed, "command") == null) return .{ .text = "bash needs a string argument `command`" },
-        .agent => if (json.str(parsed, "task") == null) return .{ .text = "this subagent needs a string argument `task`" },
-        .exec => {},
-    }
-    return runProcess(a, t, tool, parsed, raw, try a.session.?.nextOutputPath(t), end);
+        return .{ .done = .{ .text = try t.print("the arguments are not a valid JSON object: {s}", .{util.cutPrefix(raw, 200)}) } };
+    if (tool.kind == .agent and json.str(parsed, "task") == null) return .{ .done = .{ .text = "this subagent needs a string argument `task`" } };
+    return .{ .running = try startProcess(a, tool, parsed, raw) };
 }

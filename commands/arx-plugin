@@ -1,20 +1,24 @@
 #!/usr/bin/env bash
-# arx-plugin: add, remove, list and start plugins
+# arx-plugin: add, remove, list, turn on and off, and start plugins
 #
 # A plugin is a folder with a plugin.yaml, plus any of tools/, hooks/,
 # skills/ and commands/ (docs/plugins.md). A marketplace is any repo with
-# plugins/<name>/, and the arx repo is the default one. A user plugin goes
-# in ~/.config/arx/plugins/<name>/ and is on in every harness; --project
-# puts it in ./plugins/<name>/, next to ./agent.yaml. arx loads plugins from
+# plugins/<name>/ (and kits/<name>/), and the arx repo is the default one.
+# A user plugin goes in ~/.config/arx/plugins/<name>/; --project puts it in
+# ./plugins/<name>/, next to ./agent.yaml. Installed plugins are a library:
+# a run uses the active list, which a kit, `plugins:`, `enable:` and
+# `disable:` build (`arx plugin list` shows it). arx loads plugins from
 # where they are, so `remove` deletes one folder and nothing else.
 set -u
 
 usage() {
   cat <<'EOF'
-usage: arx plugin add REF [--project] [--link] [--force] [--yes]
+usage: arx plugin add REF [--project] [--link] [--force] [--yes] [--no-enable]
        arx plugin remove NAME [--project] [--yes]
+       arx plugin enable|disable NAME [--global]
        arx plugin list
        arx plugin new NAME [DIR]
+       arx plugin fetch [--kits] REF DIR
 REF is one of:
   NAME[@REF]             plugins/NAME in the arx repo, at the tag of this
                          arx (or at REF: a tag, branch or commit)
@@ -25,6 +29,10 @@ REF is one of:
   --link      use a local folder where it is, for development
   --force     replace a plugin that is already installed
   --yes       do not ask before a change
+  --no-enable do not add it to `enable:` when a kit or list would leave it off
+enable and disable write ./agent.yaml, or config.yaml with --global. list
+shows each plugin in the order a run here uses it, and why it is on or off.
+fetch puts the folder for REF (kits/NAME with --kits) in DIR, for arx kit.
 EOF
 }
 
@@ -112,11 +120,13 @@ fetch() {
   mkdir "$3/repo" && tar -xzf "$tarball" -C "$3/repo" || die "cannot unpack $1 at $2"
 }
 
-# Finds the folder for REF $1 and sets src, source and commit. Remote
-# sources are unpacked into $tmp.
+# Finds the folder for REF $1 and sets src, source, commit, repo and at.
+# Remote sources are unpacked into $tmp. A bare name is $kind/NAME (plugins
+# or kits) in the arx repo.
 resolve() {
-  local ref=$1 name path repo at top
-  commit=""
+  local ref=$1 name path top yaml=plugin.yaml
+  [ "$kind" = kits ] && yaml=kit.yaml
+  commit="" repo="" at=""
   # A folder needs a path (./demo, plugins/demo); a bare name is a plugin
   # in the arx repo, even when a folder here has the same name.
   case "$ref" in
@@ -127,19 +137,19 @@ resolve() {
       [ -f "$ref" ] || die "no such file: $ref"
       [ "$link" -eq 0 ] || die "--link needs a folder on this machine"
       mkdir "$tmp/repo" && tar -xzf "$ref" -C "$tmp/repo" || die "cannot unpack $ref"
-      path=$(find "$tmp/repo" -maxdepth 3 -name plugin.yaml | head -1)
-      [ -n "$path" ] || die "$ref has no plugin.yaml"
+      path=$(find "$tmp/repo" -maxdepth 3 -name "$yaml" | head -1)
+      [ -n "$path" ] || die "$ref has no $yaml"
       src=$(dirname "$path") source=$(cd "$(dirname "$ref")" && pwd -P)/$(basename "$ref")
       return ;;
     ./* | ../* | /*) die "no such folder: $ref" ;;
   esac
   [ "$link" -eq 0 ] || die "--link needs a folder on this machine"
-  name=${ref#github:} at=""
+  name=${ref#github:}
   case "$name" in *@*) at=${name##*@} name=${name%@*} ;; esac
   case "$name" in
     */*/*) repo=${name%%/*}/$(echo "$name" | cut -d/ -f2) path=$(echo "$name" | cut -d/ -f3-) ;;
-    */*) die "use OWNER/REPO/PATH for a plugin in another repo" ;;
-    *) repo=$repo_default path=plugins/$name ;;
+    */*) die "use OWNER/REPO/PATH for a folder in another repo" ;;
+    *) repo=$repo_default path=$kind/$name ;;
   esac
   [ -n "$at" ] || if [ "$repo" = "$repo_default" ]; then at=$(core_ref); else at=HEAD; fi
   fetch "$repo" "$at" "$tmp"
@@ -154,6 +164,7 @@ cmd_add() {
   while [ $# -gt 0 ]; do
     case "$1" in
       --project) project=1 ;; --link) link=1 ;; --force) force=1 ;; --yes) yes=1 ;;
+      --no-enable) auto_enable=0 ;;
       -h | --help) usage; exit 0 ;;
       -*) echo "arx plugin: unknown option $1" >&2; usage >&2; exit 2 ;;
       *) [ -z "$ref" ] || { usage >&2; exit 2; }; ref=$1 ;;
@@ -189,8 +200,55 @@ cmd_add() {
       "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$parent/.$p_name.new/.arx-source"
     rm -rf "$dest" && mv "$parent/.$p_name.new" "$dest" || die "cannot install $dest"
   fi
+  [ "$auto_enable" -eq 1 ] && turn_on "$p_name"
   echo "Installed $p_name. It is on in $where from the next turn."
   [ -z "$p_missing" ] || echo "Install these first, or its parts that need them will fail: $p_missing"
+}
+
+# The file that enable and disable change for the chosen scope.
+scope_file() {
+  if [ "$project" -eq 1 ]; then
+    [ -f agent.yaml ] || die "no agent.yaml here; use --global for your defaults"
+    echo "$PWD/agent.yaml"
+  else
+    echo "$config_dir/config.yaml"
+  fi
+}
+
+# Keeps a new plugin on, as before kits: when a kit or a `plugins:` list
+# leaves it out of the active list here, adds it to `enable:` in the
+# scope's file. A plugin that `disable:` turns off stays off.
+turn_on() {
+  local file why
+  why=$("$arx" check --list 2>/dev/null | awk -F'\t' -v n="$1" '$2 == n && $3 == "off" {print $4}')
+  case "$why" in "not in"*) ;; *) return 0 ;; esac
+  file=$(scope_file) || return 0
+  "$arx" config add enable "$1" --file "$file"
+  echo "It was $why, so it is now in enable: in $(pretty "$file")."
+}
+
+# `enable` ($1 = enable) or `disable` NAME: writes agent.yaml, or
+# config.yaml with --global.
+cmd_toggle() {
+  local verb=$1 name="" file other
+  shift
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --global) project=0 ;;
+      -*) echo "arx plugin: unknown option $1" >&2; usage >&2; exit 2 ;;
+      *) name=$1 ;;
+    esac
+    shift
+  done
+  case "$name" in "" | */* | .*) usage >&2; exit 2 ;; esac
+  file=$(scope_file) || exit 1
+  [ "$verb" = enable ] && other=disable || other=enable
+  "$arx" config remove "$other" "$name" --file "$file" &&
+    "$arx" config add "$verb" "$name" --file "$file" || exit 1
+  echo "$([ "$verb" = enable ] && echo Enabled || echo Disabled) $name in $(pretty "$file")."
+  if [ "$verb" = enable ] && [ ! -d "$PWD/plugins/$name" ] && [ ! -d "$config_dir/plugins/$name" ]; then
+    echo "It is not installed yet: run \`arx plugin add $name\`."
+  fi
 }
 
 cmd_remove() {
@@ -214,32 +272,64 @@ cmd_remove() {
     confirm "Delete $(pretty "$dest") and everything in it?"
     rm -rf "$dest" || die "cannot remove $dest"
   fi
+  file=$(scope_file 2>/dev/null) && "$arx" config remove enable "$name" --file "$file"
   echo "Removed $name."
-}
-
-# Prints one row of `list` for each plugin folder in $1.
-list_dir() {
-  local scope=$1 dir=$2 d name version from
-  for d in "$dir"/*/; do
-    [ -f "$d/plugin.yaml" ] || continue
-    d=${d%/} name=$(basename "$d")
-    if describe_quiet "$d"; then version=${p_version:--}; else version="(broken)"; fi
-    if [ -L "$d" ]; then
-      from="link to $(pretty "$(cd "$d" && pwd -P)")"
-    else
-      from=$(sed -n 's/^source=//p' "$d/.arx-source" 2>/dev/null)
-    fi
-    printf '%-20s %-10s %-8s %s\n' "$name" "$version" "$scope" "${from:-(copied by hand)}"
-  done
 }
 
 # describe, without stopping when the plugin is broken.
 describe_quiet() { (describe "$1" >/dev/null 2>&1) && describe "$1" 2>/dev/null; }
 
+# Prints one row of `list`: name, version, scope, position, state, why,
+# source.
+list_row() {
+  local at=$1 name=$2 state=$3 why=$4 dir=$5 version="-" scope="-" from="-"
+  if [ -n "$dir" ]; then
+    if describe_quiet "$dir"; then version=${p_version:--}; else version="(broken)"; fi
+    case "$dir" in "$PWD"/plugins/* | "$(pwd -P)"/plugins/*) scope=project ;; *) scope=user ;; esac
+    local link=$(dirname "$dir")/$name
+    if [ -L "$link" ]; then
+      from="link to $(pretty "$(cd "$link" && pwd -P)")"
+    else
+      from=$(sed -n 's/^source=//p' "$dir/.arx-source" 2>/dev/null)
+      from=${from:-(copied by hand)}
+    fi
+  fi
+  printf '%-18s %-9s %-8s %-3s %-8s %-28s %s\n' "$name" "$version" "$scope" "$at" "$state" "$why" "$from"
+}
+
 cmd_list() {
-  printf '%-20s %-10s %-8s %s\n' NAME VERSION SCOPE SOURCE
-  [ -f agent.yaml ] && list_dir project "$PWD/plugins"
-  list_dir user "$config_dir/plugins"
+  local rows at name state why dir
+  if ! rows=$("$arx" check --list 2>&1); then
+    echo "arx plugin: the harness here does not load, so this lists what is installed:" >&2
+    echo "$rows" | sed 's/^/  /' >&2
+    rows=$(for d in "$PWD"/plugins/*/ "$config_dir"/plugins/*/; do
+      [ -f "$d/plugin.yaml" ] && printf -- '-\t%s\t?\tunknown\t%s\n' "$(basename "$d")" "${d%/}"
+    done)
+  fi
+  printf '%-18s %-9s %-8s %-3s %-8s %-28s %s\n' PLUGIN VERSION SCOPE '#' STATE WHY SOURCE
+  while IFS=$'\t' read -r at name state why dir; do
+    [ -n "$at" ] || continue
+    if [ "$at" = kit ]; then kit_line="kit $name (from $state)"; continue; fi
+    list_row "$at" "$name" "$state" "$why" "$dir"
+  done <<<"$rows"
+  [ -z "${kit_line:-}" ] || echo "Using $kit_line."
+}
+
+# `fetch [--kits] REF DIR`: puts the folder for REF in DIR (or names a
+# local folder) and prints src, source, commit, repo and ref, for arx kit.
+cmd_fetch() {
+  local ref="" dir=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --kits) kind=kits ;; --link) link=1 ;;
+      *) if [ -z "$ref" ]; then ref=$1; else dir=$1; fi ;;
+    esac
+    shift
+  done
+  [ -n "$ref" ] && [ -d "$dir" ] || { usage >&2; exit 2; }
+  tmp=$dir
+  resolve "$ref"
+  printf 'src=%s\nsource=%s\ncommit=%s\nrepo=%s\nref=%s\n' "$src" "$source" "$commit" "$repo" "$at"
 }
 
 cmd_new() {
@@ -272,14 +362,17 @@ EOF
   echo "Made $dir. Try it in every harness with: arx plugin add --link $dir"
 }
 
-project=0 link=0 force=0 yes=0
+project=0 link=0 force=0 yes=0 kind=plugins auto_enable=1
+[ "${1:-}" = enable ] || [ "${1:-}" = disable ] && project=1
 command=${1:-}
 [ $# -gt 0 ] && shift
 case "$command" in
   add) cmd_add "$@" ;;
   remove | rm) cmd_remove "$@" ;;
   list | ls) cmd_list "$@" ;;
+  enable | disable) cmd_toggle "$command" "$@" ;;
   new) cmd_new "$@" ;;
+  fetch) cmd_fetch "$@" ;;
   -h | --help | help) usage ;;
   *) usage >&2; exit 2 ;;
 esac

@@ -10,6 +10,9 @@ export NO_COLOR=1
 # Never read the real user defaults or stored keys.
 export ARX_CONFIG_DIR=$(mktemp -d "${TMPDIR:-/tmp}/arx-config.XXXXXX")
 export ARX_DISABLE_KEYCHAIN=1
+# bash and edit come from the shell plugin, as after `arx setup`.
+mkdir -p "$ARX_CONFIG_DIR/plugins"
+ln -s "$ROOT/plugins/shell" "$ARX_CONFIG_DIR/plugins/shell"
 passed=0
 failed=0
 

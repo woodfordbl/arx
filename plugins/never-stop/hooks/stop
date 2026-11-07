@@ -1,0 +1,8 @@
+#!/bin/sh
+# stop: sends the agent back to work with the message from this plugin's
+# settings (ARX_PLUGIN_SETTINGS, {"message": "..."}), so a loop never stops.
+# Without a message it prints nothing, and the agent may stop.
+message=$(printf '%s' "${ARX_PLUGIN_SETTINGS:-}" |
+  sed -nE 's/.*"message":("([^"\\]|\\.)*").*/\1/p')
+[ -n "$message" ] || exit 0
+printf '{"decision": "continue", "message": %s}\n' "$message"

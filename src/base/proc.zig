@@ -1,8 +1,9 @@
 //! proc.zig: the process runner behind every tool, hook, curl call and
-//! subagent. The child starts in its own process group with pipes made
-//! here; one poll() loop feeds its stdin, drains its stdout, stderr and an
-//! optional side pipe (subagent events), and enforces the timeout on the
-//! whole group: SIGTERM, then SIGKILL after a grace period.
+//! subagent. Each child starts in its own process group with pipes made
+//! here; one poll() loop serves many children at once: it feeds stdin,
+//! drains stdout, stderr and an optional side pipe (subagent events), and
+//! enforces each timeout and Ctrl-C on the child's whole group: SIGTERM,
+//! then SIGKILL after a grace period. `run` is the same loop for one child.
 
 const std = @import("std");
 const posix = std.posix;
@@ -98,6 +99,10 @@ pub const Options = struct {
     /// Where stderr goes, kept apart from stdout.
     stderr: ?Sink = null,
     side: ?SidePipe = null,
+    /// stdin stays open for `Child.write` (`stdin` is then ignored).
+    open_stdin: bool = false,
+    /// Ctrl-C does not stop it (a long-lived helper).
+    keep_on_interrupt: bool = false,
 };
 
 /// How the child finished.
@@ -162,116 +167,199 @@ fn pump(fd: *sys.fd_t, sink: ?Sink) Allocator.Error!void {
     if (sink) |s| try s.writeFn(s.context, chunk[0..n]);
 }
 
+/// A started child and the state of its loop. `start` makes one, `poll`
+/// runs it, and `finish` frees it.
+pub const Child = struct {
+    gpa: Allocator,
+    io: std.Io,
+    opts: Options,
+    p: Pipes = .{},
+    pid: sys.pid_t = 0,
+    /// stdin queued by `write` (Options.open_stdin).
+    more: std.ArrayList(u8) = .empty,
+    written: usize = 0,
+    status: c_int = 0,
+    reaped: bool = false,
+    killed: bool = false,
+    done: bool = false,
+    start: f64 = 0,
+    deadline: f64 = 0,
+    kill_at: f64 = 0,
+    drain_until: f64 = 0,
+    result: Result = .{},
+    sink_error: ?Allocator.Error = null,
+
+    /// Queues `bytes` for the stdin of a child started with `open_stdin`;
+    /// `poll` writes them.
+    pub fn write(c: *Child, bytes: []const u8) Allocator.Error!void {
+        if (c.p.in[1] >= 0) try c.more.appendSlice(c.gpa, bytes);
+    }
+
+    /// The stdin bytes still to write.
+    fn pending(c: *const Child) []const u8 {
+        const data = if (c.opts.open_stdin) c.more.items else c.opts.stdin orelse "";
+        return data[@min(c.written, data.len)..];
+    }
+
+    /// Writes what the child can take now; closes a fixed stdin once it is
+    /// all written.
+    fn feed(c: *Child) void {
+        const data = c.pending();
+        if (data.len > 0) c.written += sys.writeSome(c.p.in[1], data) catch return closeFd(&c.p.in[1]); // gone: stop feeding
+        if (c.opts.open_stdin) {
+            if (c.written == c.more.items.len) {
+                c.more.clearRetainingCapacity();
+                c.written = 0;
+            }
+        } else if (c.pending().len == 0) closeFd(&c.p.in[1]);
+    }
+
+    /// Serves the pipe that poll() marked; a sink that runs out of memory
+    /// stops the child.
+    fn serve(c: *Child, fd: sys.fd_t) void {
+        (blk: {
+            if (fd == c.p.in[1]) c.feed();
+            if (fd == c.p.out[0]) pump(&c.p.out[0], c.opts.stdout) catch |e| break :blk e;
+            if (fd == c.p.err[0]) pump(&c.p.err[0], c.opts.stderr) catch |e| break :blk e;
+            if (fd == c.p.side[0]) pump(&c.p.side[0], c.opts.side.?.sink) catch |e| break :blk e;
+        }) catch |e| {
+            c.sink_error = e;
+            c.p.closeAll(); // stop reading; check() kills it
+        };
+    }
+
+    /// Reaps the child, and stops it at its deadline, on Ctrl-C, or when a
+    /// sink failed.
+    fn check(c: *Child) void {
+        if (!c.reaped) if (sys.tryWait(c.pid)) |s| {
+            c.status = s;
+            c.reaped = true;
+            c.drain_until = util.now(c.io) + drain_seconds;
+            closeFd(&c.p.in[1]);
+        };
+        const t = util.now(c.io);
+        const stop = sys.isInterrupted() and !c.opts.keep_on_interrupt;
+        if (!c.reaped and !c.killed and (c.sink_error != null or stop or (c.deadline > 0 and t > c.deadline))) {
+            if (stop) c.result.interrupted = true else c.result.timed_out = c.sink_error == null;
+            c.terminate(t);
+        } else if (!c.reaped and c.killed and t > c.kill_at) {
+            sys.killGroup(c.pid, .KILL);
+            c.kill_at = std.math.inf(f64);
+        }
+        const open = c.p.out[0] >= 0 or c.p.err[0] >= 0 or c.p.side[0] >= 0;
+        if (c.reaped and (!open or t >= c.drain_until)) c.done = true;
+    }
+
+    /// Sends SIGTERM to the group; SIGKILL follows after the grace period.
+    fn terminate(c: *Child, t: f64) void {
+        sys.killGroup(c.pid, .TERM);
+        c.killed = true;
+        c.kill_at = t + kill_grace_seconds;
+    }
+};
+
+/// Starts `opts` and returns at once; `poll` then runs it. `opts.stdin`
+/// and the sinks must stay valid until `finish`. A child that could not
+/// start comes back done, with `result.spawn_error` set.
+pub fn start(ctx: *const Context, opts: Options) Allocator.Error!*Child {
+    const c = try ctx.gpa.create(Child);
+    c.* = .{ .gpa = ctx.gpa, .io = ctx.io, .opts = opts, .start = util.now(ctx.io) };
+    if (opts.side) |side| c.p.side = side.fds;
+    spawn(ctx, c) catch |err| {
+        c.p.closeAll();
+        c.result.spawn_error = err;
+        c.result.code = 127;
+        c.done = true;
+        return c;
+    };
+    c.deadline = if (opts.timeout > 0) c.start + opts.timeout else 0;
+    return c;
+}
+
+/// Makes the pipes and starts the child in its own process group.
+fn spawn(ctx: *const Context, c: *Child) !void {
+    const opts = c.opts;
+    const want_in = opts.stdin != null or opts.open_stdin;
+    c.p.out = try sys.pipe();
+    if (want_in) c.p.in = try sys.pipe();
+    if (opts.stderr != null) c.p.err = try sys.pipe();
+    const inherit = [_]File{asFile(c.p.side[1])};
+    const child = try std.process.spawn(ctx.io, .{
+        .argv = opts.argv,
+        .environ_map = opts.environ,
+        .stdin = if (want_in) .{ .file = asFile(c.p.in[0]) } else .ignore,
+        .stdout = .{ .file = asFile(c.p.out[1]) },
+        .stderr = .{ .file = asFile(if (opts.stderr != null) c.p.err[1] else c.p.out[1]) },
+        .inherit_files = if (opts.side != null) &inherit else &.{},
+        .pgid = 0,
+    });
+    c.pid = child.id.?;
+    closeFd(&c.p.in[0]);
+    closeFd(&c.p.out[1]);
+    closeFd(&c.p.err[1]);
+    closeFd(&c.p.side[1]);
+    if (c.p.in[1] >= 0) sys.setNonblocking(c.p.in[1]);
+}
+
+/// Runs one round of the loop for many children at once: waits up to
+/// `max_wait` seconds (at most 0.1) for any of them, feeds stdin, drains
+/// output, reaps them, and stops each at its timeout or on Ctrl-C. Call it
+/// again until every child is `done`.
+pub fn poll(gpa: Allocator, kids: []const *Child, max_wait: f64) Allocator.Error!void {
+    const fds = try gpa.alloc(posix.pollfd, 4 * kids.len + 1);
+    defer gpa.free(fds);
+    const owner = try gpa.alloc(usize, 4 * kids.len + 1);
+    defer gpa.free(owner);
+    var n: usize = 0;
+    var wait = @min(max_wait, 0.1); // see exits and Ctrl-C
+    for (kids, 0..) |c, k| {
+        if (c.done) continue;
+        const ends = [_]sys.fd_t{ c.p.in[1], c.p.out[0], c.p.err[0], c.p.side[0] };
+        for (ends, 0..) |fd, i| {
+            if (fd < 0 or (i == 0 and c.opts.open_stdin and c.pending().len == 0)) continue;
+            fds[n] = .{ .fd = fd, .events = if (i == 0) posix.POLL.OUT else posix.POLL.IN, .revents = 0 };
+            owner[n] = k;
+            n += 1;
+        }
+        if (c.reaped) wait = @min(wait, c.drain_until - util.now(c.io));
+    }
+    const wait_ms: i32 = if (n > 0) @intFromFloat(@max(wait, 0) * 1000 + 1) else 1;
+    const ready = posix.poll(fds[0..n], wait_ms) catch 0;
+    if (ready > 0) for (fds[0..n], owner[0..n]) |e, k| if (e.revents != 0) kids[k].serve(e.fd);
+    for (kids) |c| if (!c.done) c.check();
+}
+
+/// Stops the child if it still runs (SIGTERM, then SIGKILL after the grace
+/// period), waits for it, and frees it. Fails only when a sink ran out of
+/// memory.
+pub fn finish(c: *Child) Allocator.Error!Result {
+    const gpa = c.gpa;
+    defer gpa.destroy(c);
+    defer c.more.deinit(gpa);
+    if (!c.done and !c.killed) {
+        closeFd(&c.p.in[1]);
+        c.terminate(util.now(c.io));
+    }
+    while (!c.done) try poll(gpa, &.{c}, 0.1);
+    c.p.closeAll();
+    if (c.result.spawn_error != null) return c.result;
+    if (c.killed) sys.killGroup(c.pid, .KILL); // anything left in the group
+    if (c.sink_error) |e| return e;
+    c.result.secs = util.now(c.io) - c.start;
+    c.result.code = sys.exitCode(c.status);
+    return c.result;
+}
+
 /// Runs `opts` and waits for the child. The child gets its own process
 /// group, so a timeout or Ctrl-C stops it and everything it started. Fails
 /// only when a sink runs out of memory (the child is then stopped too).
 pub fn run(ctx: *const Context, opts: Options) Allocator.Error!Result {
-    const io = ctx.io;
-    var result: Result = .{};
-    var p: Pipes = .{};
-    defer p.closeAll();
-    if (opts.side) |side| p.side = side.fds;
-
-    p.out = sys.pipe() catch |err| return failed(&result, err);
-    if (opts.stdin != null) p.in = sys.pipe() catch |err| return failed(&result, err);
-    if (opts.stderr != null) p.err = sys.pipe() catch |err| return failed(&result, err);
-
-    const start = util.now(io);
-    const inherit = [_]File{asFile(p.side[1])};
-    const child = std.process.spawn(io, .{
-        .argv = opts.argv,
-        .environ_map = opts.environ,
-        .stdin = if (opts.stdin != null) .{ .file = asFile(p.in[0]) } else .ignore,
-        .stdout = .{ .file = asFile(p.out[1]) },
-        .stderr = .{ .file = asFile(if (opts.stderr != null) p.err[1] else p.out[1]) },
-        .inherit_files = if (opts.side != null) &inherit else &.{},
-        .pgid = 0,
-    }) catch |err| return failed(&result, err);
-    const pid = child.id.?;
-    closeFd(&p.in[0]);
-    closeFd(&p.out[1]);
-    closeFd(&p.err[1]);
-    closeFd(&p.side[1]);
-    if (p.in[1] >= 0) sys.setNonblocking(p.in[1]);
-
-    const input = opts.stdin orelse "";
-    var written: usize = 0;
-    var status: c_int = 0;
-    var reaped = false;
-    var killed = false;
-    var kill_at: f64 = 0;
-    var drain_until: f64 = 0;
-    const deadline: f64 = if (opts.timeout > 0) start + opts.timeout else 0;
-    var sink_error: ?Allocator.Error = null;
-    while (true) {
-        var fds: [4]posix.pollfd = undefined;
-        var n: usize = 0;
-        const i_in = addPoll(&fds, &n, p.in[1], posix.POLL.OUT);
-        const i_out = addPoll(&fds, &n, p.out[0], posix.POLL.IN);
-        const i_err = addPoll(&fds, &n, p.err[0], posix.POLL.IN);
-        const i_side = addPoll(&fds, &n, p.side[0], posix.POLL.IN);
-        if (reaped and (n == 0 or util.now(io) >= drain_until)) break;
-        const wait_ms: i32 = if (reaped) @intFromFloat((drain_until - util.now(io)) * 1000 + 1) else 100;
-        if (n > 0) {
-            const ready = posix.poll(fds[0..n], wait_ms) catch 0;
-            if (ready > 0) {
-                if (i_in) |i| if (fds[i].revents != 0) {
-                    written += sys.writeSome(p.in[1], input[written..]) catch input.len; // gone: stop feeding
-                    if (written >= input.len) closeFd(&p.in[1]);
-                };
-                (blk: {
-                    if (i_out) |i| if (fds[i].revents != 0) pump(&p.out[0], opts.stdout) catch |e| break :blk e;
-                    if (i_err) |i| if (fds[i].revents != 0) pump(&p.err[0], opts.stderr) catch |e| break :blk e;
-                    if (i_side) |i| if (fds[i].revents != 0) pump(&p.side[0], opts.side.?.sink) catch |e| break :blk e;
-                }) catch |e| {
-                    sink_error = e;
-                    p.closeAll(); // stop reading; the child is killed below
-                };
-            }
-        } else {
-            io.sleep(.fromMilliseconds(1), .awake) catch {}; // all pipes closed: wait for the exit
-        }
-        if (!reaped) {
-            if (sys.tryWait(pid)) |s| {
-                status = s;
-                reaped = true;
-                drain_until = util.now(io) + drain_seconds;
-                closeFd(&p.in[1]);
-            }
-        }
-        const t = util.now(io);
-        if (!reaped and !killed and (sink_error != null or sys.isInterrupted() or (deadline > 0 and t > deadline))) {
-            if (sys.isInterrupted()) result.interrupted = true else result.timed_out = sink_error == null;
-            sys.killGroup(pid, .TERM);
-            killed = true;
-            kill_at = t + kill_grace_seconds;
-        } else if (!reaped and killed and t > kill_at) {
-            sys.killGroup(pid, .KILL);
-            kill_at = std.math.inf(f64);
-        }
-    }
-    p.closeAll();
-    if (!reaped) status = sys.wait(pid);
-    if (killed) sys.killGroup(pid, .KILL); // anything left in the group
-    if (sink_error) |e| return e;
-    result.secs = util.now(io) - start;
-    result.code = sys.exitCode(status);
-    return result;
-}
-
-/// The result for a child that could not be started.
-fn failed(result: *Result, err: anyerror) Result {
-    result.spawn_error = err;
-    result.code = 127;
-    return result.*;
-}
-
-/// Adds `fd` to the poll set if it is open. Returns its index.
-fn addPoll(fds: *[4]posix.pollfd, n: *usize, fd: sys.fd_t, events: i16) ?usize {
-    if (fd < 0) return null;
-    fds[n.*] = .{ .fd = fd, .events = events, .revents = 0 };
-    n.* += 1;
-    return n.* - 1;
+    const c = try start(ctx, opts);
+    while (!c.done) poll(ctx.gpa, &.{c}, 0.1) catch |err| {
+        _ = finish(c) catch {};
+        return err;
+    };
+    return finish(c);
 }
 
 test "run kills the group at the timeout" {
