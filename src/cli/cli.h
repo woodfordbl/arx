@@ -3,6 +3,7 @@
 //   commands.c  built-in commands: schema, tool, watch, ctl, request,
 //               version, help
 //   check.c     `arx check` and `arx tools`: load the harness and report
+//   shell_tools.c  bash and edit, for `arx tool` (the shell plugin)
 //   external.c  `arx foo` runs `arx-foo` (next to the binary, then on PATH),
 //               and `arx help` lists every command
 
@@ -74,5 +75,17 @@ int RunExternal(const char* name, int argc, char** argv);
 // `arx help [COMMAND]`: everything, or one command (an external command
 // prints its own help with --help).
 int HelpCommand(int argc, char** argv, Agent* a);
+
+// ---- shell_tools.c ----
+
+// Returns the schema of `arx tool <name>` as JSON text ({"description",
+// "parameters"}, as plugins/shell/tools/<name>.json has it), or NULL when
+// `name` is not bash or edit.
+const char* ShellToolSchema(const char* name);
+
+// Runs `arx tool <name>` with the JSON arguments `args` as a process tool:
+// the result goes to stdout, exit code 0, or 1 for an error. bash execs
+// `sh -c <command>` and returns only if that fails.
+int ShellToolRun(const char* name, const char* args);
 
 #endif  // SRC_CLI_CLI_H_

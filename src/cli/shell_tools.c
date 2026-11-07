@@ -12,7 +12,7 @@
 #include <unistd.h>
 
 #include "src/base/base.h"
-#include "src/harness/harness.h"
+#include "src/cli/cli.h"
 
 // The schemas, the same as plugins/shell/tools/<name>.json. The {{...}}
 // fields are filled in when the tool loads (see ToolsBuild).
@@ -33,7 +33,7 @@ static const char kEditSchema[] =
     "\"description\":\"Replacement text\"}},\"required\":[\"path\",\"old\","
     "\"new\"]},\"keys\":[\"file:{path}\"]}";
 
-// Returns the schema of `arx tool <name>`; see harness.h.
+// Returns the schema of `arx tool <name>`; see cli.h.
 const char* ShellToolSchema(const char* name) {
   if (!strcmp(name, "bash")) return kBashSchema;
   if (!strcmp(name, "edit")) return kEditSchema;
@@ -123,7 +123,7 @@ static int Bash(cJSON* args) {
   return 127;
 }
 
-// Runs `arx tool <name>`; see harness.h.
+// Runs `arx tool <name>`; see cli.h.
 int ShellToolRun(const char* name, const char* args) {
   cJSON* parsed = cJSON_Parse(args ? args : "");
   int code = 1;

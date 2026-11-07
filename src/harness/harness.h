@@ -14,7 +14,6 @@
 //   tools.c      finds tools: tools/<name> in every layer, and subagents
 //   tool_exec.c  runs one tool call; subagents run arx again
 //   keys.c       the keys of a tool call, which say what may run together
-//   shell_tools.c  bash and edit, for `arx tool` (the shell plugin)
 //   hooks.c      runs hooks/<point>, by band and then in layer order
 //   compact.c    keeps the conversation inside the context window
 
@@ -135,10 +134,9 @@ int KitLoad(const char* spec_dir, const char* name, Kit* kit, Buffer* err);
 // Frees a kit from KitLoad.
 void KitFree(Kit* kit);
 
-// Reads and checks the kit in `dir` without using it, for `arx check
-// --kit-dir`. Appends "key=value" lines to `out` (name, version,
-// description, extends, plugins, enable, disable). Returns 0, or -1 with
-// the problems in `err`, which include any executable file in the kit.
+// Checks the kit in `dir` without using it, for `arx check --kit-dir`, and
+// appends key=value lines to `out` (name, version, description, extends,
+// plugins, enable, disable). Returns 0, or -1 with the problems in `err`.
 int KitDescribe(const char* dir, Buffer* out, Buffer* err);
 
 // Writes kit.lock next to the spec when the kit pins versions (@ref): the
@@ -148,15 +146,13 @@ void KitLockWrite(const Spec* spec);
 // ---- plugins.c ----
 
 // Builds spec->layers and spec->rows. With an active list (spec->active):
-// the spec folder, then each plugin of the list in its order, from
-// <spec dir>/plugins/<name>/ or else the config folder's plugins/<name>/.
-// Without one: the spec folder, its plugins/<name>/, then (when it is a
-// different folder) the config folder and its plugins/<name>/, less the
-// ones `disable` turned off. A plugin's tools, compactors and observers
-// merge under the spec; its hook options, settings (which may set its
-// `tools` and `hooks` options) and `replaces` stay with its layer. A plugin
-// that is broken, missing or needs a newer arx is skipped and explained in
-// spec->problems, so it cannot stop the harness.
+// the spec folder, then each listed plugin in order, from <spec
+// dir>/plugins/<name>/ or else the config folder's. Without one: the spec
+// folder, its plugins/, then the config folder (when different) and its
+// plugins/, less those `disable` names. A plugin's tools, compactors and
+// observers merge under the spec; its hook options, settings and `replaces`
+// stay with its layer. A broken, missing or too-new plugin is skipped and
+// explained in spec->problems, so it cannot stop the harness.
 void PluginsLoad(Spec* spec);
 
 // Frees spec->layers.
@@ -173,10 +169,9 @@ int ListNames(const char* dir, char*** names);
 
 // ---- describe.c ----
 
-// Reads and checks the plugin in `dir` without loading it, for `arx check
-// --plugin`. Appends "key=value" lines to `out` (name, version,
-// description, arx, requires, missing, tools, hooks, skills, commands).
-// Returns 0, or -1 with the problems in `err`.
+// Checks the plugin in `dir` without loading it, for `arx check --plugin`,
+// and appends key=value lines to `out` (name, version, description, arx,
+// requires, missing, tools, hooks, skills, commands). Returns 0, or -1.
 int PluginDescribe(const char* dir, Buffer* out, Buffer* err);
 
 // ---- signature.c ----
@@ -276,15 +271,13 @@ typedef struct ToolSet {
   int count;
 } ToolSet;
 
-// Rebuilds a->tools from the spec and the tools/ folder of every layer.
-// Any executable in tools/ is a tool named after its file and described by
-// <file>.json next to it, or else by `<tool> --schema`; {{timeout}},
-// {{tool_output.head}} and {{tool_output.tail}} in its description become
-// the spec's values. The first layer with a working tool of a name wins. A
-// file that only runs `exec "$ARX_BIN" tool NAME "$@"` is started as
-// `arx tool NAME` directly, without a shell. A spec entry with `agent:
-// path` is a subagent. Problems, and skipped plugins, become harness notes,
-// once per change.
+// Rebuilds a->tools from the spec and the tools/ folder of every layer. An
+// executable in tools/ is a tool named after its file, described by
+// <file>.json or else `<tool> --schema`; {{timeout}} and {{tool_output.*}}
+// in its description become the spec's values. The first layer with a
+// working tool of a name wins. A file that only runs `exec "$ARX_BIN" tool
+// NAME "$@"` starts as `arx tool NAME` with no shell. A spec entry with
+// `agent: path` is a subagent. Problems become harness notes, once each.
 void ToolsBuild(struct Agent* a);
 
 // Frees every tool and empties the set.
@@ -316,10 +309,9 @@ ProcChild* ToolChild(ToolRun* run);
 // exit, secs, bytes and path to `end_event`.
 char* ToolFinish(ToolRun* run, int* is_error, cJSON* end_event);
 
-// Returns the ARX_* environment entries for tools and hooks (ARX_SESSION,
-// ARX_SESSION_DIR, ARX_TURN, ARX_CWD, ARX_SPEC, ARX_SPEC_DIR, ARX_DEPTH,
-// ARX_BIN, and ARX_PLUGIN_DIR when `plugin_dir` is not NULL),
-// NULL-terminated. Free it with FreeEnv.
+// Returns the ARX_* environment for tools and hooks, NULL-terminated:
+// ARX_SESSION, _SESSION_DIR, _TURN, _CWD, _SPEC, _SPEC_DIR, _DEPTH, _BIN,
+// and ARX_PLUGIN_DIR when `plugin_dir` is not NULL. Free it with FreeEnv.
 char** ToolEnv(struct Agent* a, const char* plugin_dir);
 
 // Frees an array from ToolEnv.
@@ -330,51 +322,33 @@ void FreeEnv(char** env);
 // True when `keys` is an array of strings.
 int KeysValid(cJSON* keys);
 
-// Returns the keys of a call to `tool` (may be NULL for an unknown tool,
-// which gets []) with the arguments `args`, as a new array. A tool that
-// declares no keys gets ["*"]; a subagent gets []. In each key, {name}
-// becomes the value of the top-level argument `name` ("" when it is
-// missing), and in a key that starts with "host:", just the host of that
-// value, so ["host:{url}"] gives "host:example.com".
+// Returns the keys of a call to `tool` (NULL for an unknown tool, which gets
+// []) with the arguments `args`, as a new array. A tool that declares no
+// keys gets ["*"]; a subagent gets []. In each key, {name} becomes the value
+// of the top-level argument `name` ("" when missing), and in a "host:" key
+// just its host, so ["host:{url}"] gives "host:example.com".
 cJSON* KeysFor(const Tool* tool, cJSON* args);
 
 // True when two calls with these keys may not run at the same time: one of
 // them has "*", or they share a key.
 int KeysConflict(cJSON* a, cJSON* b);
 
-// ---- shell_tools.c ----
-
-// Returns the schema of `arx tool <name>` as JSON text ({"description",
-// "parameters"}, as plugins/shell/tools/<name>.json has it), or NULL when
-// `name` is not bash or edit.
-const char* ShellToolSchema(const char* name);
-
-// Runs `arx tool <name>` with the JSON arguments `args`, as a process tool:
-// the result goes to stdout, and the exit code is 0 or 1 for an error. bash
-// replaces this process with `sh -c <command>` and does not return unless
-// that fails.
-int ShellToolRun(const char* name, const char* args);
-
 // ---- hooks.c ----
 
-// Runs hooks/<point> for a decision point (session_start or stop) in every
-// layer that has one, by band and then in layer order, with `input` (consumed)
-// plus point, session and turn on stdin. Sets `*output` to the combined JSON
-// (or NULL):
-//   session_start  {"context": "..."}           every hook's, joined
-//   stop           {"decision": "continue" | "restart", "message": "..."}
-//                                                the first decision
-// Returns 0 when there is no hook and 1 when hooks ran. A hook that fails
-// (non-zero exit, timeout, or output that is not a JSON object) is reported
-// and then ignored, unless its options say `fail: closed`; then HookRun
-// stops and returns -1.
+// Runs hooks/<point> for session_start or stop in every layer that has one,
+// by band and then in layer order, with `input` (consumed) plus point,
+// session and turn on stdin. Sets `*output` to the combined JSON or NULL:
+// session_start joins every {"context"}; stop takes the first {"decision":
+// "continue" | "restart", "message"}. Returns 0 when there is no hook, 1
+// when hooks ran. A failed hook (non-zero exit, timeout, output that is not
+// a JSON object) is reported and ignored, unless it is `fail: closed`: then
+// HookRun stops and returns -1.
 int HookRun(struct Agent* a, const char* point, cJSON* input, cJSON** output);
 
 // Runs hooks/<point> for a raw-object point as a chain: the `policy` band
-// first, then `normal`, then `final`, each in layer order. Each
-// hook gets `object` (kept by the caller) plus point, session and turn, and
-// prints the fields it changes; they replace the fields of `object` before
-// the next hook runs:
+// first, then `normal`, then `final`, each in layer order. Each hook gets
+// `object` (kept by the caller) plus point, session and turn, and prints the
+// fields it changes; they replace the fields of `object` before the next:
 //   before_model  {messages, tools, model, settings, reason}
 //                 prints any of messages, tools, model, settings
 //   after_model   {reply, usage, finish}; prints reply
@@ -384,14 +358,12 @@ int HookRun(struct Agent* a, const char* point, cJSON* input, cJSON** output);
 //                 "is_error": true to `object`.
 //   after_tool    {call, result, is_error}; prints result. {"note"} is
 //                 appended to the result.
-// A `result` that a policy hook sets is final: later hooks cannot change
-// it, and their events say "ignored". Plugin hooks also get their settings
-// as ARX_PLUGIN_SETTINGS (JSON). A field of the wrong type makes the answer
-// a failure. Each hook event
-// lists the fields that hook changed under "changed", and the names are
-// also added to `changed` (an array; may be NULL). Returns 0 when there is
-// no hook, 1 when hooks ran, and -1 when a `fail: closed` hook failed,
-// which stops the chain.
+// A `result` that a policy hook sets is final: later hooks cannot change it,
+// and their events say "ignored". Plugin hooks get their settings as
+// ARX_PLUGIN_SETTINGS (JSON). A field of the wrong type is a failure. Each
+// hook event lists the changed fields under "changed", and they are added
+// to `changed` (an array; may be NULL). Returns 0 when there is no hook, 1
+// when hooks ran, and -1 when a `fail: closed` hook failed (the chain stops).
 int HookChain(struct Agent* a, const char* point, cJSON* object,
               cJSON* changed);
 
@@ -416,10 +388,9 @@ int64_t CurrentTokens(struct Agent* a);
 
 // Compacts with `strategy`: mask (clear old tool outputs, the default),
 // summarize (one model call), hybrid (mask, then summarize if still over),
-// restart (fresh context; `message` is added after it, may be NULL), a name
-// from the spec's `compactors:` (plugins add theirs there), or a path to an
-// executable that rewrites {"messages": [...]}. Records a transcript reset
-// and a compact event. Returns 0, or -1 when nothing could be compacted.
+// restart (fresh context, then `message` if not NULL), a name from
+// `compactors:`, or a path to an executable that rewrites {"messages"}.
+// Records a transcript reset and a compact event. Returns 0, or -1.
 int Compact(struct Agent* a, const char* strategy, const char* message);
 
 // Compacts with the spec's strategy when the prompt is over
