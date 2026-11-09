@@ -212,8 +212,8 @@ finish() {
   write_summary "done" "$stop_reason" "$stop_code"
   [ "$quiet" -eq 1 ] || jq -r --arg branch "$branch" "$climb_jq"'
     "climb \(.run) stopped (\(.stop)) after \(.rounds) rounds, exit \(.exit). Best \(.best | num) from "
-    + "\(.best_round | from) (\(.kept) kept), baseline \(.baseline | num). \(.rounds as $r
-    | if $r > 0 then "The branch \($branch) holds only kept changes." else "" end)"' \
+    + "\(.best_round | from) (\(.kept) kept), baseline \(.baseline | num)."
+    + (if .rounds > 0 then " The branch \($branch) holds only kept changes." else "" end)' \
     "$dir/summary.json" >&2
   [ "$json" -eq 0 ] || cat "$dir/summary.json"
   exit "$stop_code"

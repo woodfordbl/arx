@@ -15,7 +15,7 @@ def fixed($k): (if . < 0 then "-" else "" end) as $s
 def num: if . == null then "-"
   elif (. != 0 and . < 0.001 and . > -0.001) or . >= 1e9 or . <= -1e9
   then tostring else fixed(4) end;
-def money: "$" + fixed(2);
+def money: "$" + (if . != 0 and . < 0.01 and . > -0.01 then fixed(4) else fixed(2) end);
 def two: tostring | if length < 2 then "0" + . else . end;
 def dur: floor as $t
   | if $t >= 3600 then "\($t / 3600 | floor)h\($t % 3600 / 60 | floor | two)m"

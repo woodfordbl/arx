@@ -196,4 +196,47 @@ check "round 2 resumes the same session" test "$(ls .arx/sessions | grep -vc las
 check "and the model hears the result" has fake/req-03.json '[arx climb] Round 1 of 2: your change to work/ was kept.'
 check "an empty round 2" test "$(jl '.[2].status')" = empty
 
+# The TSP example under arx climb, with the real arx and a scripted model:
+# the agent's only command copies in a 2-opt solver. It never runs a scorer.
+begin "the TSP example, to the end of a budget"
+rm agent.yaml && cp -R "$ROOT/examples/tsp/." . && rm harness/hooks/stop
+printf 'results.tsv\nnotes.md\nrun.log\n.arx/\nfake/\n*.txt\n' >.gitignore
+git init -q && git symbolic-ref HEAD refs/heads/main && git add -A && git commit -qm baseline
+cat >fake/solve.py <<'EOF'
+import math, sys, time
+start = time.time()
+data = sys.stdin.read().split()
+n = int(data[0])
+pts = [(float(data[1 + 2 * i]), float(data[2 + 2 * i])) for i in range(n)]
+left, tour = set(range(1, n)), [0]
+while left:
+    x, y = pts[tour[-1]]
+    j = min(left, key=lambda k: (pts[k][0] - x) ** 2 + (pts[k][1] - y) ** 2)
+    tour.append(j)
+    left.remove(j)
+d = lambda a, b: math.dist(pts[a], pts[b])
+improved = True
+while improved and time.time() - start < 0.5:  # 2-opt within a window
+    improved = False
+    for i in range(1, n - 1):
+        for j in range(i + 1, min(i + 30, n)):
+            a, b, c, e = tour[i - 1], tour[i], tour[j], tour[(j + 1) % n]
+            if d(a, c) + d(b, e) < d(a, b) + d(c, e) - 1e-12:
+                tour[i:j + 1] = reversed(tour[i:j + 1])
+                improved = True
+print("\n".join(map(str, tour)))
+EOF
+sse_tool bash '{\"command\":\"cp fake/solve.py work/solve.py\"}' | reply 1 "200 OK"
+sse_text "2-opt within a window of 30." | reply 2 "200 OK"
+sse_text "No better idea yet." | reply 3 "200 OK"
+OPENROUTER_API_KEY=test ARX_BIN=$ARX "$CLIMB" --name t --set model=test-model \
+  --cap usd=0.0025 >out.txt 2>err.txt </dev/null
+code=$?
+check "stops at the end of the budget, exit 3" test "$code $(jq -r .stop .arx/climb/t/summary.json)" = "3 cap:usd"
+check "keeps the 2-opt solver: a lower score" test "$(jl '"\(.[1].status) \(.[1].score < .[0].score)"')" = "keep true"
+check "round 2 changed nothing" test "$(jl '.[2].status')" = empty
+check "the agent never ran a scorer" test "$(jq -rs '[.[] | .tool_calls[]? | .function.arguments] | unique | join(" ")' .arx/sessions/*/transcript.jsonl)" = '{"command":"cp fake/solve.py work/solve.py"}'
+check "the branch holds the kept solver" sh -c 'git show climb/t:work/solve.py | cmp -s - fake/solve.py'
+check "the holdout scored the start and the best" test "$(jq -r '[.holdout.baseline > .holdout.best, .best < .baseline] | map(tostring) | join(" ")' .arx/climb/t/summary.json)" = "true true"
+
 summary
