@@ -4,8 +4,7 @@
 //   spec.c       loads agent.yaml (YAML -> cJSON, with line numbers)
 //   active.c     the active list: which plugins a run uses, in which order
 //   kits.c       kits: kit.yaml, extends, kit.lock
-//   plugins.c    the layers: the spec folder, plugins and the user's config
-//                folder; plugin.yaml
+//   plugins.c    the layers (spec folder, plugins, config folder); plugin.yaml
 //   describe.c   `arx check --plugin`: one plugin, without loading it
 //   signature.c  fingerprints every layer with stat() for hot reload
 //   fields.c     the field tables of agent.yaml, plugin.yaml and kit.yaml
@@ -45,8 +44,7 @@ typedef struct Layer {
 // A loaded, validated spec.
 typedef struct Spec {
   cJSON* root;      // the spec as JSON
-  cJSON* lines;     // "dotted.path" -> line number (or "file:line" for keys
-                    // that came from the user's defaults), for error messages
+  cJSON* lines;     // "dotted.path" -> line, or "file:line" from config.yaml
   char* path;       // the spec file
   char* dir;        // its directory; tools/, hooks/ and prompts are relative
   char* config;     // the defaults file merged in (config.yaml), or NULL
@@ -92,8 +90,7 @@ void SpecFree(Spec* spec);
 char* SpecText(const Spec* spec, cJSON* node, Buffer* err);
 
 // Parses one --set argument ("limits.max_turns=10") into `sets`. A value
-// that starts with [ or { is read as JSON ("plugins=[]").
-// Returns 0, or -1 if it has no "=".
+// that starts with [ or { is JSON ("plugins=[]"). Returns 0, or -1 if no "=".
 int SpecAddSet(cJSON* sets, const char* key_value);
 
 // Merges `from` over `target`, recursing into mappings that both have, so
@@ -161,16 +158,14 @@ void LayersFree(Spec* spec);
 // the problems in `err`. Free `plugin` with SpecFree either way.
 int PluginRead(const char* dir, Spec* plugin, Buffer* err);
 
-// Lists the entries of `dir` that do not start with '.', sorted so that
-// lists stay stable between runs. Returns the count; free each name and the
-// array.
+// Lists the entries of `dir` that do not start with '.', sorted, so lists
+// stay stable between runs. Returns the count; free each name and the array.
 int ListNames(const char* dir, char*** names);
 
 // ---- describe.c ----
 
 // Checks the plugin in `dir` without loading it, for `arx check --plugin`,
-// and appends key=value lines to `out`: its fields, parts and hosts.
-// Returns 0, or -1.
+// and appends key=value lines to `out`: fields, parts, hosts. Returns 0 or -1.
 int PluginDescribe(const char* dir, Buffer* out, Buffer* err);
 
 // ---- signature.c ----
@@ -200,8 +195,7 @@ typedef enum FieldType {
   kPluginList,  // a list of names or {name: {settings}}
 } FieldType;
 
-// One key of the spec: its name, type, sub-fields (for kMap and kDict) and
-// a short description for the JSON Schema.
+// One key of the spec: name, type, sub-fields (kMap, kDict) and a doc line.
 typedef struct Field {
   const char* key;
   FieldType type;
@@ -224,6 +218,12 @@ extern const char* const kHookPoints[];
 
 // The characters allowed in tool names (OpenAI function names).
 extern const char kNameChars[];
+
+// True when `v` has the shape that `type` needs (fields.c).
+int TypeOk(FieldType type, const cJSON* v);
+
+// Describes `type` for messages, such as "a string" (fields.c).
+const char* TypeName(FieldType type);
 
 // Validates `spec->root` against the field table and the extra rules,
 // appending problems to `err`. Called by SpecLoad.
