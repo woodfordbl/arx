@@ -56,20 +56,44 @@ static char* CaptureText(const Capture* c, const char* path) {
   return text;
 }
 
-// ARX_* variables so tools and hooks know where they run.
-char** ToolEnv(Agent* a, const char* plugin_dir) {
-  char cwd[4096];
-  char** env = XMalloc(10 * sizeof(*env));
-  env[0] = XAsprintf("ARX_SESSION=%s", a->session.id);
-  env[1] = XAsprintf("ARX_SESSION_DIR=%s", a->session.dir);
-  env[2] = XAsprintf("ARX_TURN=%d", a->session.turns);
-  env[3] = XAsprintf("ARX_CWD=%s", getcwd(cwd, sizeof(cwd)) ? cwd : ".");
-  env[4] = XAsprintf("ARX_SPEC=%s", a->spec.path);
-  env[5] = XAsprintf("ARX_SPEC_DIR=%s", a->spec.dir);
-  env[6] = XAsprintf("ARX_DEPTH=%d", a->depth);
-  env[7] = XAsprintf("ARX_BIN=%s", g_self);
-  env[8] = plugin_dir ? XAsprintf("ARX_PLUGIN_DIR=%s", plugin_dir) : NULL;
-  env[9] = NULL;
+// ARX_* variables so tools and hooks know where they run. A plugin's
+// folders are named from its name, never from the resolved folder, so a
+// linked plugin gets the folders of its name. arx makes neither folder.
+char** ToolEnv(Agent* a, const char* plugin_dir, const char* plugin) {
+  char buf[4096];
+  const char* cwd = getcwd(buf, sizeof(buf)) ? buf : ".";
+  char** env = XMalloc(12 * sizeof(*env));
+  int n = 0;
+  env[n++] = XAsprintf("ARX_SESSION=%s", a->session.id);
+  env[n++] = XAsprintf("ARX_SESSION_DIR=%s", a->session.dir);
+  env[n++] = XAsprintf("ARX_TURN=%d", a->session.turns);
+  env[n++] = XAsprintf("ARX_CWD=%s", cwd);
+  env[n++] = XAsprintf("ARX_SPEC=%s", a->spec.path);
+  env[n++] = XAsprintf("ARX_SPEC_DIR=%s", a->spec.dir);
+  env[n++] = XAsprintf("ARX_DEPTH=%d", a->depth);
+  env[n++] = XAsprintf("ARX_BIN=%s", g_self);
+  if (plugin_dir) env[n++] = XAsprintf("ARX_PLUGIN_DIR=%s", plugin_dir);
+  if (plugin) {
+    env[n++] = XAsprintf("ARX_STATE_DIR=%s/plugins/%s", a->session.dir, plugin);
+    env[n++] = XAsprintf("ARX_DATA_DIR=%s/.arx/data/%s", cwd, plugin);
+  }
+  env[n] = NULL;
+  return env;
+}
+
+// ToolEnv for a layer's program, plus ARX_PLUGIN_SETTINGS (its settings
+// from the active list, as JSON) for a plugin's; see harness.h.
+char** PluginEnv(Agent* a, const Layer* layer) {
+  char** env = ToolEnv(a, layer->plugin ? layer->dir : NULL, layer->plugin);
+  if (!layer->plugin) return env;
+  int n = 0;
+  while (env[n]) n++;
+  env = XRealloc(env, (size_t)(n + 2) * sizeof(*env));
+  char* json =
+      layer->settings ? cJSON_PrintUnformatted(layer->settings) : XStrdup("{}");
+  env[n] = XAsprintf("ARX_PLUGIN_SETTINGS=%s", json);
+  env[n + 1] = NULL;
+  free(json);
   return env;
 }
 
@@ -206,7 +230,7 @@ static ToolRun* StartProcessTool(Agent* a, Tool* t, cJSON* args,
   run->cap.head_max = JsonSize(a->spec.root, "tool_output.head", 2048);
   run->cap.tail_max = JsonSize(a->spec.root, "tool_output.tail", 6144);
   run->cap.fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
-  run->env = ToolEnv(a, t->plugin_dir);
+  run->env = ToolEnv(a, t->plugin_dir, t->plugin);
   if (t->kind == kToolAgent) {
     run->input = XStrdup(JsonStr(args, "task", ""));
     run->child = StartSubagent(a, t, run);

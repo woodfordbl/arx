@@ -39,7 +39,11 @@ folder. The first one in layer order wins.
 - **Protocol**: one JSON object per line, on its stdin and stdout. Flush
   stdout after each line.
 - **Environment**: the [`ARX_*` variables](reference.md#environment), and
-  `ARX_PLUGIN_DIR` for a plugin's scheduler. arx drops its stderr.
+  for a plugin's scheduler `ARX_PLUGIN_DIR`, `ARX_STATE_DIR`,
+  `ARX_DATA_DIR`, and its [settings](kits.md#the-active-list) as JSON in
+  `ARX_PLUGIN_SETTINGS`. Keep counters in `ARX_STATE_DIR`, so a `--resume`
+  keeps them: a scheduler is a new process after a resume. arx drops its
+  stderr.
 - **Ctrl-C**: does not stop it. arx stops it when the session ends.
 
 ### Messages from arx

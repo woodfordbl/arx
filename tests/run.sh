@@ -90,6 +90,17 @@ check "offered after the edit" has fake/req-02.json '"name":"hello"'
 check "new tool ran" has fake/req-03.json 'hello-from-tool'
 check "reload event" has .arx/sessions/last/events.jsonl '"type":"harness.reload"'
 
+# A file in tools/ that is not executable is not a tool, and arx says why.
+begin "tools: not executable"
+mkdir tools
+printf '#!/bin/sh\necho now\n' >tools/now
+chmod 644 tools/now
+sse_text "hi" | reply 1 "200 OK"
+run "go"
+check "it is not offered" lacks fake/req-01.json '"name":"now"'
+"$ARX" check >check.txt 2>&1
+check "arx check says why" has check.txt 'tools/now is not executable'
+
 # A bad spec edit is rejected; the old spec keeps working.
 begin "hot reload: bad spec"
 { spec; echo "modle: typo"; } >bad.yaml

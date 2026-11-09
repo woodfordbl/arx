@@ -4,12 +4,9 @@
 // example to run them in a sandbox).
 
 #include <errno.h>
-#include <fcntl.h>
-#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 
 #include "src/base/base.h"
 #include "src/cli/cli.h"
@@ -112,13 +109,8 @@ static int Bash(cJSON* args) {
   }
   // The command gets what a process tool got before: no stdin, and the
   // default SIGPIPE, which arx itself ignores.
-  int fd = open("/dev/null", O_RDONLY);
-  if (fd > 0) {
-    dup2(fd, 0);
-    close(fd);
-  }
-  signal(SIGPIPE, SIG_DFL);
-  execlp("sh", "sh", "-c", command, (char*)NULL);
+  char* argv[] = {"sh", "-c", (char*)command, NULL};
+  ProcExec(argv, 1);
   printf("cannot run sh: %s", strerror(errno));
   return 127;
 }

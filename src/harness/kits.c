@@ -44,7 +44,7 @@ static int FindExecutable(const char* dir, Buffer* found, int depth) {
     struct stat st;
     if (stat(path, &st) == 0 && S_ISDIR(st.st_mode)) {
       any = FindExecutable(path, found, depth + 1);
-    } else if (stat(path, &st) == 0 && (st.st_mode & 0111)) {
+    } else if (IsRunnable(path)) {
       BufferAppendStr(found, path);
       any = 1;
     }

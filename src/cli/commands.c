@@ -129,51 +129,31 @@ static int Request(const Spec* spec, const char* method, char* body,
   cJSON* root = spec->root;
   int code = Credential(spec);
   if (code) return code;
-  const char* tmp = getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp";
-  char* headers = WriteRequestHeaders(root, tmp, 0);
-  char* header_arg = XAsprintf("@%s", headers);
-  char* response = XAsprintf("%s/.arx-response-%d", tmp, (int)getpid());
+  Buffer headers = {0};
+  RequestHeaders(root, 0, &headers);
   char* url = EndpointUrl(root, path);
   char* adapter = EndpointProgram(root, spec->dir, "adapter");
-  char* argv[16];
-  int k = 0;
-  if (adapter) argv[k++] = adapter;
-  argv[k++] = (char*)CurlPath(root);
-  const char* const args[] = {"-sS",    "--max-time", "60",      "-D",
-                              response, "-H",         header_arg};
-  for (size_t i = 0; i < sizeof(args) / sizeof(args[0]); i++) {
-    argv[k++] = (char*)args[i];
-  }
-  if (method) {
-    argv[k++] = "-X";
-    argv[k++] = (char*)method;
-  }
-  if (body) {
-    argv[k++] = "--data-binary";
-    argv[k++] = "4597";
-  }
-  argv[k++] = url;
-  argv[k] = NULL;
-  Proc p = {.argv = argv,
-            .in = body,
-            .in_len = body ? strlen(body) : 0,
-            .timeout = 90,
-            .on_out = StdoutSink};
-  ProcResult r;
-  ProcRun(&p, &r);
+  HttpRequest req = {.method = method,
+                     .url = url,
+                     .headers = headers.data,
+                     .body = body,
+                     .body_len = body ? strlen(body) : 0,
+                     .timeout = 60,
+                     .adapter = adapter,
+                     .curl = JsonStr(root, "endpoint.curl", NULL),
+                     .tmp_dir = getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp",
+                     .on_body = StdoutSink};
+  HttpResult r;
+  HttpRun(&req, &r);
   fflush(stdout);
-  int status;
-  double retry_after;
-  ReadResponseHeaders(response, &status, &retry_after);
-  unlink(headers);
-  unlink(response);
+  if (!r.spawn_failed && r.err.len) fputs(r.err.data, stderr);
+  if (r.net_error) fprintf(stderr, "arx: curl exited with %d\n", r.net_error);
+  int status = r.status;
+  BufferFree(&r.err);
+  BufferFree(&headers);
   free(adapter);
-  free(headers);
-  free(header_arg);
-  free(response);
   free(url);
-  if (r.code) fprintf(stderr, "arx: curl exited with %d\n", r.code);
-  if (r.code || status < 200 || status >= 300) {
+  if (r.net_error || status < 200 || status >= 300) {
     return status == 401 || status == 403 ? kExitAuth : kExitError;
   }
   return kExitDone;

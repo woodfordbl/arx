@@ -264,7 +264,7 @@ static void ValidatePrograms(const Spec* spec, const char* key, Buffer* err) {
     char* path = cJSON_IsString(c) ? PathJoin(spec->dir, c->valuestring) : NULL;
     if (!path) {
       Problem(spec, err, where, "must be the path of an executable");
-    } else if (access(path, X_OK)) {
+    } else if (!IsRunnable(path)) {
       Problem(spec, err, where, "%s is not executable", path);
     }
     free(path);
@@ -287,7 +287,7 @@ static void ValidateEndpointProgram(const Spec* spec, const char* key,
   cJSON* named = cJSON_GetObjectItemCaseSensitive(JsonGet(spec->root, map),
                                                   name ? name : "");
   char* path = name && !named ? PathJoin(spec->dir, name) : NULL;
-  if (path && access(path, X_OK)) {
+  if (path && !IsRunnable(path)) {
     Problem(spec, err, where, "not a name in %s, and %s is not executable", map,
             path);
   }
@@ -329,7 +329,7 @@ static void ValidateRules(const Spec* spec, Buffer* err) {
                                                   strategy ? strategy : "");
   if (strategy && !named && !InList(kStrategies, strategy)) {
     char* path = PathJoin(spec->dir, strategy);
-    if (access(path, X_OK)) {
+    if (!IsRunnable(path)) {
       Problem(spec, err, "compaction.strategy",
               "not a built-in strategy, and %s is not executable", path);
     }

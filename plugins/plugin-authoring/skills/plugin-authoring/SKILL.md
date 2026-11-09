@@ -19,6 +19,9 @@ Everything here lives next to your spec and takes effect on your next turn.
 - **Plugins** add tools, hooks and skills below yours; `{{harness}}` lists
   the ones in use. A tool of yours with the same name wins. To share
   something you made, `"$ARX_BIN" plugin new <name>` starts a plugin folder.
+- **Plugin files**: a plugin's programs keep files in `$ARX_STATE_DIR` (this
+  session) or `$ARX_DATA_DIR` (across sessions). arx makes neither folder,
+  so run `mkdir -p` on it first.
 
 Check your work before relying on it:
 

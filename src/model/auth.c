@@ -2,14 +2,13 @@
 // call to it shares. The API key is found the way fx finds it: an
 // environment variable first, then a key saved by `arx setup` in the macOS
 // Keychain (service "arx") or, elsewhere, in ConfigDir()/credentials (0600).
-// The key reaches curl in a 0600 header file, never on a command line, so it
-// never shows up in process listings.
+// The headers stay in memory: natively, HttpStart hands them to curl in a
+// 0600 file, never on a command line, so the key never shows up in process
+// listings.
 
-#include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
-#include <unistd.h>
 
 #include "src/base/base.h"
 #include "src/model/model.h"
@@ -118,12 +117,6 @@ char* EndpointUrl(cJSON* root, const char* path) {
   return XAsprintf("%.*s%s", (int)len, base, path);
 }
 
-// The curl to run: endpoint.curl, else $ARX_CURL, else curl.
-const char* CurlPath(cJSON* root) {
-  const char* env = getenv("ARX_CURL");
-  return JsonStr(root, "endpoint.curl", env && *env ? env : "curl");
-}
-
 // True when `headers` (an object, or NULL) has `name`, in any case.
 static int HasHeader(cJSON* headers, const char* name) {
   cJSON* h;
@@ -133,55 +126,25 @@ static int HasHeader(cJSON* headers, const char* name) {
   return 0;
 }
 
-// Writes the request headers to a private file in `dir`; see model.h.
-char* WriteRequestHeaders(cJSON* root, const char* dir, int streaming) {
-  Buffer h = {0};
-  BufferAppendStr(&h, "Content-Type: application/json\n");
-  if (streaming) BufferAppendStr(&h, "Accept: text/event-stream\n");
+// Appends the request headers; see model.h.
+void RequestHeaders(cJSON* root, int streaming, Buffer* h) {
+  BufferAppendStr(h, "Content-Type: application/json\n");
+  if (streaming) BufferAppendStr(h, "Accept: text/event-stream\n");
   cJSON* value = CredentialValue(root);
   cJSON* own = JsonGet(value, "headers");
   const char* key = JsonStr(root, "endpoint.credential", NULL)
                         ? JsonStr(value, "api_key", NULL)
                         : ApiKey(root);
   if (key && *key && !HasHeader(own, "Authorization")) {
-    BufferPrintf(&h, "Authorization: Bearer %s\n", key);
+    BufferPrintf(h, "Authorization: Bearer %s\n", key);
   }
   cJSON* header;
   cJSON_ArrayForEach(header, JsonGet(root, "endpoint.headers")) {
     if (cJSON_IsString(header) && !HasHeader(own, header->string)) {
-      BufferPrintf(&h, "%s: %s\n", header->string, header->valuestring);
+      BufferPrintf(h, "%s: %s\n", header->string, header->valuestring);
     }
   }
   cJSON_ArrayForEach(header, own) {
-    BufferPrintf(&h, "%s: %s\n", header->string, header->valuestring);
+    BufferPrintf(h, "%s: %s\n", header->string, header->valuestring);
   }
-  char* path = XAsprintf("%s/.arx-request-%d", dir, (int)getpid());
-  int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
-  if (fd >= 0) {
-    WriteAll(fd, h.data, h.len);
-    close(fd);
-  }
-  BufferFree(&h);
-  return path;
-}
-
-// Reads the last HTTP status and any Retry-After; see model.h.
-void ReadResponseHeaders(const char* path, int* status, double* retry_after) {
-  char* text = ReadFile(path, NULL);
-  *status = 0;
-  *retry_after = -1;
-  for (char* line = text; line && *line;) {
-    char* nl = strchr(line, '\n');
-    if (nl) *nl = 0;
-    if (!strncmp(line, "HTTP/", 5)) {
-      const char* space = strchr(line, ' ');
-      *status = space ? atoi(space + 1) : 0;
-    } else if (!strncasecmp(line, "retry-after:", 12)) {
-      char* end;
-      double secs = strtod(line + 12, &end);
-      if (end != line + 12) *retry_after = secs;
-    }
-    line = nl ? nl + 1 : NULL;
-  }
-  free(text);
 }

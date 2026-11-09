@@ -31,7 +31,7 @@ static int LoadSpec(Agent* a) {
 // The executable at `layer`/<sub>/<name>, or NULL (malloc'd).
 static char* LayerFile(const Layer* layer, const char* sub, const char* name) {
   char* path = XAsprintf("%s/%s/%s", layer->dir, sub, name);
-  if (!access(path, X_OK)) return path;
+  if (IsRunnable(path)) return path;
   free(path);
   return NULL;
 }

@@ -171,9 +171,14 @@ working directory. `.arx/sessions/last` points at the newest one.
 | `meta.json` | turns, tokens, cost and status |
 | `tool-NNNN.out` | full tool outputs |
 | `inbox` | commands from `arx ctl` |
+| `plugins/<name>/` | a plugin's state for this session (`ARX_STATE_DIR`), when the plugin made it |
 
 arx flushes the transcript after every message, so a crash loses at most the
 current turn.
+
+Plugins keep data across sessions in `.arx/data/<name>/` (`ARX_DATA_DIR`),
+and arx's own commands keep theirs in `.arx/<command>/`. See
+[Plugin state](plugins/concepts.md#plugin-state).
 
 ## Events
 

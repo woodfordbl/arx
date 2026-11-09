@@ -22,6 +22,7 @@ not built.
 | [Active list](#active-list) | The ordered list of plugins that one run uses. |
 | [Band](#band) | The group a hook runs in at its point: `policy`, `normal` or `final`. |
 | [Key](#key) | A lock on a tool call: calls that share a key run one at a time. |
+| [Plugin state](#plugin-state) | The files a plugin keeps between calls, in `ARX_STATE_DIR` and `ARX_DATA_DIR`. |
 
 Three words from [How arx works](../concepts.md) also appear here:
 
@@ -245,6 +246,76 @@ A key is a lock on a tool call. Each call has a list of keys, and calls that
 share a key run one at a time. A call with `*` runs alone, and a call with
 `[]` runs with anything. A tool declares its keys in its schema. See
 [Keys](tools.md#keys) and [Schedulers](schedulers.md).
+
+## Plugin state
+
+Plugin state is the files a plugin keeps between calls, in two folders that
+arx names for it. Every program of the plugin gets both variables, so its
+tools, hooks and scheduler can share what they keep.
+
+| Variable | Folder | Lasts | Use it when |
+|---|---|---|---|
+| `ARX_STATE_DIR` | `$ARX_SESSION_DIR/plugins/<name>/` | as long as the session folder: through `--resume`, compaction, a `restart` and a crash | the state belongs to one session, such as a plan, a to-do list or a scheduler's counters |
+| `ARX_DATA_DIR` | `<working folder>/.arx/data/<name>/` | until you delete it: through every session, a plugin update and `arx plugin remove` | the data outlives a session, such as a search index or a cache |
+
+`<name>` is the plugin's `name:`, never the name of a folder it links to.
+Both paths are absolute.
+
+**arx makes neither folder.** Make yours before the first write:
+
+```sh
+mkdir -p "$ARX_STATE_DIR"
+echo "step 2" >"$ARX_STATE_DIR/plan"
+```
+
+```python
+os.makedirs(os.environ["ARX_STATE_DIR"], exist_ok=True)
+```
+
+Most plugins never write, so this leaves no empty folders behind.
+
+Which programs get them:
+
+- A plugin's tools, hooks, scheduler, observers and compactors get both.
+- A user plugin's [command](commands.md) gets `ARX_DATA_DIR` only, because
+  no session runs.
+- Programs in the spec folder or the config folder get neither, and
+  neither do credentials and adapters. They can use `$ARX_SESSION_DIR`.
+- arx's own commands keep their files in `.arx/<command>/`, such as
+  `.arx/climb/`, so `.arx/data/` belongs to plugins.
+
+When a run starts, arx removes `ARX_PLUGIN_DIR`, `ARX_PLUGIN_SETTINGS`,
+`ARX_STATE_DIR` and `ARX_DATA_DIR` from its own environment. A program that
+is not a plugin's never sees a plugin's folders, also when a plugin command
+runs `arx -p`.
+
+### Resume, subagents and many writers
+
+- **`--resume`** reopens the session folder, so `ARX_STATE_DIR` is as the
+  plugin left it. `session_start` hooks don't run again on `--resume`, so
+  read the folder when your program starts and make what is missing.
+- **A subagent** is its own session. Its plugins get their own
+  `ARX_STATE_DIR`, and share `ARX_DATA_DIR` with the parent, because both
+  run in one working folder.
+- **Several processes** can use one folder at once: parallel calls of one
+  tool, the plugin's hooks and scheduler, subagents, and two runs in one
+  folder. arx gives no lock. Write a whole file to a temporary name in the
+  same folder and `rename` it, and guard a read-modify-write with an
+  `mkdir` lock, as the `chatgpt` plugin does.
+- **Two plugins with one name** share `ARX_DATA_DIR` when they run in one
+  working folder, such as an old and a new version. The folder belongs to
+  the name, not to a copy of the plugin: put a format version in your
+  files, and skip files you don't know.
+- **A plugin you remove or turn off** keeps its folders. arx never reads
+  them. `arx plugin remove` says so, and `arx doctor` lists data folders
+  whose plugin is gone.
+
+### The agent can change these files
+
+Both folders are in the working folder, so the agent's `bash` can read and
+change them. Plugin state is not tamper-proof. Keep no secrets there (a
+sign-in belongs in the config folder, as `chatgpt` keeps it), and don't
+treat it as proof of what the agent did.
 
 ## Next steps
 

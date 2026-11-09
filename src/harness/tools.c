@@ -209,6 +209,7 @@ static void Add(ToolSet* t, ToolKind kind, const char* name, const char* desc,
   tool->path = path ? XStrdup(path) : NULL;
   tool->timeout = timeout;
   tool->plugin_dir = NULL;
+  tool->plugin = NULL;
   tool->core = NULL;
   tool->keys = kind == kToolAgent ? cJSON_CreateArray() : NULL;
 }
@@ -237,7 +238,7 @@ static void AddExecutable(struct Agent* a, const Layer* layer,
   snprintf(key, sizeof(key), "tools.%s.enabled", name);
   if (stat(path, &st) || !S_ISREG(st.st_mode)) {
     // Directories and broken links are not tools.
-  } else if (access(path, X_OK)) {
+  } else if (!IsRunnable(path)) {
     BufferPrintf(notes, "- %stools/%s is not executable (chmod +x it)\n", where,
                  name);
   } else if (strspn(name, kNameChars) != strlen(name)) {
@@ -256,7 +257,10 @@ static void AddExecutable(struct Agent* a, const Layer* layer,
       char* desc = Describe(s->description, timeout, a->spec.root);
       Add(&a->tools, kToolExec, name, desc, NULL, s->params, path, timeout);
       Tool* t = &a->tools.items[a->tools.count - 1];
-      if (layer->plugin) t->plugin_dir = XStrdup(layer->dir);
+      if (layer->plugin) {
+        t->plugin_dir = XStrdup(layer->dir);
+        t->plugin = XStrdup(layer->plugin);
+      }
       if (s->core) t->core = XStrdup(s->core);
       if (s->keys) t->keys = cJSON_Duplicate(s->keys, 1);
       free(desc);
@@ -365,6 +369,7 @@ void ToolsFree(ToolSet* tools) {
     free(tools->items[i].description);
     free(tools->items[i].path);
     free(tools->items[i].plugin_dir);
+    free(tools->items[i].plugin);
     free(tools->items[i].core);
     cJSON_Delete(tools->items[i].params);
     cJSON_Delete(tools->items[i].keys);

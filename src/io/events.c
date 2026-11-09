@@ -4,15 +4,11 @@
 
 #include <errno.h>
 #include <fcntl.h>
-#include <spawn.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/wait.h>
 #include <unistd.h>
 
 #include "src/io/io.h"
-
-extern char** environ;
 
 Events g_events = {.fd = -1, .extra_fd = -1};
 
@@ -23,7 +19,7 @@ static const double kDeltaSeconds = 0.05;
 static int OpenTarget(const char* where) {
   int fd;
   if (!strcmp(where, "-")) {
-    fd = dup(1);
+    fd = ProcDupStdout();
   } else if (!strncmp(where, "fd:", 3)) {
     fd = atoi(where + 3);
     if (fcntl(fd, F_GETFD) < 0) return -1;
@@ -130,28 +126,14 @@ void EventForward(const char* line, size_t n) {
   free(s);
 }
 
-// Spawns an observer reading the stream from a non-blocking pipe.
+// Starts an observer reading the stream from a non-blocking pipe.
 void EventsAddObserver(const char* command, char* const* env) {
-  int p[2];
-  if (g_events.observer_count >= ARX_MAX_OBSERVERS || pipe(p)) return;
-  fcntl(p[1], F_SETFD, FD_CLOEXEC);
-  fcntl(p[1], F_SETFL, O_NONBLOCK);
-  posix_spawn_file_actions_t fa;
-  posix_spawn_file_actions_init(&fa);
-  posix_spawn_file_actions_adddup2(&fa, p[0], 0);
-  posix_spawn_file_actions_addclose(&fa, p[0]);
-  char* argv[] = {"sh", "-c", (char*)command, NULL};
-  pid_t pid;
-  char** full_env = env ? EnvWith(env) : environ;
-  if (posix_spawnp(&pid, "sh", &fa, NULL, argv, full_env) == 0) {
-    g_events.observer_pids[g_events.observer_count] = pid;
-    g_events.observers[g_events.observer_count++] = p[1];
-  } else {
-    close(p[1]);
-  }
-  if (full_env != environ) free(full_env);
-  posix_spawn_file_actions_destroy(&fa);
-  close(p[0]);
+  if (g_events.observer_count >= ARX_MAX_OBSERVERS) return;
+  int pid;
+  int fd = ProcObserverStart(command, env, &pid);
+  if (fd < 0) return;
+  g_events.observer_pids[g_events.observer_count] = pid;
+  g_events.observers[g_events.observer_count++] = fd;
 }
 
 // Observers see end of file and get up to a second each to finish.
@@ -161,10 +143,7 @@ void EventsClose(void) {
     if (g_events.observers[i] >= 0) close(g_events.observers[i]);
   }
   for (int i = 0; i < g_events.observer_count; i++) {
-    for (int k = 0; k < 100; k++) {
-      if (waitpid(g_events.observer_pids[i], NULL, WNOHANG) != 0) break;
-      SleepSeconds(0.01);
-    }
+    ProcObserverWait(g_events.observer_pids[i], 1.0);
   }
   if (g_events.fd >= 0) close(g_events.fd);
   if (g_events.extra_fd >= 0) close(g_events.extra_fd);

@@ -47,7 +47,7 @@ each time the run reaches its point:
 | Output (stdout) | Nothing, which keeps everything as it is, or one JSON object. |
 | Errors and logs | Write them to stderr. arx keeps stderr apart from the answer, and shows it in the `hook` event when the hook fails. |
 | Working directory | The folder `arx` runs in. |
-| Environment | The [`ARX_*` variables](reference.md#environment). A hook in a plugin also gets `ARX_PLUGIN_DIR`, and its [settings](kits.md#the-active-list) as JSON in `ARX_PLUGIN_SETTINGS` (`{}` when it has none). |
+| Environment | The [`ARX_*` variables](reference.md#environment). A hook in a plugin also gets `ARX_PLUGIN_DIR`, its [settings](kits.md#the-active-list) as JSON in `ARX_PLUGIN_SETTINGS` (`{}` when it has none), and its [state folders](concepts.md#plugin-state) `ARX_STATE_DIR` and `ARX_DATA_DIR`. |
 | Timeout | 10 seconds by default. |
 
 The points come in two kinds. The four points around the model call and the
@@ -135,7 +135,8 @@ These outputs come from before the raw objects. They still work:
 | `stop` | when the model replies without calling a tool | `{"last_message": "..."}` | `{"decision": "continue", "message": "..."}` or `{"decision": "restart", "message": "..."}` |
 
 - **`session_start` context**: arx adds it to the end of the first user
-  message. The hook does not run again on `--resume`.
+  message. The hook does not run again on `--resume`, so keep what a
+  resumed session needs in `ARX_STATE_DIR`, not only in memory.
 - **`stop` continue**: arx sends `message` (default `Continue.`) to the
   agent as a user message, and the loop goes on. This is how "never stop"
   loops work.
