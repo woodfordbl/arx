@@ -109,7 +109,7 @@ sse_calls nap '{\"x\":\"slow\",\"secs\":1}' nap '{\"x\":\"fast\",\"secs\":0}' |
 sse_text "done" | reply 2 "200 OK"
 run "go"
 check "exits 0" exited 0
-check "the fast call ends first" test "$(tail -2 log.txt | tr '\n' ' ')" = "end-fast end-slow "
+check "the fast call ends first" test "$(grep '^end-' log.txt | tr '\n' ' ')" = "end-fast end-slow "
 check "results in call order" test "$(result_ids 2)" = "call_1 call_2"
 check "transcript in call order" sh -c "grep -o 'tool_call_id\":\"call_[12]' $TRANSCRIPT | tr '\n' ' ' | grep -q 'call_1.*call_2'"
 
