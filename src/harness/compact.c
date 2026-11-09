@@ -206,6 +206,19 @@ static int Restart(struct Agent* a, const char* message) {
   return 1;
 }
 
+// The plugin layer whose folder holds `path`, or NULL. A plugin's compactor
+// path was made absolute from its folder when the plugin loaded.
+static const Layer* PluginOf(struct Agent* a, const char* path) {
+  for (int l = 0; l < a->spec.layer_count; l++) {
+    const Layer* layer = &a->spec.layers[l];
+    size_t n = strlen(layer->dir);
+    if (layer->plugin && !strncmp(path, layer->dir, n) && path[n] == '/') {
+      return layer;
+    }
+  }
+  return NULL;
+}
+
 // Runs an external compactor: {"messages", "usage", "context_window"} in,
 // {"messages": [...]} out. Returns 1 when it changed the history, 0 when it
 // returned it unchanged, and -1 if it failed.
@@ -222,8 +235,11 @@ static int External(struct Agent* a, const char* strategy) {
   char* path = PathJoin(a->spec.dir,
                         cJSON_IsString(named) ? named->valuestring : strategy);
   char* argv[] = {path, NULL};
+  // The same ARX_* variables tools get, and a plugin's own for its
+  // compactor.
+  const Layer* layer = PluginOf(a, path);
   char** env =
-      ToolEnv(a, NULL);  // the same ARX_* variables tools and hooks get
+      ToolEnv(a, layer ? layer->dir : NULL, layer ? layer->plugin : NULL);
   Buffer out = {0};
   Proc p = {.argv = argv,
             .in = text,

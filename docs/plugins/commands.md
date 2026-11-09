@@ -21,7 +21,9 @@ folder.
   command, so the command's exit code is the exit code of `arx <name>`.
 - **Environment**: `ARX_BIN` (the arx binary) and `ARX_LIBEXEC` (the folder
   arx found the command in). A command in a user plugin also gets
-  `ARX_PLUGIN_DIR`. The session variables, such as `ARX_SESSION`, are not
+  `ARX_PLUGIN_DIR` and `ARX_DATA_DIR`, the plugin's
+  [data folder](concepts.md#plugin-state) in the current folder. The
+  session variables, such as `ARX_SESSION` and `ARX_STATE_DIR`, are not
   set, because no session runs.
 - **Help**: a line `# arx-<name>: one-line summary` in the first 512 bytes
   makes the command show up in `arx help`. `arx help <name>` runs

@@ -45,8 +45,7 @@ typedef struct Layer {
 // A loaded, validated spec.
 typedef struct Spec {
   cJSON* root;      // the spec as JSON
-  cJSON* lines;     // "dotted.path" -> line number (or "file:line" for keys
-                    // that came from the user's defaults), for error messages
+  cJSON* lines;     // "dotted.path" -> line ("file:line" from config.yaml)
   char* path;       // the spec file
   char* dir;        // its directory; tools/, hooks/ and prompts are relative
   char* config;     // the defaults file merged in (config.yaml), or NULL
@@ -161,9 +160,8 @@ void LayersFree(Spec* spec);
 // the problems in `err`. Free `plugin` with SpecFree either way.
 int PluginRead(const char* dir, Spec* plugin, Buffer* err);
 
-// Lists the entries of `dir` that do not start with '.', sorted so that
-// lists stay stable between runs. Returns the count; free each name and the
-// array.
+// Lists the entries of `dir` not starting with '.', sorted so lists stay
+// stable between runs. Returns the count; free each name and the array.
 int ListNames(const char* dir, char*** names);
 
 // ---- describe.c ----
@@ -258,6 +256,7 @@ typedef struct Tool {
   ToolKind kind;
   double timeout;
   char* plugin_dir;  // the plugin folder it came from, or NULL
+  char* plugin;      // that plugin's name, or NULL
   char* core;        // NAME when the file only runs `arx tool NAME`, or NULL
   cJSON* keys;       // key templates from the schema; NULL means ["*"]
 } Tool;
@@ -307,9 +306,10 @@ ProcChild* ToolChild(ToolRun* run);
 char* ToolFinish(ToolRun* run, int* is_error, cJSON* end_event);
 
 // Returns the ARX_* environment for tools and hooks, NULL-terminated:
-// ARX_SESSION, _SESSION_DIR, _TURN, _CWD, _SPEC, _SPEC_DIR, _DEPTH, _BIN,
-// and ARX_PLUGIN_DIR when `plugin_dir` is not NULL. Free it with FreeEnv.
-char** ToolEnv(struct Agent* a, const char* plugin_dir);
+// ARX_SESSION, _SESSION_DIR, _TURN, _CWD, _SPEC, _SPEC_DIR, _DEPTH, _BIN;
+// ARX_PLUGIN_DIR for `plugin_dir`; and for a plugin's name, ARX_STATE_DIR
+// (<session>/plugins/<name>) and ARX_DATA_DIR (<cwd>/.arx/data/<name>).
+char** ToolEnv(struct Agent* a, const char* plugin_dir, const char* plugin);
 
 // Frees an array from ToolEnv.
 void FreeEnv(char** env);

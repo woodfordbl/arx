@@ -93,7 +93,7 @@ int SchedOpen(Agent* a) {
     return 1;
   }
   g_sched.path = path;
-  char** env = ToolEnv(a, layer->plugin ? layer->dir : NULL);
+  char** env = ToolEnv(a, layer->plugin ? layer->dir : NULL, layer->plugin);
   char* argv[] = {path, NULL};
   Proc p = {.argv = argv,
             .env = env,

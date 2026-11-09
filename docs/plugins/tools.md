@@ -49,7 +49,9 @@ The schema is the description the model sees:
 
 - **Working directory**: the folder `arx` runs in, not the tool's folder.
 - **Environment**: the [`ARX_*` variables](reference.md#environment). A
-  tool in a plugin also gets `ARX_PLUGIN_DIR`, the plugin's folder.
+  tool in a plugin also gets `ARX_PLUGIN_DIR`, the plugin's folder, and its
+  [state folders](concepts.md#plugin-state): `ARX_STATE_DIR` for this
+  session and `ARX_DATA_DIR` across sessions.
 - **Errors**: a non-zero exit marks the result as an error, and the model
   sees `[exit code N]` after the output. An exit 0 with no output gives
   `(no output)`.
@@ -222,6 +224,7 @@ plugin says so with `replaces: [bash]` in its `plugin.yaml`.
 | `--schema` is slow (it imports a large library) | skipped after 2 seconds | use a schema file, or answer `--schema` before you import anything slow |
 | `--schema` reads `$ARX_PLUGIN_DIR` or another `ARX_*` variable | `--schema` runs without the `ARX_*` variables, so they are empty | make `--schema` print a fixed answer |
 | The tool reads a path relative to its own file | it runs in the work folder, so the path is wrong | use `$ARX_PLUGIN_DIR` (in a plugin) or `$ARX_SPEC_DIR` |
+| The tool writes to `$ARX_STATE_DIR` before it exists | `No such file or directory`: arx makes neither state folder | `mkdir -p "$ARX_STATE_DIR"` first |
 | The tool prints a large file | the model sees only the head and tail | print a summary, and the path of the details |
 | `tools.x` in the spec, but no `tools/x` file | `tools.x is configured but tools/x is missing` | add the file, or remove the entry |
 | A `plugins:` list or a kit without `shell` | the agent has no `bash` or `edit` | add `shell` to the list |

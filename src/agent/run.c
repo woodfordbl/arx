@@ -65,8 +65,9 @@ static int Start(Agent* a) {
   int code = OpenSession(a);
   if (code) return code;
   cJSON* observer;
-  char** env =
-      ToolEnv(a, NULL);  // observers get the same ARX_* variables as tools
+  // Observers get the same ARX_* variables as tools; a plugin's observer
+  // gets its own from the wrapper that plugins.c puts around it.
+  char** env = ToolEnv(a, NULL, NULL);
   cJSON_ArrayForEach(observer, JsonGet(a->spec.root, "observers")) {
     if (cJSON_IsString(observer)) EventsAddObserver(observer->valuestring, env);
   }
@@ -187,6 +188,11 @@ static void Finish(Agent* a, int code) {
 
 // Runs the agent; see agent.h.
 int AgentMain(Agent* a) {
+  // A plugin's variables never reach a program that is not that plugin's,
+  // also when a plugin command runs `arx -p`.
+  const char* inherited[] = {"ARX_PLUGIN_DIR", "ARX_PLUGIN_SETTINGS",
+                             "ARX_STATE_DIR", "ARX_DATA_DIR"};
+  for (int i = 0; i < 4; i++) unsetenv(inherited[i]);
   a->start = Now();
   const char* depth = getenv("ARX_DEPTH");
   a->depth = depth ? atoi(depth) : 0;

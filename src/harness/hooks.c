@@ -71,7 +71,7 @@ static int FailsClosed(struct Agent* a, const Layer* layer, const char* point) {
 // The environment for a hook: ToolEnv, plus ARX_PLUGIN_SETTINGS (the
 // plugin's settings from the active list, as JSON) for a plugin's hook.
 static char** HookEnv(struct Agent* a, const Layer* layer) {
-  char** env = ToolEnv(a, layer->plugin ? layer->dir : NULL);
+  char** env = ToolEnv(a, layer->plugin ? layer->dir : NULL, layer->plugin);
   if (!layer->plugin) return env;
   int n = 0;
   while (env[n]) n++;

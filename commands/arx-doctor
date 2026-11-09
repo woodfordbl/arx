@@ -40,6 +40,17 @@ else
   bad "the spec has problems:"
   echo "$check" | sed 's/^/      /'
 fi
+# Plugin data (ARX_DATA_DIR) stays when a plugin goes; name what is left.
+if [ -d .arx/data ]; then
+  names=$("$arx" check --list 2>/dev/null | cut -f2)
+  for dir in .arx/data/*/; do
+    [ -d "$dir" ] || continue
+    name=$(basename "$dir")
+    if ! printf '%s\n' "$names" | grep -qxF -- "$name"; then
+      warn ".arx/data/$name/ holds data for $name, which is not installed (rm -rf it if you don't need it)"
+    fi
+  done
+fi
 
 echo "endpoint"
 if source=$("$arx" request --auth-source 2>/dev/null); then

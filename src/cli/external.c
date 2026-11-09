@@ -53,14 +53,28 @@ static char** SearchDirs(void) {
   return dirs;
 }
 
-// Sets ARX_PLUGIN_DIR when the command in `dir` belongs to a user plugin
-// (~/.config/arx/plugins/<name>/commands).
-static void SetPluginDir(const char* dir) {
+// Sets ARX_PLUGIN_DIR and ARX_DATA_DIR when the command in `dir` belongs to
+// a user plugin (~/.config/arx/plugins/<name>/commands), and clears any
+// plugin variables it inherited. A command runs outside a session, so it
+// gets no ARX_STATE_DIR. The folder is not resolved, so its basename is the
+// plugin's name.
+static void SetPluginEnv(const char* dir) {
+  const char* inherited[] = {"ARX_PLUGIN_DIR", "ARX_PLUGIN_SETTINGS",
+                             "ARX_STATE_DIR", "ARX_DATA_DIR"};
+  for (int i = 0; i < 4; i++) unsetenv(inherited[i]);
   char* plugin = DirName(dir);
   char* parent = DirName(plugin);
   char* config = ConfigDir();
   char* plugins = XAsprintf("%s/plugins", config);
-  if (!strcmp(parent, plugins)) setenv("ARX_PLUGIN_DIR", plugin, 1);
+  char cwd[4096];
+  if (!strcmp(parent, plugins)) {
+    setenv("ARX_PLUGIN_DIR", plugin, 1);
+    char* data =
+        XAsprintf("%s/.arx/data/%s", getcwd(cwd, sizeof(cwd)) ? cwd : ".",
+                  plugin + strlen(parent) + 1);
+    setenv("ARX_DATA_DIR", data, 1);
+    free(data);
+  }
   free(plugins);
   free(config);
   free(parent);
@@ -96,7 +110,7 @@ int RunExternal(const char* name, int argc, char** argv) {
   char* dir = DirName(path);
   setenv("ARX_BIN", g_self, 1);
   setenv("ARX_LIBEXEC", dir, 1);
-  SetPluginDir(dir);
+  SetPluginEnv(dir);
   char** args = XMalloc((size_t)argc * sizeof(*args));
   args[0] = path;
   for (int i = 2; i < argc; i++) args[i - 1] = argv[i];

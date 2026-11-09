@@ -171,7 +171,9 @@ before you trust the list.
 ## Environment
 
 arx sets these variables for tools, hooks, schedulers, compactors and
-observers. The second table shows which kind gets which.
+observers. The second table shows which kind gets which. When a run starts,
+arx removes any `ARX_PLUGIN_DIR`, `ARX_PLUGIN_SETTINGS`, `ARX_STATE_DIR` and
+`ARX_DATA_DIR` it inherited, so only a plugin's own programs see them.
 
 | Variable | Value |
 |---|---|
@@ -183,19 +185,22 @@ observers. The second table shows which kind gets which.
 | `ARX_SPEC_DIR` | the spec folder |
 | `ARX_DEPTH` | `0` for the top-level agent, `1` for a subagent, and so on |
 | `ARX_BIN` | the arx binary, for `"$ARX_BIN" ctl "$ARX_SESSION" note ...` |
-| `ARX_PLUGIN_DIR` | the absolute plugin folder; only for the tools, hooks, observers and scheduler of a plugin |
+| `ARX_PLUGIN_DIR` | the absolute plugin folder; only for the programs of a plugin |
 | `ARX_PLUGIN_SETTINGS` | the plugin's settings from the active list, as JSON (`{}` when it has none); only for a plugin's hooks |
+| `ARX_STATE_DIR` | `$ARX_SESSION_DIR/plugins/<name>`: the plugin's state for this session; arx doesn't make it. See [Plugin state](concepts.md#plugin-state) |
+| `ARX_DATA_DIR` | `<working folder>/.arx/data/<name>`: the plugin's data across sessions; arx doesn't make it |
 
-| Kind | Gets the variables above | Gets `ARX_PLUGIN_DIR` |
-|---|---|---|
-| Tool (a call) | yes | in a plugin |
-| Tool (`--schema`) | no | no |
-| Tool (`tools/<name>.json`) | no process runs | no process runs |
-| Hook | yes, and `ARX_PLUGIN_SETTINGS` in a plugin | in a plugin |
-| Scheduler | yes | in a plugin |
-| Compactor | yes | no |
-| Observer | yes | in a plugin |
-| Command | no; it gets `ARX_BIN` and `ARX_LIBEXEC` | in a user plugin |
+| Kind | Gets the variables above | Gets `ARX_PLUGIN_DIR` | Gets `ARX_STATE_DIR` | Gets `ARX_DATA_DIR` |
+|---|---|---|---|---|
+| Tool (a call) | yes | in a plugin | in a plugin | in a plugin |
+| Tool (`--schema`) | no | no | no | no |
+| Tool (`tools/<name>.json`) | no process runs | no process runs | no process runs | no process runs |
+| Hook | yes, and `ARX_PLUGIN_SETTINGS` in a plugin | in a plugin | in a plugin | in a plugin |
+| Scheduler | yes | in a plugin | in a plugin | in a plugin |
+| Compactor | yes | in a plugin | in a plugin | in a plugin |
+| Observer | yes | in a plugin | in a plugin | in a plugin |
+| Command | no; it gets `ARX_BIN` and `ARX_LIBEXEC` | in a user plugin | no | in a user plugin |
+| Credential or adapter | no | no | no | no |
 
 ### Processes
 
@@ -264,6 +269,7 @@ Each session has a folder `.arx/sessions/<id>/` in the working directory.
 | `meta.json` | turns, tokens, cost and status, for `--resume` |
 | `tool-NNNN.out` | the full output of each process tool call |
 | `inbox` | commands from `arx ctl` |
+| `plugins/<name>/` | a plugin's `ARX_STATE_DIR`, when the plugin made it |
 
 With a kit that pins versions, arx also writes `kit.lock` next to the spec.
 

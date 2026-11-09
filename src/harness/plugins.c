@@ -118,8 +118,11 @@ static char* VersionProblem(const char* constraint) {
   return NULL;
 }
 
-// Wraps an observer command so that it runs with ARX_PLUGIN_DIR set.
-static char* WithPluginDir(const char* dir, const char* command) {
+// Wraps an observer command so that it runs with ARX_PLUGIN_DIR and the
+// plugin's state folders set. The name needs no quoting: it is letters,
+// digits, _ and -.
+static char* WithPluginEnv(const char* dir, const char* name,
+                           const char* command) {
   Buffer b = {0};
   BufferAppendStr(&b, "export ARX_PLUGIN_DIR='");
   for (const char* p = dir; *p; p++) {
@@ -129,7 +132,10 @@ static char* WithPluginDir(const char* dir, const char* command) {
       BufferAppend(&b, p, 1);
     }
   }
-  BufferPrintf(&b, "'; %s", command);
+  BufferPrintf(&b,
+               "' ARX_STATE_DIR=\"$ARX_SESSION_DIR/plugins/%s\" "
+               "ARX_DATA_DIR=\"$ARX_CWD/.arx/data/%s\"; %s",
+               name, name, command);
   return BufferTake(&b);
 }
 
@@ -192,7 +198,7 @@ static void Adopt(Spec* spec, Spec* plugin, const char* dir, const char* name) {
     all = cJSON_AddArrayToObject(spec->root, "observers");
   }
   for (c = cJSON_IsArray(all) && mine ? mine->child : NULL; c; c = c->next) {
-    char* wrapped = WithPluginDir(dir, c->valuestring);
+    char* wrapped = WithPluginEnv(dir, name, c->valuestring);
     cJSON_AddItemToArray(all, cJSON_CreateString(wrapped));
     free(wrapped);
   }
