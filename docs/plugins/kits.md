@@ -8,8 +8,9 @@ belongs in a plugin. If it only chooses or configures, it belongs in a kit.
 Use a kit when a run must load the same plugins every time, such as in an
 experiment harness, so that a plugin you install later cannot change it. arx
 ships three:
-[`kits/coding`](../../kits/coding), [`kits/explorer`](../../kits/explorer)
-and [`kits/research`](../../kits/research).
+[`kits/coding`](../../kits/coding), [`kits/explorer`](../../kits/explorer),
+[`kits/research`](../../kits/research) and
+[`kits/climber`](../../kits/climber).
 
 | | Plugin | Kit |
 |---|---|---|
@@ -176,6 +177,7 @@ and answers, and `research` for an experiment loop.
 | `coding` | `guard`, `shell`, `git-context`, `fail-hint`, `reviewer`, `plugin-authoring`, `keep-last`, `word-count`, `clock`, `notify` | you want a general coding agent |
 | `explorer` | `guard`, `shell` with `edit` off, `git-context`, `word-count`, `clock` | the agent should read and answer; `bash` can still change files |
 | `research` | `shell`, `never-stop` with a message, `git-context` | you run an experiment loop that never stops; `arx init research` gives the files of `arx init autoresearch` |
+| `climber` | `shell`, `git-context` | you run [`arx climb`](../climb.md), which scores and keeps each change; `arx init climber` adds a `climb.yaml` |
 
 ## Write a kit
 

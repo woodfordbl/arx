@@ -59,7 +59,7 @@ Two folders would hold a plugin's own files:
 | Variable | Folder | For |
 |---|---|---|
 | `ARX_STATE_DIR` | `$ARX_SESSION_DIR/plugins/<name>/` | state for one session, such as a plan or a scheduler's counters |
-| `ARX_DATA_DIR` | `.arx/state/<name>/` | data across sessions, such as a search index or climb results |
+| `ARX_DATA_DIR` | `.arx/state/<name>/` | data across sessions, such as a search index |
 
 ## Calls that do not block
 
