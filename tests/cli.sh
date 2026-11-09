@@ -197,6 +197,20 @@ sse_text "done" | reply 1 "200 OK"
 prefix/bin/arx -p go --quiet >out.txt 2>err.txt
 check "and runs the agent" has out.txt 'done'
 
+begin "install.sh"
+release_site "$WS/site"
+ARX_DOWNLOAD_URL=file://$WS/site sh "$ROOT/install.sh" --prefix "$WS/prefix" </dev/null >install.txt 2>&1
+code=$?
+check "installs from the site" test -x prefix/bin/arx
+check "with pick next to the commands" test -x prefix/libexec/arx/lib/pick
+check "says what it downloads, once" test "$(grep -c '^Downloading arx v9.9.9' install.txt)" -eq 1
+check "without a terminal it says what is next" has install.txt 'Next: arx setup'
+check "and asks nothing" lacks install.txt 'Set up arx'
+check "exits 0" exited 0
+ARX_DOWNLOAD_URL=file://$WS/site sh "$ROOT/install.sh" --nope </dev/null >install.txt 2>&1
+code=$?
+check "an unknown flag is a usage error" exited 2
+
 begin "arx plugin"
 plugins=$ARX_CONFIG_DIR/plugins
 "$ARX" plugin new demo >new.txt 2>&1

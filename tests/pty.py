@@ -9,7 +9,8 @@ apart from the screen bytes.
   pty.py [options] -- COMMAND [ARG...]
     --rows N, --cols N   the terminal size (24 x 80)
     --stdin FILE         stdin from FILE instead of the terminal
-    --out FILE           the command's stdout (default: this script's)
+    --out FILE           the command's stdout (default: this script's);
+                         `tty` makes it the terminal
     --err FILE           the command's stderr (default: the terminal)
     --screen FILE        everything drawn on the terminal
     --stty FILE          "same" or "changed": the terminal settings after
@@ -112,10 +113,14 @@ def main():
     stdin = open(opts["stdin"], "rb") if "stdin" in opts else (
         tty if tty is not None else subprocess.DEVNULL)
     stderr = subprocess.PIPE if "err" in opts else tty
-    proc = subprocess.Popen(cmd, stdin=stdin, stdout=subprocess.PIPE,
+    to_tty = opts.get("out") == "tty" and tty is not None
+    stdout = tty if to_tty else subprocess.PIPE
+    proc = subprocess.Popen(cmd, stdin=stdin, stdout=stdout,
                             stderr=stderr, env=env, start_new_session=True,
                             preexec_fn=controlling_tty)
-    bufs = {master: bytearray(), proc.stdout.fileno(): bytearray()}
+    bufs = {master: bytearray()}
+    if proc.stdout:
+        bufs[proc.stdout.fileno()] = bytearray()
     if proc.stderr:
         bufs[proc.stderr.fileno()] = bytearray()
     open_fds = set(bufs)
@@ -182,8 +187,10 @@ def main():
     if "stty" in opts:
         with open(opts["stty"], "w") as f:
             f.write("same\n" if before == after else "changed\n")
-    out = bytes(bufs[proc.stdout.fileno()])
-    if "out" in opts:
+    out = bytes(bufs[proc.stdout.fileno()]) if proc.stdout else b""
+    if to_tty:
+        pass
+    elif "out" in opts:
         with open(opts["out"], "wb") as f:
             f.write(out)
     else:

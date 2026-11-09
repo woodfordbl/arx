@@ -314,4 +314,23 @@ pty --env CI=1 --env AI_GATEWAY_API_KEY=sk-ci -- "$ARX" setup --no-test
 check "CI=1 on a terminal asks nothing" lacks screen.txt '? '
 check "and takes the defaults" has "$ARX_CONFIG_DIR/config.yaml" 'ai-gateway.vercel.sh'
 
+begin "install.sh on a terminal"
+release_site "$WS/site"
+pty --out tty --env ARX_DOWNLOAD_URL="file://$WS/site" -- sh "$ROOT/install.sh" --prefix "$WS/p1" --no-setup
+check "--no-setup on a terminal installs and stops" has screen.txt 'Next: arx setup'
+check "without asking" lacks screen.txt 'Set up arx'
+pty --out tty --env ARX_DOWNLOAD_URL="file://$WS/site" -- "$WS/p1/bin/arx" update
+check "arx update on a terminal still updates" has screen.txt 'Updated arx'
+check "and exits 0" exited 0
+pty --out tty --env ARX_DOWNLOAD_URL="file://$WS/site" --env CI=1 -- sh "$ROOT/install.sh" --prefix "$WS/p2"
+check "CI=1 never hands off" has screen.txt 'Next: arx setup'
+pty --out tty --env ARX_DOWNLOAD_URL="file://$WS/site" -- sh "$ROOT/install.sh" --prefix "$WS/p3"
+check "a reinstall over a set-up arx asks nothing" has screen.txt 'arx is already set up (model'
+fresh_config new
+pty --out tty --env ARX_DOWNLOAD_URL="file://$WS/site" --keys '<wait:Provider><c-c>' \
+  -- sh "$ROOT/install.sh" --prefix "$WS/p4"
+check "on a terminal it goes on into setup" has screen.txt 'Set up arx'
+check "a cancelled setup still exits 0" exited 0
+check "and says how to set up later" has screen.txt "Run \`arx setup\` when you're ready."
+
 summary
