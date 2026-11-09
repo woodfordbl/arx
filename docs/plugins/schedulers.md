@@ -1,15 +1,18 @@
 # Schedulers
 
-A scheduler decides when the tool calls of a reply run. arx has a built-in
-scheduler that uses the [keys](tools.md#keys) of each call. A scheduler
-plugin replaces it, for rate limits, priorities, fairness, or a limit that
-many agents share.
+A scheduler decides when the tool calls of one reply run.
+
+arx has a built-in scheduler that starts calls by their
+[keys](tools.md#keys). For most harnesses, keep it: keys already run edits
+to one file one at a time, and each `bash` call alone. Replace it with a
+scheduler plugin when you need rate limits, priorities, fairness, or a limit
+that many agents share.
 
 **Status:** today.
 
 ## How tool calls run
 
-Hooks decide **if** a call may run; the scheduler decides **when**.
+Hooks decide if a call may run. The scheduler decides when.
 
 1. arx runs the `before_tool` hooks for every call of the reply, in call
    order. A hook can change the call and its keys, or give a result in place
@@ -20,11 +23,10 @@ Hooks decide **if** a call may run; the scheduler decides **when**.
 5. The results go into the history in call order, whatever order the calls
    ended in.
 
-**The built-in scheduler** starts each queued call, in call order, whose keys
-conflict with no running call and no call queued before it. Two calls
+**The built-in scheduler** starts each queued call, in call order, whose
+keys conflict with no running call and no call queued before it. Two calls
 conflict when they share a key, or when either has the key `*`. So calls
-that conflict run in the order the model gave them. See
-[Keys](tools.md#keys).
+that conflict run in the order the model gave them.
 
 ## Contract
 
@@ -32,68 +34,88 @@ A scheduler plugin is an executable file named `scheduler` at the top of a
 [layer](concepts.md#layer): next to `agent.yaml`, or at the top of a plugin
 folder. The first one in layer order wins.
 
-- **How it runs:** one process for the whole session, started before the
+- **How it runs**: one process for the whole session, started before the
   first tool calls. It keeps running between replies.
-- **Protocol:** one JSON object per line, on its stdin and stdout. Flush
+- **Protocol**: one JSON object per line, on its stdin and stdout. Flush
   stdout after each line.
-- **Environment:** the [`ARX_*` variables](reference.md#environment), and
+- **Environment**: the [`ARX_*` variables](reference.md#environment), and
   `ARX_PLUGIN_DIR` for a plugin's scheduler. arx drops its stderr.
-- **Ctrl-C** does not stop it; arx stops it when the session ends.
+- **Ctrl-C**: does not stop it. arx stops it when the session ends.
 
-| Direction | Message | Meaning |
-|---|---|---|
-| arx → scheduler | `{"ready": {"id", "name", "keys"}}` | a call is in the queue |
-| arx → scheduler | `{"done": {"id", "secs", "is_error", "backoff"}}` | a call ended; `backoff` is what an `after_tool` hook printed, or `null` |
-| arx → scheduler | `{"tick": <unix secs>}` | the time it asked for with `wake_at` has come |
-| scheduler → arx | `{"start": ["c4", "c5"]}` | start these calls now |
-| scheduler → arx | `{"wake_at": <unix secs>}` | send a `tick` at this time |
-| scheduler → arx | `{"result": {"id", "text"}}` | end a call without a run, with this text as an error result, such as "budget used up" |
+### Messages from arx
 
-- **Backoff:** an `after_tool` hook prints
+| Message | Meaning |
+|---|---|
+| `{"ready": {"id", "name", "keys"}}` | A call is in the queue. |
+| `{"done": {"id", "secs", "is_error", "backoff"}}` | A call ended. `backoff` is what an `after_tool` hook printed, or `null`. |
+| `{"tick": <unix secs>}` | The time the scheduler asked for with `wake_at` has come. |
+
+### Messages from the scheduler
+
+| Message | Meaning |
+|---|---|
+| `{"start": ["c4", "c5"]}` | Start these calls now. |
+| `{"wake_at": <unix secs>}` | Send a `tick` at this time. |
+| `{"result": {"id", "text"}}` | End a call without a run, with this text as an error result, such as "budget used up". |
+
+### Backoff, unknown ids and failure
+
+- **Backoff**: an `after_tool` hook prints
   `{"backoff": {"key": "host:api.github.com", "secs": 30}}`, for example
   after an HTTP 429. arx passes it to the scheduler in `done`. The built-in
   scheduler ignores it.
-- **Unknown ids** in `start` or `result` are ignored.
-- **A call that ends with `result`** gets no `after_tool` hooks.
-- **Failure:** if the process cannot start, exits, or prints a line that is
-  not one of the messages above, arx writes an `error` event (`scheduler
-  PATH: ...; using the built-in scheduler`) and uses the built-in scheduler
-  for the rest of the session. It does not start that scheduler again.
+- **Unknown ids**: arx ignores them in `start` or `result`.
+- **A call that ends with `result`**: gets no `after_tool` hooks.
+- **Failure**: if the process cannot start, exits, or prints a line that is
+  not one of the messages on this page, arx writes an `error` event
+  (`scheduler PATH: ...; using the built-in scheduler`) and uses the
+  built-in scheduler for the rest of the session. It does not start that
+  scheduler again.
 
-## Minimal example
+## Write a scheduler
 
-Run at most two calls at a time, in the order they come, whatever their
-keys:
+This scheduler runs at most two calls at a time, in the order they come,
+whatever their keys.
 
-```python
-#!/usr/bin/env python3
-# scheduler: runs at most two tool calls at a time, in the order they come.
-import json
-import sys
+> [!WARNING]
+> This example ignores keys, so it can run two `edit` calls to one file, or
+> two `bash` calls, at the same time. Use it to learn the protocol, then
+> respect keys in a real scheduler.
 
-LIMIT = 2
-queue, running = [], set()
+1. Save it as `scheduler`, next to `agent.yaml` or at the top of a plugin
+   folder:
 
-for line in sys.stdin:
-    message = json.loads(line)
-    if "ready" in message:
-        queue.append(message["ready"]["id"])
-    if "done" in message:
-        running.discard(message["done"]["id"])
-    start = []
-    while queue and len(running) < LIMIT:
-        call = queue.pop(0)
-        running.add(call)
-        start.append(call)
-    if start:
-        print(json.dumps({"start": start}), flush=True)
-```
+   ```python
+   #!/usr/bin/env python3
+   # scheduler: runs at most two tool calls at a time, in the order they come.
+   import json
+   import sys
 
-```sh
-chmod +x scheduler        # next to agent.yaml, or at the top of a plugin folder
-```
+   LIMIT = 2
+   queue, running = [], set()
 
-With three calls of one second each, the first two run together and the
+   for line in sys.stdin:
+       message = json.loads(line)
+       if "ready" in message:
+           queue.append(message["ready"]["id"])
+       if "done" in message:
+           running.discard(message["done"]["id"])
+       start = []
+       while queue and len(running) < LIMIT:
+           call = queue.pop(0)
+           running.add(call)
+           start.append(call)
+       if start:
+           print(json.dumps({"start": start}), flush=True)
+   ```
+
+2. Make it executable:
+
+   ```sh
+   chmod +x scheduler        # next to agent.yaml, or at the top of a plugin folder
+   ```
+
+With three calls of one second each, the first two run together, and the
 third starts when one of them ends.
 
 ## Common mistakes
@@ -109,6 +131,15 @@ third starts when one of them ends.
 
 ## Planned
 
-Calls that do not block: a scheduler gives the model the result
-`started as c7` at once, and sends the real result later. See
-[Planned changes](planned.md).
+**Planned:** calls that do not block. A scheduler will give the model the
+result `started as c7` at once, and send the real result later. See
+[Planned changes](planned.md#calls-that-do-not-block).
+
+## Related
+
+- [Tools](tools.md#keys): the keys the built-in scheduler starts calls by.
+- [Hooks](hooks.md): `before_tool` decides if a call runs, and `after_tool`
+  can print a `backoff`.
+- [Subagents](subagents.md): calls with no keys, which run side by side.
+- [Plugin reference](reference.md#events): the `error` event a failed
+  scheduler writes.

@@ -1,12 +1,13 @@
 # Self-improving runs
 
-arx was built for autoresearch-style hill climbing: an agent works on one task
-for hours without supervision. It tries an idea, measures it, keeps it if the
-score got better, and tries the next one. Along the way it also improves its
-own harness: it writes tools that make its loop faster, hooks that catch its
-mistakes, and skills that record what it learned.
+A self-improving run is an agent that hill-climbs one score for hours without
+supervision: it tries an idea, measures it, keeps it if the score got better,
+and tries the next one. Along the way it improves its own harness: it writes
+tools that make its loop faster, hooks that catch its mistakes, and skills
+that record what it learned.
 
-This page explains how to set up such a run. The complete example is
+arx was built for this autoresearch-style loop. Use it when one command can
+score your task with one number. The complete example is
 [`examples/tsp`](../examples/tsp), an agent that makes a travelling-salesman
 solver faster and better on a CPU.
 
@@ -16,7 +17,7 @@ solver faster and better on a CPU.
 flowchart TD
   accTitle: The shape of a run
   harness["agent<br><b>Harness</b><br>tools, hooks, prompts"]
-  work["task<br><b>Work</b><br>solve.py"]
+  work["task<br><b>Work</b><br>work/solve.py"]
   score["eval<br><b>Score, then keep or revert</b><br>eval/score, git commit or reset"]
   log["memory<br><b>Log</b><br>results.tsv, notes.md"]
   harness -->|edit| work --> score --> log
@@ -27,20 +28,20 @@ flowchart TD
 
 A good setup has four parts:
 
-1. **A score.** One command that prints one number. In the TSP example,
+1. **A score**: one command that prints one number. In the TSP example,
    `python3 eval/score` prints the mean tour length; lower is better.
-2. **A loop in the prompt.** The system prompt tells the agent to pick an idea,
-   commit it, score it, log it, and keep or revert it.
-3. **Memory in files.** `results.tsv` and `notes.md` hold what was tried and
-   what was learned. The context can be cleared at any time without losing
+2. **A loop in the prompt**: the system prompt tells the agent to pick an
+   idea, commit it, score it, log it, and keep or revert it.
+3. **Memory in files**: `results.tsv` and `notes.md` hold what was tried and
+   what was learned. arx can clear the context at any time without losing
    anything.
-4. **A harness the agent may change.** `{{harness}}` in the prompt tells the
+4. **A harness the agent may change**: `{{harness}}` in the prompt tells the
    agent where its tools, hooks and skills live.
 
 ## Never stop: the stop hook
 
-A model ends its turn when it thinks it is done. For an open-ended climb, a
-`stop` hook sends it straight into the next experiment:
+A model ends its turn when it thinks it is done. For an open-ended climb,
+add a `stop` hook that sends it straight into the next experiment:
 
 ```sh
 #!/bin/sh
@@ -51,11 +52,16 @@ echo '{"decision":"continue","message":"Next experiment. Log it in results.tsv a
 The run then ends only at a cap (`--cap usd=5`, `--cap wall=2h`), at
 `arx ctl last stop`, or when you press Ctrl-C.
 
+> [!WARNING]
+> With this hook, the agent never decides it is done. Always start the run
+> with `--cap usd` or `--cap wall`, or it keeps spending until
+> `limits.max_turns`, which the agent can raise.
+
 ## Memory in files: restart compaction
 
-With `compaction: {strategy: restart}`, arx clears the context when it fills,
-and starts again from the system prompt and the first message. The first
-message pulls the memory back in:
+For a long climb, use `compaction: {strategy: restart}`. When the context
+fills, arx clears it and starts again from the system prompt and the first
+message. A first message like this pulls the memory back in:
 
 ```markdown
 {{file:program.md}}
@@ -70,10 +76,13 @@ Your skills:
 {{skills}}
 ```
 
-Every restart is a fresh, short context with the current state, instead of a
-long one that degrades. This is the "Ralph loop" pattern.
+The TSP example's `prompts/first.md` also adds `{{prompt}}` and
+`{{harness}}`. Every restart is then a fresh, short context with the current
+state, instead of a long one that degrades. This is the "Ralph loop"
+pattern. [Context and compaction](concepts.md#context-and-compaction)
+compares it with the other strategies.
 
-## Letting the agent improve itself
+## Let the agent improve itself
 
 Ask for it in the prompt. The TSP example says:
 
@@ -81,61 +90,85 @@ Ask for it in the prompt. The TSP example says:
 > runs steps 2 to 5 in one call, a skill that records what you learned about
 > the problem, or a hook that checks a tour before a full run.
 
-Things an agent can build for itself:
+An agent can build these for itself:
 
 - **A tool that runs one whole experiment**: commit, score, log, keep or
   revert, in one call. This cuts four or five turns per experiment to one.
-- **A quick eval tool** on a smaller input, to reject bad ideas in seconds.
-- **An `after_tool` hook** that adds the current best score to every result.
-- **A skill** that records the approaches that worked and the ones that did
+- **A fast eval tool**: scores a smaller input, to reject bad ideas in
+  seconds.
+- **An `after_tool` hook**: adds the current best score to every result.
+- **A skill**: records the approaches that worked and the ones that did
   not, so they survive restarts.
 - **Spec edits**: a longer tool timeout, a different temperature, a smaller
   compaction trigger.
 
-Each change is live on the next turn. A broken change is rejected or
-reported, and the run goes on.
+Each change is live on the next turn. arx rejects or reports a broken
+change, and the run goes on.
 
-## Running it
-
-```sh
-cp -r examples/tsp /tmp/tsp && cd /tmp/tsp
-printf 'results.tsv\nnotes.md\nrun.log\n.arx/\n' > .gitignore
-git init -q && git add -A && git commit -qm baseline
-
-arx --spec harness/agent.yaml --set model=<model id> \
-  -p "Start the experiment loop." --cap usd=5 --cap wall=2h
-```
+## Run the TSP example
 
 The example's spec uses OpenRouter, so it needs `OPENROUTER_API_KEY` in the
 environment, or saved by `arx setup --provider openrouter`. To use your own
-defaults instead, delete its `model` and `endpoint` lines. To start a harness of your own
-instead, `arx init autoresearch` writes the same pieces into the current
-folder: a program, an experiment-loop prompt, a never-stop hook and restart
-compaction.
+defaults instead, delete its `model` and `endpoint` lines.
 
-From another terminal:
+1. Copy the example into its own git repository:
+
+   ```sh
+   cp -r examples/tsp /tmp/tsp && cd /tmp/tsp
+   printf 'results.tsv\nnotes.md\nrun.log\n.arx/\n' > .gitignore
+   git init -q && git add -A && git commit -qm baseline
+   ```
+
+2. Start the loop, with a budget and a time limit:
+
+   ```sh
+   arx --spec harness/agent.yaml --set model=<model id> \
+     -p "Start the experiment loop." --cap usd=5 --cap wall=2h
+   ```
+
+3. From another terminal in the same folder, follow the run and steer it:
+
+   ```sh
+   arx watch                             # follows the run live
+   arx ctl last note "try Or-opt next"   # the agent sees it before its next model call
+   ```
+
+When the run ends, you have:
+
+- **`results.tsv`**: every experiment and its score.
+- **`git log`**: the solver changes that were kept.
+- **`harness/`**: what the agent built for itself.
+
+Check the result on instances the agent was not scored on:
 
 ```sh
-arx watch
-arx ctl last note "try Or-opt next"
+python3 eval/score --holdout
 ```
 
-Afterwards:
+To start a harness of your own instead, run `arx init autoresearch`. It
+writes the same pieces into the current folder: a program, an
+experiment-loop prompt, a never-stop hook and restart compaction.
 
-- `results.tsv` has every experiment and its score.
-- `git log` has the solver changes that were kept.
-- `harness/` has what the agent built for itself.
-- `python3 eval/score --holdout` checks the result on instances the agent was
-  not scored on.
+## Before a long run
 
-## Checklist
+Check each of these before you leave a run alone:
 
-| | |
+| Check | What to do |
 |---|---|
 | **Caps** | Always set `--cap usd` or `--cap wall`. The agent can raise `limits.max_turns`, but not a cap. |
 | **Git** | Run in its own repository, so every kept change is a commit and a revert is cheap. |
 | **Holdout** | Keep instances the agent never sees, and check the final result on them. |
 | **Isolation** | Tools run as your user. Use a container or VM for anything you would not run yourself. |
-| **Trust** | The agent runs its own scorer, so it could edit it. Keep the official score outside its reach (a planned `arx climb` driver will do this). |
-| **Plugins** | Name the plugins a run may use, e.g. `plugins: [guard]`, or `plugins: []` for none, so a plugin you install later cannot change the run. |
-| **Observe** | `arx watch`, or an observer that posts to a channel, so you can see a run go wrong early. |
+| **Trust** | The agent runs its own scorer, so it could edit it. Keep the official score outside its reach. A planned [`arx climb`](roadmap.md#arx-climb) driver will do this. |
+| **Plugins** | Name the plugins a run may use, such as `plugins: [guard]`, or `plugins: []` for none, so a plugin you install later can't change the run. |
+| **Observe** | Run `arx watch`, or an observer that posts to a channel, so you see a run go wrong early. |
+
+## Related
+
+- [How arx works](concepts.md): the turn loop, hot reload, caps and
+  compaction.
+- [Hooks](plugins/hooks.md): every hook point, including `stop` and
+  `after_tool`.
+- [Planned changes](plugins/planned.md#trust): how arx plans to keep a
+  policy out of the agent's reach.
+- [`examples/tsp`](../examples/tsp): the complete self-improving TSP solver.

@@ -1,7 +1,8 @@
 # Plugin reference
 
-The exact fields, variables, events, files, commands and exit codes. For what
-each kind does, see its page from the [plugin guide](../plugins.md).
+The plugin reference lists every field, variable, event, file, command and
+exit code that arx defines for plugins. For what each kind does and when to
+use it, see its guide from [Plugins](../plugins.md).
 
 ## plugin.yaml
 
@@ -19,10 +20,13 @@ a line number. Only these keys are allowed:
 | `tools` | map | Options for its tools, or subagent tools: `{name: {timeout, enabled, agent, description}}`. See [Tool options](#tool-options). |
 | `hooks` | map | Options for its own hooks: `{point: {timeout, fail, band, changes}}`. See [Hook options](#hook-options). |
 | `replaces` | string list | Tools it hides on purpose, such as `[bash]`, so `arx check` does not warn about them. |
-| `observers` | string list | Shell commands fed the event stream. See [Observers](observers.md). |
+| `observers` | string list | Shell commands that arx feeds the event stream. See [Observers](observers.md). |
 | `compactors` | map | Named compaction programs: `{name: path}`. See [Compactors](compactors.md). |
 
+A `plugin.yaml` that uses every key:
+
 ```yaml
+# plugin.yaml
 name: notify                 # must match the folder name
 version: 0.1.0
 description: Reports when a session ends.
@@ -35,20 +39,20 @@ hooks: {before_tool: {fail: closed, band: policy, changes: [result]}}
 replaces: [bash]
 ```
 
-**How the keys are used:**
+arx uses the keys this way:
 
-- **Paths** (`tools.<name>.agent`, `compactors`) are relative to the plugin
+- **Paths** (`tools.<name>.agent`, `compactors`): relative to the plugin
   folder.
-- **`tools` and `compactors`** merge under the spec, key by key. Where the
+- **`tools` and `compactors`**: merged under the spec, key by key. Where the
   spec sets the same value, the spec wins.
-- **`observers`** are added to the spec's list, and run with
-  `ARX_PLUGIN_DIR` set.
-- **`hooks`** apply only to the plugin's own hooks. The spec's `hooks:`
+- **`observers`**: added to the spec's list, and run with `ARX_PLUGIN_DIR`
+  set.
+- **`hooks`**: apply only to the plugin's own hooks. The spec's `hooks:`
   does not apply to them.
-- **Settings** from the active list can change `tools` and `hooks`, and reach
-  the plugin's hooks as `ARX_PLUGIN_SETTINGS`. See
+- **Settings**: settings from the active list can change `tools` and
+  `hooks`, and reach the plugin's hooks as `ARX_PLUGIN_SETTINGS`. See
   [The active list](kits.md#the-active-list).
-- **Not allowed:** `instructions`, `model`, `model_settings` and the other
+- **Not allowed**: `instructions`, `model`, `model_settings` and the other
   spec keys. A plugin cannot change the system prompt or the model today.
 
 ### Tool options
@@ -57,8 +61,8 @@ replaces: [bash]
 |---|---|---|---|
 | `timeout` | duration | `120s` (`30m` for a subagent) | Seconds, or `10s`, `5m`, `1h`. |
 | `enabled` | boolean | `true` | `false` hides the tool from the model. |
-| `agent` | string | | A spec path: makes this tool a [subagent](subagents.md). |
-| `description` | string | | The description the model sees, for a subagent. |
+| `agent` | string | | A spec path. It makes this tool a [subagent](subagents.md). |
+| `description` | string | | For a subagent, the description the model sees. |
 
 The names under `tools:` use letters, digits, `_` and `-`, up to 64
 characters.
@@ -67,15 +71,17 @@ characters.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `timeout` | duration | `10s` | At the timeout the hook fails. |
-| `fail` | string | `open` | `open` ignores a failed hook. `closed` makes a failed `before_tool` hook deny the call. |
+| `timeout` | duration | `10s` | At the timeout, the hook fails. |
+| `fail` | string | `open` | `open` ignores a failed hook. `closed` stops the hooks after it at that point, and a failed `before_tool` hook then denies the call. Use `closed` for a guard. |
 | `band` | string | `normal` | `policy`, `normal` or `final`. See [Bands](hooks.md#bands). |
-| `changes` | string list | | The fields the hook changes; `arx check` warns when two hooks at one point change the same field. |
+| `changes` | string list | | The fields the hook changes. `arx check` warns when two hooks at one point change the same field. |
 
 The keys under `hooks:` must be hook points: `session_start`,
 `before_model`, `after_model`, `before_tool`, `after_tool`, `stop`.
 
 ## kit.yaml
+
+A kit holds no executable files. See [Kits](kits.md).
 
 | Key | Type | Meaning |
 |---|---|---|
@@ -85,13 +91,12 @@ The keys under `hooks:` must be hook points: `session_start`,
 | `plugins` | plugin list | Its plugins, in order. Required, unless it has `extends`. |
 | `model_settings` | map | Extra request fields. |
 | `prompt` | string | The system prompt file, relative to the kit folder. |
-| `extends` | string | A kit this one starts from (up to 8 deep). |
+| `extends` | string | A kit this one starts from, up to 8 deep. |
 | `enable` | plugin list | Plugins to add to the kit it extends. |
 | `disable` | string list | Plugins to leave out of it. |
 
-A **plugin list** has names (`guard`), references (`acme/tools/lint`,
+A plugin list holds names (`guard`), references (`acme/tools/lint`,
 `guard@v0.2.0`) and entries with settings (`never-stop: {message: "..."}`).
-A kit holds no executable files. See [Kits](kits.md).
 
 ## Spec keys for plugins
 
@@ -101,16 +106,16 @@ These `agent.yaml` (and `config.yaml`) keys build the
 | Key | Type | Meaning |
 |---|---|---|
 | `kit` | string | The kit: its plugins, in order, its prompt and its settings. |
-| `plugins` | plugin list | The only plugins to use, in order (default: all installed). |
+| `plugins` | plugin list | The only plugins to use, in order. The default is all installed plugins. |
 | `enable` | plugin list | Plugins to add to the kit or the list. |
 | `disable` | string list | Plugins to leave out. |
 
-### Checking a plugin
+## arx check
 
 `arx check --plugin DIR` checks a plugin folder without loading it. It
 prints `key=value` lines, which `arx plugin` reads:
 
-```
+```text
 name=notify
 version=0.1.0
 description=Reports when a session ends.
@@ -123,24 +128,27 @@ skills=
 commands=
 ```
 
-`tools` lists tool files, not schema files (`tools/<name>.json`). `missing`
-lists the programs in `requires` that are not on `PATH`. If the
-plugin is not valid, it prints the problems on stderr and exits 2. It does
-not check that `name` matches the folder name; loading does.
+- **`tools`**: the tool files, not the schema files (`tools/<name>.json`).
+- **`missing`**: the programs in `requires` that are not on `PATH`.
+- **A plugin that is not valid**: arx prints the problems on stderr and
+  exits 2.
+- **The folder name**: not checked here. Loading checks that `name` matches
+  it.
 
 `arx check --kit-dir DIR` does the same for a kit folder, with the keys
 `name`, `version`, `description`, `extends`, `plugins`, `enable` and
 `disable`.
 
-`arx check` reports the whole harness: a `kit:` line when there is a kit,
-then `tools:`, `hooks:`, `plugins:` (in order), `problems:` and `warnings:`.
-`arx check --list` prints the active list as tab-separated rows (position,
-name, state, why, folder) for scripts; `arx plugin list` shows it as a
-table.
+`arx check` with no option reports the whole harness: a `kit:` line when
+there is a kit, then `tools:`, `hooks:`, `plugins:` (in order), `problems:`
+and `warnings:`. `arx check --list` prints the active list as tab-separated
+rows (position, name, state, why, folder) for scripts. `arx plugin list`
+shows the same list as a table.
 
 ## Environment
 
-Tools, hooks, compactors and observers run with these variables:
+arx sets these variables for tools, hooks, schedulers, compactors and
+observers. The second table shows which kind gets which.
 
 | Variable | Value |
 |---|---|
@@ -159,22 +167,22 @@ Tools, hooks, compactors and observers run with these variables:
 |---|---|---|
 | Tool (a call) | yes | in a plugin |
 | Tool (`--schema`) | no | no |
-| Tool (`tools/<name>.json`) | no process runs | — |
+| Tool (`tools/<name>.json`) | no process runs | no process runs |
 | Hook | yes, and `ARX_PLUGIN_SETTINGS` in a plugin | in a plugin |
 | Scheduler | yes | in a plugin |
 | Compactor | yes | no |
 | Observer | yes | in a plugin |
 | Command | no; it gets `ARX_BIN` and `ARX_LIBEXEC` | in a user plugin |
 
-**Processes:**
+### Processes
 
-- Tools, hooks, compactors and observers run from the working directory, not
-  from their own folder.
-- Tools, subagents, hooks and compactors run in their own process group. At
-  the timeout, or on Ctrl-C, the whole group gets SIGTERM, then SIGKILL 3
-  seconds later.
-- For tools, compactors and `--schema`, arx reads stderr together with
-  stdout. For hooks, it keeps stderr apart.
+- **Working directory**: tools, hooks, compactors and observers run from the
+  working directory, not from their own folder.
+- **Process groups**: tools, subagents, hooks and compactors run in their
+  own process group. At the timeout, or on Ctrl-C, the whole group gets
+  SIGTERM, then SIGKILL 3 seconds later.
+- **stderr**: for tools, compactors and `--schema`, arx reads stderr
+  together with stdout. For hooks, it keeps stderr apart.
 
 ## Hook points
 
@@ -183,8 +191,8 @@ Tools, hooks, compactors and observers run with these variables:
 | `session_start` | none | `{"context": "..."}` |
 | `before_model` | `{"messages", "tools", "model", "settings", "reason"}` | any of `messages`, `tools`, `model`, `settings` |
 | `after_model` | `{"reply", "usage", "finish"}` | `reply` |
-| `before_tool` | `{"id", "name", "args"}` | any of `name`, `args`, `result`; or `{"decision": "deny", "reason": "..."}` |
-| `after_tool` | `{"call": {"id", "name", "args"}, "result", "is_error"}` | `result`; or `{"note": "..."}` |
+| `before_tool` | `{"id", "name", "args", "keys"}` | any of `name`, `args`, `keys`, `result`; or `{"decision": "deny", "reason": "..."}` |
+| `after_tool` | `{"call": {"id", "name", "args"}, "result", "is_error"}` | `result`, `backoff`; or `{"note": "..."}` |
 | `stop` | `{"last_message": "..."}` | `{"decision": "continue" or "restart", "message": "..."}` |
 
 Every input also has `point`, `session` and `turn`. At the four middle points
@@ -199,7 +207,7 @@ Every event is one JSON line with these fields first:
 {"v":1,"t":"2026-10-30T22:14:03.120Z","session":"...","depth":0,"turn":7,"type":"..."}
 ```
 
-New fields may be added within `v` 1. Nothing is renamed or removed without a
+arx may add new fields within `v` 1. It renames or removes nothing without a
 new `v`.
 
 | `type` | Fields |
@@ -215,7 +223,7 @@ new `v`.
 | `harness.reload` | `ok`, `ms`, and `tools` (a count) or `errors` |
 | `compact` | `strategy`, `tokens_before`, `tokens_after` |
 | `note` | `text`: harness notes, and caps reached |
-| `error` | `error`; also when a scheduler plugin fails |
+| `error` | `error`; also sent when a scheduler plugin fails |
 | `session.end` | `status`, `turns`, `tokens`, `cost`, `secs`, `final_output` |
 
 A subagent's events appear in its parent's stream with a higher `depth`.
@@ -261,28 +269,30 @@ for `arx plugin add`.
 | `arx plugin add ./PATH` | installs a folder on this machine; a path needs a `/` |
 | `arx plugin add FILE.tar.gz` | installs from a tarball with one plugin folder in it |
 | `arx plugin remove NAME` | deletes the plugin folder; for a link, only the link |
-| `arx plugin list` | the plugins in the order a run here uses them, with version, scope, position, state (`on`, `off`, `broken`, `missing`), the reason, and the source |
+| `arx plugin list` | lists the plugins in the order a run here uses them, with version, scope, position, state (`on`, `off`, `broken`, `missing`), the reason, and the source |
 | `arx plugin enable NAME` | adds it to `enable:` in `./agent.yaml` (`config.yaml` with `--global`), and takes it out of `disable:` |
 | `arx plugin disable NAME` | adds it to `disable:` in `./agent.yaml` (`config.yaml` with `--global`) |
 | `arx plugin new NAME [DIR]` | makes a plugin folder with a `plugin.yaml` and an example tool, in `plugins/NAME` if `plugins/` exists, else in `NAME` |
 
-| Option | Meaning |
+| Option | What it does |
 |---|---|
-| `--project` | use `./plugins/`, next to `./agent.yaml`: this harness only |
-| `--link` | use a local folder where it is, for development |
-| `--force` | replace a plugin that is already installed |
-| `--yes` | do not ask; required when there is no terminal |
-| `--no-enable` | do not add a new plugin to `enable:` when the kit or list here would leave it off |
+| `--project` | uses `./plugins/`, next to `./agent.yaml`: this harness only |
+| `--link` | uses a local folder where it is, for development |
+| `--force` | replaces a plugin that is already installed |
+| `--yes` | does not ask; required when there is no terminal |
+| `--no-enable` | does not add a new plugin to `enable:` when the kit or list here would leave it off |
 
-- **Where it installs:** `~/.config/arx/plugins/<name>/` (a user plugin, on
-  in every harness), or `./plugins/<name>/` with `--project`.
-- **Checks:** `add` runs `arx check --plugin` first, shows what the plugin
+- **Where it installs**: `~/.config/arx/plugins/<name>/` (a user plugin, on
+  in every harness), or `./plugins/<name>/` with `--project`. Use
+  `--project` when only this harness should load the plugin. A project
+  plugin cannot add [commands](commands.md).
+- **Checks**: `add` runs `arx check --plugin` first, shows what the plugin
   adds and what it needs, and asks before it changes anything.
-- **Source record:** a copied plugin has a `.arx-source` file with its
+- **Source record**: a copied plugin has a `.arx-source` file with its
   source, commit and install time. `list` reads it.
-- **A build that is not a release** gets plugins from `main` of the arx
+- **A build that is not a release**: gets plugins from `main` of the arx
   repo, not from a tag.
-- **Kits:** `arx kit add|list|remove` installs kits and their plugins. See
+- **Kits**: `arx kit add|list|remove` installs kits and their plugins. See
   [Kit commands](kits.md#commands).
 
 | Variable | Use |

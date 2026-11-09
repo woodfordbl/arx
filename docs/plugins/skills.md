@@ -1,19 +1,26 @@
 # Skills
 
 A skill is a Markdown file of instructions that the agent reads when it needs
-them. arx lists each skill's name and description in the prompt, and the
-agent reads the full file only for the task at hand. A skill has no code.
+them.
+
+arx lists each skill's name and description in the prompt, and the agent
+reads the full file only for the task at hand. Write one for know-how the
+agent needs only some of the time: a release process, a project's
+conventions, how to use an internal service. A skill has no code. If the
+agent needs to act rather than read, write a [tool](tools.md).
 
 **Status:** today. **Example:**
 [`plugins/plugin-authoring`](../../plugins/plugin-authoring).
 
 ## Contract
 
-- **The file:** `<skills folder>/<name>/SKILL.md`.
-- **The skills folder:** in the spec folder, the folder that `skills:` in the
+### How arx finds skills
+
+- **The file**: `<skills folder>/<name>/SKILL.md`.
+- **The skills folder**: in the spec folder, the folder that `skills:` in the
   spec names. In a plugin and in your config folder, it is `skills/`.
-- **Front matter:** the file starts with `name` and `description`, each on one
-  line:
+- **Front matter**: the file starts with `name` and `description`, each on
+  one line:
 
   ```markdown
   ---
@@ -23,23 +30,34 @@ agent reads the full file only for the task at hand. A skill has no code.
   ```
 
   Without a `name`, arx uses the folder name.
-- **The index:** `{{skills}}` in a prompt (`instructions:` or
-  `first_message:`) becomes one line per skill:
-  `- name: description (path)`. With no skills, it is `(no skills yet)`.
-- **Layers:** `{{skills}}` lists the skills of every layer. When two layers
-  have a skill folder with the same name, the first one wins.
-- **Reload:** a new or changed `SKILL.md` is picked up before the next model
+- **Layers**: arx lists the skills of every [layer](concepts.md#layer). When
+  two layers have a skill folder with the same name, the first one wins.
+- **Reload**: arx picks up a new or changed `SKILL.md` before the next model
   call.
 
-## Minimal example
+### Put the index in the prompt
 
-```
+`{{skills}}` in a prompt (`instructions:` or `first_message:`) becomes one
+line per skill, in the form `- name: description (path)`. With no skills, it
+becomes `(no skills yet)`.
+
+> [!NOTE]
+> Only `{{skills}}` lists your skills in the prompt. Without it, the agent
+> never learns which skills exist.
+
+## Write a skill
+
+A skill in a plugin sits in its own folder under `skills/`:
+
+```text
 my-plugin/
   plugin.yaml
   skills/
     release/
       SKILL.md
 ```
+
+`skills/release/SKILL.md` holds the front matter, then the steps:
 
 ```markdown
 ---
@@ -52,10 +70,11 @@ description: How to tag and publish a release of this project.
 3. Tag the commit: `git tag vX.Y.Z && git push --tags`.
 ```
 
-The spec must use `{{skills}}` somewhere, so the agent learns that skills
-exist:
+Then use `{{skills}}` somewhere in the spec's prompt, so the agent learns
+that skills exist:
 
 ```yaml
+# agent.yaml
 instructions: |
   You are a careful engineer.
   Skills (read the file when one applies):
@@ -75,3 +94,11 @@ instructions: |
 ## Planned
 
 No change is planned for skills.
+
+## Related
+
+- [Tools](tools.md): give the agent an action instead of instructions.
+- [Plugin concepts](concepts.md#layer): the layers arx reads skills from,
+  and their order.
+- [agent.yaml reference](../spec.md#templates): `{{skills}}` and the other
+  prompt templates.

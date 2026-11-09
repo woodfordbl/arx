@@ -1,27 +1,42 @@
 # Drivers
 
 A driver is any program that runs arx: a supervisor, an evaluation loop, a
-batch job, a CI step. arx does not load it. A driver uses only the command
-line, the exit code, the JSON result and the event stream.
+batch job or a CI step.
+
+arx does not load a driver. A driver uses only the command line, the exit
+code, the JSON result and the event stream. Write one when a run must go on
+without you: resume it after a cap, repeat it until a score climbs, or run it
+on every commit.
 
 **Status:** today. **Example:**
 [`examples/plugins/drivers/resume_on_cap.sh`](../../examples/plugins/drivers/resume_on_cap.sh).
 
 ## Contract
 
-| Option | Use |
-|---|---|
-| `-p TASK` or `-p -` | run one task until the agent stops; `-` reads the task from stdin |
-| `--json` | print one JSON result on stdout (below) |
-| `--quiet` | no terminal view |
-| `--events PATH`, `--events -`, `--events fd:N` | also write the [event stream](reference.md#events) to a file, stdout or an open file descriptor |
-| `--resume ID` or `--resume last` | continue a session with its history |
-| `--cap turns=N`, `tokens=N`, `usd=N`, `wall=8h`, `depth=N` | hard limits that the spec cannot raise |
-| `--set key.path=value` | set a spec value for this run; it stays in force after every reload |
-| `--kit NAME` | use an installed [kit](kits.md) for this run; the same as `--set kit=NAME`, so the agent cannot change it |
-| `--spec PATH` | the spec to use, instead of `./agent.yaml` |
+### Options for drivers
 
-**The JSON result** (`--json`):
+These options start and shape a run. [Command line](../cli.md) lists the
+rest.
+
+| Option | What it does |
+|---|---|
+| `-p TASK` or `-p -` | Runs one task until the agent stops. `-` reads the task from stdin. |
+| `--json` | Prints one JSON result on stdout. See [Read the result](#read-the-result). |
+| `--quiet` | Turns off the terminal view. |
+| `--events PATH`, `--events -`, `--events fd:N` | Also writes the [event stream](reference.md#events) to a file, stdout or an open file descriptor. |
+| `--resume ID` or `--resume last` | Continues a session with its history. |
+| `--cap turns=N`, `tokens=N`, `usd=N`, `wall=8h`, `depth=N` | Sets hard limits that the spec cannot raise. |
+| `--set key.path=value` | Sets a spec value for this run. It stays in force after every reload. |
+| `--kit NAME` | Uses an installed [kit](kits.md) for this run. It is the same as `--set kit=NAME`, so the agent cannot change it. |
+| `--spec PATH` | Uses this spec instead of `./agent.yaml`. |
+
+> [!WARNING]
+> The agent can edit `kit:` and `plugins:` in its own spec. For a run you
+> don't watch, pin them with `--kit NAME` or `--set`, and set a `--cap`.
+
+### Read the result
+
+With `--json`, arx prints one object on stdout when the run ends:
 
 ```json
 {"session": "20261030-221403-a1b2", "status": "done", "exit": 0,
@@ -29,9 +44,12 @@ line, the exit code, the JSON result and the event stream.
  "cost": 0.0153}
 ```
 
-`status` is `done`, `cap`, `auth`, `interrupted` or `error`.
+`status` is `done`, `cap`, `auth`, `interrupted` or `error`. Read `session`
+from here when you resume or steer the run, rather than `last`.
 
-**Exit codes:**
+### Exit codes
+
+The exit code tells the driver what to do next:
 
 | Code | Meaning |
 |---|---|
@@ -42,7 +60,9 @@ line, the exit code, the JSON result and the event stream.
 | `4` | authentication failed |
 | `130` | interrupted (Ctrl-C) |
 
-**Steering a running session** from another process:
+### Steer a running session
+
+A driver, or you in another terminal, can steer a session while it runs:
 
 ```sh
 arx ctl last note "Try a smaller input first."   # the agent sees it before its next model call
@@ -52,9 +72,10 @@ arx ctl last stop                                # it stops after the current tu
 `arx ctl` appends a line to the session's `inbox` file. Use a session id in
 place of `last` when more than one session runs in the folder.
 
-## Minimal example
+## Write a driver
 
-Run a task with a turn cap, and resume it each time the cap stops it:
+This driver runs a task with a turn cap. Each time the cap stops it (exit
+`3`), it resumes the session with 20 more turns:
 
 ```sh
 #!/bin/sh
@@ -69,7 +90,8 @@ done
 cat result.json
 ```
 
-The full version, with a limit on the rounds, is
+When a run ends with any other code, the driver prints its JSON result. The
+full version, with a limit on the rounds, is
 [`resume_on_cap.sh`](../../examples/plugins/drivers/resume_on_cap.sh).
 
 ## Common mistakes
@@ -85,5 +107,13 @@ The full version, with a limit on the rounds, is
 
 ## Planned
 
-A policy folder (`--policy DIR`) that loads first and that the spec cannot
-remove. See [Planned changes](planned.md#trust).
+**Planned:** a policy folder (`--policy DIR`) that loads first and that the
+spec cannot remove. See [Planned changes](planned.md#trust).
+
+## Related
+
+- [Command line](../cli.md#caps): every option, and each cap in detail.
+- [Self-improving runs](../autoresearch.md): set up an agent that climbs a
+  score without supervision.
+- [Observers](observers.md): read the event stream from inside the session.
+- [Kits](kits.md): pin the plugins a run uses.

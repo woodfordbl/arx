@@ -1,14 +1,15 @@
 # Plugin quickstart
 
-In this guide you write a plugin with one tool and one hook, check it, and
-see both run in a session. It takes about five minutes. A fake model plays
-back replies from files, so you need no API key and spend nothing.
+Write a plugin with one tool and one hook, check it, and watch both run in a
+session. It takes about five minutes, and by the end you'll have a plugin you
+can put in a kit or install in every harness.
 
-You need a C compiler, `make` and `python3`.
+A fake model plays back replies from files, so you need no API key and spend
+nothing. You need an arx checkout, a C compiler, `make` and `python3`.
 
 ## 1. Build arx and make a test folder
 
-From the root of your arx checkout:
+From the root of your arx checkout, build arx and point it at the fake model:
 
 ```sh
 make                                     # builds ./arx
@@ -21,8 +22,8 @@ cd "$(mktemp -d)"
 `tests/fake-curl` is the stand-in for `curl` that `make test` uses. It answers
 model call N with the file `$FAKE_DIR/0N.resp`.
 
-Write a minimal spec. `NO_KEY` is an environment variable that is not set, so
-arx sends no API key:
+Write a minimal spec. `NO_KEY` names an environment variable that is not set,
+so arx sends no API key:
 
 ```sh
 cat > agent.yaml <<'EOF'
@@ -34,9 +35,9 @@ EOF
 
 ## 2. Write a tool
 
-A plugin is a folder with a `plugin.yaml`. A folder in `plugins/` next to
-`agent.yaml` is a plugin for this harness only, and it loads without an
-install step.
+A plugin is a folder with a `plugin.yaml`. A plugin folder in `plugins/`, next
+to `agent.yaml`, belongs to this harness only and loads without an install
+step. Create one called `hello`:
 
 ```sh
 mkdir -p plugins/hello/tools
@@ -47,9 +48,9 @@ description: A greet tool and a hook that guards it.
 EOF
 ```
 
-A tool is an executable in `tools/`. Its file name is the tool name. Called
-with `--schema`, it prints its description. Called without it, it reads its
-arguments as JSON on stdin and prints the result:
+A tool is an executable in `tools/`, and its file name is the tool name.
+Called with `--schema`, it prints its description. Called without it, it reads
+its arguments as JSON on stdin and prints the result. Write a `greet` tool:
 
 ```sh
 cat > plugins/hello/tools/greet <<'EOF'
@@ -80,7 +81,7 @@ Run it by hand first, the way arx will:
 echo '{"name": "Ada"}' | plugins/hello/tools/greet
 ```
 
-```
+```text
 Hello, Ada!
 ```
 
@@ -91,7 +92,7 @@ any problems:
 arx check
 ```
 
-```
+```text
 ok: agent.yaml (model test-model at http://fake.invalid/v1)
 tools: greet
 hooks:
@@ -100,15 +101,15 @@ plugins: hello
 
 `greet` is the only tool, because the empty config folder has no `shell`
 plugin. With your own config, `arx setup` turns that plugin on, and the agent
-also gets `bash` and `edit`. `arx tools` prints the tools as the model sees
-them.
+also gets `bash` and `edit`. To see the tools as the model sees them, run
+`arx tools`.
 
 ## 3. Write a hook
 
 A hook is an executable in `hooks/`, named after its hook point. A
-`before_tool` hook runs before each tool call. It gets the call as JSON on
+`before_tool` hook runs before each tool call and gets the call as JSON on
 stdin: `{"id", "name", "args"}`. It prints nothing to let the call run, or a
-decision to deny it:
+decision to deny it. Write one that refuses to greet Bob:
 
 ```sh
 mkdir -p plugins/hello/hooks
@@ -130,20 +131,20 @@ Try it by hand. arx sends compact JSON, with no spaces:
 echo '{"id":"c2","name":"greet","args":{"name":"Bob"}}' | plugins/hello/hooks/before_tool
 ```
 
-```
+```text
 {"decision": "deny", "reason": "do not greet Bob"}
 ```
 
-`arx check` now shows the hook and the plugin it comes from:
+Run `arx check` again. It now shows the hook and the plugin it comes from:
 `hooks: before_tool(hello)`.
 
 A hook can also change the call, or the request and the reply around the
-model call. See [Hooks](hooks.md).
+model call. [Hooks](hooks.md) covers every hook point.
 
 ## 4. See them in a session
 
-Write three model replies. The first calls `greet` for Ada, the second calls
-it for Bob, and the third ends the task:
+Write three model replies for the fake model. The first calls `greet` for
+Ada, the second calls it for Bob, and the third ends the task:
 
 ```sh
 export FAKE_DIR="$PWD/fake"
@@ -171,7 +172,9 @@ Run one task:
 arx -p "Greet Ada and Bob"
 ```
 
-```
+arx runs `greet` for Ada, and your hook denies the call for Bob:
+
+```text
 ● arx 0.1.0 · hello · test-model · session 20261107-143709-f81d
   ⏵ greet {"name":"Ada"}
     ↳ exit 0 · 0.0s · 12 B  Hello, Ada!
@@ -182,7 +185,7 @@ I greeted Ada. I may not greet Bob.
 ● done · 3 turns · 0 tokens · $0.00000 · 0.1s
 ```
 
-The session folder has the full record. These are the tool results the model
+The session folder holds the full record. Print the tool results the model
 got, and the hook events:
 
 ```sh
@@ -197,13 +200,14 @@ grep '"type":"hook"' .arx/sessions/last/events.jsonl
 
 arx checks the harness files before every model call. Edit `greet`, add a
 file to `tools/`, or delete the hook, and the next turn uses the new version.
-A tool the agent writes for itself loads the same way. There is no restart
-and no registration.
+There is no restart and no registration step. A tool the agent writes for
+itself loads the same way.
 
 ## 6. Put it in a kit
 
 A kit chooses the plugins of a run, in order, and has no code. A kit in
-`kits/` next to `agent.yaml` is found without an install step:
+`kits/`, next to `agent.yaml`, loads without an install step. Make one that
+runs only the `hello` plugin:
 
 ```sh
 mkdir -p kits/greeter
@@ -216,7 +220,7 @@ EOF
 arx check --kit greeter
 ```
 
-```
+```text
 ok: agent.yaml (model test-model at http://fake.invalid/v1)
 kit: greeter (from --kit)
 tools: greet
@@ -224,21 +228,28 @@ hooks: before_tool(hello)
 plugins: hello
 ```
 
-Only the plugins the kit lists load. `arx --kit greeter` runs with it, and
-the agent cannot change the kit. See [Kits](kits.md).
+Only the plugins the kit lists load. `arx --kit greeter` runs with the kit,
+and the agent cannot change the kit of that run.
+
+## Take the plugin past the test folder
+
+Your plugin works in this folder. To use it for real:
+
+- **Use it in every harness**: `arx plugin add --link ./plugins/hello` links
+  the folder into your config folder, so every harness loads it. Without
+  `--link`, arx copies it.
+- **Use a real model**: open a new terminal, so the exports are gone, run
+  `arx setup`, and delete the `model:` and `endpoint:` lines of
+  `agent.yaml`.
+- **Start the next plugin faster**: `arx plugin new NAME` makes a folder with
+  a `plugin.yaml` and an example tool.
+- **Use a shipped kit**: `arx kit add coding` installs the coding kit and its
+  plugins, and `arx --kit coding` runs with it.
 
 ## Next steps
 
-- **Use it in every harness:** `arx plugin add --link ./plugins/hello` links
-  the folder into your config folder, so every harness loads it. Without
-  `--link`, arx copies it.
-- **Start the next plugin faster:** `arx plugin new NAME` makes a folder with
-  a `plugin.yaml` and an example tool.
-- **Go further:** [Concepts](concepts.md) explains layers and load order. The
-  [tool](tools.md) and [hook](hooks.md) pages give the full contracts and the
+- [Plugin concepts](concepts.md): learn how layers and load order decide
+  which part wins.
+- [Tools](tools.md) and [Hooks](hooks.md): read the full contracts and the
   common mistakes.
-- **Use a real model:** open a new terminal, so the exports are gone, run
-  `arx setup`, and delete the `model:` and `endpoint:` lines of
-  `agent.yaml`.
-- **Use the shipped kits:** `arx kit add coding` installs the coding kit and
-  its plugins; `arx --kit coding` runs with it.
+- [Kits](kits.md): build the active list of a run and pin it.
