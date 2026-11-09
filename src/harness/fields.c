@@ -1,9 +1,10 @@
-// fields.c: the field tables of agent.yaml, plugin.yaml and kit.yaml. One
-// table drives validation (validate.c) and the JSON Schema (schema.c), so
-// adding a key here adds it to both.
+// fields.c: the field tables of agent.yaml, plugin.yaml and kit.yaml, and
+// what each field type accepts. One table drives validation (validate.c) and
+// the JSON Schema (schema.c), so adding a key here adds it to both.
 
 #include <stddef.h>
 
+#include "src/base/base.h"
 #include "src/harness/harness.h"
 
 const char* const kHookPoints[] = {
@@ -108,6 +109,8 @@ const Field kPluginFields[] = {
     {"credentials", kAnyMap, NULL, "Named credential programs: name -> path"},
     {"adapters", kAnyMap, NULL, "Named request adapters: name -> path"},
     {"hosts", kStringList, NULL, "Network hosts its programs reach"},
+    {"instructions", kTextList, NULL, "Text added to the system prompt"},
+    {"model_settings", kAnyMap, NULL, "Request fields, below the spec's"},
     {NULL, 0, NULL, NULL}};
 
 const Field kKitFields[] = {
@@ -121,3 +124,87 @@ const Field kKitFields[] = {
     {"enable", kPluginList, NULL, "Plugins to add to the kit it extends"},
     {"disable", kStringList, NULL, "Plugins to leave out of it"},
     {NULL, 0, NULL, NULL}};
+
+// True for a string or {file: path}.
+static int IsText(const cJSON* v) {
+  return cJSON_IsString(v) ||
+         (cJSON_IsObject(v) && cJSON_GetArraySize(v) == 1 &&
+          cJSON_IsString(cJSON_GetObjectItemCaseSensitive(v, "file")));
+}
+
+// True when `v` is an array whose items all pass `check`.
+static int AllItems(const cJSON* v, int (*check)(const cJSON*)) {
+  if (!cJSON_IsArray(v)) return 0;
+  for (cJSON* c = v->child; c; c = c->next) {
+    if (!check(c)) return 0;
+  }
+  return 1;
+}
+
+// True for one entry of a plugin list: a name, or {name: {settings}}.
+static int IsPluginEntry(const cJSON* v) {
+  if (cJSON_IsString(v)) return *v->valuestring != 0;
+  return cJSON_IsObject(v) && cJSON_GetArraySize(v) == 1 &&
+         (cJSON_IsObject(v->child) || cJSON_IsNull(v->child));
+}
+
+// Checks the shape of a value; see harness.h.
+int TypeOk(FieldType type, const cJSON* v) {
+  double secs;
+  size_t bytes;
+  switch (type) {
+    case kString:
+      return cJSON_IsString(v);
+    case kNumber:
+      return cJSON_IsNumber(v);
+    case kInteger:
+      return cJSON_IsNumber(v) &&
+             v->valuedouble == (double)(int64_t)v->valuedouble;
+    case kBoolean:
+      return cJSON_IsBool(v);
+    case kDuration:
+      return cJSON_IsNumber(v) ||
+             (cJSON_IsString(v) && ParseDuration(v->valuestring, &secs) == 0);
+    case kSize:
+      return cJSON_IsNumber(v) ||
+             (cJSON_IsString(v) && ParseSize(v->valuestring, &bytes) == 0);
+    case kText:
+      return IsText(v);
+    case kTextList:
+      return IsText(v) || AllItems(v, IsText);
+    case kStringList:
+      return AllItems(v, cJSON_IsString);
+    case kPluginList:
+      return AllItems(v, IsPluginEntry);
+    default:
+      return cJSON_IsObject(v);
+  }
+}
+
+// Names a type for messages; see harness.h.
+const char* TypeName(FieldType type) {
+  switch (type) {
+    case kString:
+      return "a string";
+    case kNumber:
+      return "a number";
+    case kInteger:
+      return "a whole number";
+    case kBoolean:
+      return "true or false";
+    case kDuration:
+      return "a duration (30, 10s, 5m, 1h)";
+    case kSize:
+      return "a size (2048, 2kb, 1mb)";
+    case kText:
+      return "text or {file: path}";
+    case kTextList:
+      return "text, {file: path} or a list of them";
+    case kStringList:
+      return "a list of strings";
+    case kPluginList:
+      return "a list of plugin names or {name: {settings}}";
+    default:
+      return "a mapping";
+  }
+}

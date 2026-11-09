@@ -14,6 +14,7 @@ program, not more code in the core loop.
 | 5 | A TUI plugin | planned |
 | 6 | MCP client | planned |
 | 7 | `arx climb`: a keep/revert driver | **done**: [`arx climb`](climb.md) and the `climber` kit |
+| 8 | Installer and settings menus | planned for 0.2.0 |
 
 None of the planned items exist yet. The sections that follow describe each
 design as it stands.
@@ -57,3 +58,12 @@ The MCP client will turn MCP servers declared in the spec into tools. Only
 two built-in tools will sit in the prompt: `mcp_search` to find a tool, and
 `mcp_select` to add its full schema on the next turn. Large tool catalogs
 will then cost almost nothing until the agent uses them.
+
+## Installer and settings menus
+
+`install.sh` will go on into `arx setup` on a terminal, and `arx setup` will
+become a menu you drive with the arrow keys: a short wizard the first time,
+and a settings menu after that for the provider, key, model, kit, plugins,
+updates and doctor. The menus will be drawn by `pick`, a small C program
+next to the commands, so the core binary gains nothing and its startup does
+not change. Every flag that works today will keep working with no prompt.

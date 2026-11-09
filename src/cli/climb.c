@@ -85,52 +85,10 @@ static void Problem(const Spec* c, Buffer* err, const char* key,
   BufferAppendStr(err, "\n");
 }
 
-// True when `v` has the shape `type` needs.
-static int TypeOk(FieldType type, const cJSON* v) {
-  double secs;
+// True when `v` has the shape `type` needs; min_delta takes "0.1%" too.
+static int ClimbTypeOk(FieldType type, const cJSON* v) {
   if (type == NUMBER_OR_PERCENT) return cJSON_IsNumber(v) || cJSON_IsString(v);
-  switch (type) {
-    case kString:
-      return cJSON_IsString(v);
-    case kNumber:
-      return cJSON_IsNumber(v);
-    case kInteger:
-      return cJSON_IsNumber(v) &&
-             v->valuedouble == (double)(int64_t)v->valuedouble;
-    case kDuration:
-      return cJSON_IsNumber(v) ||
-             (cJSON_IsString(v) && ParseDuration(v->valuestring, &secs) == 0);
-    case kText:
-      return cJSON_IsString(v) ||
-             cJSON_IsString(cJSON_GetObjectItemCaseSensitive(v, "file"));
-    case kStringList:
-      for (cJSON* c = cJSON_IsArray(v) ? v->child : NULL; c; c = c->next) {
-        if (!cJSON_IsString(c)) return 0;
-      }
-      return cJSON_IsArray(v);
-    default:
-      return cJSON_IsObject(v);
-  }
-}
-
-// Describes a type for error messages.
-static const char* TypeName(FieldType type) {
-  switch (type) {
-    case kString:
-      return "a string";
-    case kNumber:
-      return "a number";
-    case kInteger:
-      return "a whole number";
-    case kDuration:
-      return "a duration (30, 10s, 5m, 1h)";
-    case kText:
-      return "text or {file: path}";
-    case kStringList:
-      return "a list of strings";
-    default:
-      return "a mapping";
-  }
+  return TypeOk(type, v);
 }
 
 // Checks every key of `node` against `fields`, recursing into mappings.
@@ -148,7 +106,7 @@ static void CheckNode(const Spec* c, cJSON* node, const Field* fields,
       }
       Problem(c, err, key, "unknown key (known: %s)", known.data);
       BufferFree(&known);
-    } else if (!TypeOk(f->type, v)) {
+    } else if (!ClimbTypeOk(f->type, v)) {
       Problem(c, err, key, "must be %s", TypeName(f->type));
     } else if (f->type == kMap) {
       CheckNode(c, v, f->sub, key, err);

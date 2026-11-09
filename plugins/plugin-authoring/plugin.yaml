@@ -1,3 +1,6 @@
 name: plugin-authoring
 version: 0.1.0
 description: A skill that shows the agent how to add tools, hooks and observers to its own harness.
+arx: ">=0.2.0"
+# One line in every prompt, so the agent reads the skill before it starts.
+instructions: "Before you add a tool, hook or observer to your harness, read the plugin-authoring skill."

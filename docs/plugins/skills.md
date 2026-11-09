@@ -7,7 +7,9 @@ arx lists each skill's name and description in the prompt, and the agent
 reads the full file only for the task at hand. Write one for know-how the
 agent needs only some of the time: a release process, a project's
 conventions, how to use an internal service. A skill has no code. If the
-agent needs to act rather than read, write a [tool](tools.md).
+agent needs to act rather than read, write a [tool](tools.md). For a short
+rule that must be in every prompt, use a plugin's
+[`instructions`](prompt.md) instead.
 
 **Status:** today. **Example:**
 [`plugins/plugin-authoring`](../../plugins/plugin-authoring).

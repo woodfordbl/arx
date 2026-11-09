@@ -79,6 +79,11 @@ The installer downloads from the arx site, which serves arx's GitHub
 releases, checks the release's sha256 and installs into `~/.local`. From a
 source checkout, `make install` does the same with your own build.
 
+**Planned:** on a terminal, the installer goes straight on into `arx setup`,
+a short wizard you answer with the arrow keys (`--no-setup` skips it). Run
+`arx setup` again later for a settings menu: provider and key, model, kit,
+plugins, update and doctor.
+
 ```sh
 arx                                          # talk to the agent, in any folder
 arx -p "Find the largest file here" --cap usd=1   # one task, then exit

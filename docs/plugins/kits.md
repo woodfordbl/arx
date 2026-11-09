@@ -64,7 +64,9 @@ These rules decide where arx finds a kit and what it does with it:
   `arx --kit NAME` for one run.
 - **What it sets**: the [active list](#the-active-list), the plugin settings,
   and, below the spec, `model_settings` and the prompt. The spec wins over
-  the kit, and the kit wins over `config.yaml`.
+  the kit, and the kit wins over `config.yaml`. Plugins rank below
+  `config.yaml`: their `model_settings` fill only the fields that no other
+  source sets, and their `instructions` add to the kit's prompt.
 - **A missing kit stops the run** with exit 2 and the message
   `kit NAME is not installed: run arx kit add NAME`. arx downloads nothing
   without asking.
@@ -115,6 +117,10 @@ settings in two ways:
 
 - `tools` and `hooks` in the settings change the plugin's own tool and hook
   options, such as `shell: {tools: {edit: {enabled: false}}}`.
+- `instructions` and `model_settings` in the settings change the plugin's
+  prompt text and request fields, such as `reviewer: {instructions: null}`,
+  which drops its text. See
+  [Prompt text and model settings](prompt.md#change-one-plugins-text-and-settings).
 - The plugin's hooks get all of its settings as JSON in
   `ARX_PLUGIN_SETTINGS`.
 
@@ -235,6 +241,7 @@ disable: [notify]
 | Settings for a plugin that is not in the list | they do nothing | add the plugin with `enable:` and its settings |
 | A kit that `extends` another gives settings in `enable:` for a plugin the other kit already lists | the plugin is already in the list, so arx skips that entry and its settings | list the plugins in full with `plugins:`, or give the settings in `agent.yaml` |
 | A guard that must win runs in list order | a later hook can change its result | put its hook in the `policy` band (see [Bands](hooks.md#bands)) |
+| A kit's `temperature` hides a plugin's | the kit's value wins, by design: plugins rank below the kit | set the field in `agent.yaml` to change it for the run; settings for the plugin change only its own value, at its rank |
 
 **Planned:** a marketplace `index.yaml` will list each plugin and kit with
 its versions, for `arx plugin search`. See [Planned changes](planned.md).

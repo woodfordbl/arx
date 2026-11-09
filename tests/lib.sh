@@ -104,6 +104,20 @@ script() {
   chmod +x "$1"
 }
 
+# release_site DIR: a download site in DIR with this build as release
+# v9.9.9, for install.sh and arx update (ARX_DOWNLOAD_URL=file://DIR).
+release_site() {
+  local name dl=$1/releases/download/v9.9.9
+  name=arx-$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m | sed 's/aarch64/arm64/')
+  mkdir -p "$1/build/$name/bin" "$1/build/$name/libexec/arx" "$dl"
+  cp "$ARX" "$1/build/$name/bin/arx"
+  cp "$ROOT"/commands/arx-* "$1/build/$name/libexec/arx/"
+  cp -R "$ROOT/commands/lib" "$1/build/$name/libexec/arx/"
+  tar -C "$1/build" -czf "$dl/$name.tar.gz" "$name"
+  (cd "$dl" && { sha256sum "$name.tar.gz" 2>/dev/null || shasum -a 256 "$name.tar.gz"; } >"$name.tar.gz.sha256")
+  echo v9.9.9 >"$1/releases/latest"
+}
+
 # Records a passing check.
 ok() {
   passed=$((passed + 1))
@@ -135,6 +149,12 @@ exited() { [ "$code" -eq "$1" ]; }
 
 # Number of lines in FILE that contain PATTERN.
 count() { grep -cF -- "$2" "$1"; }
+
+# The system prompt (message 0) of model call N.
+msg0() { jq -r '.messages[0].content' "fake/req-0$1.json"; }
+
+# The JSON of field KEY in the body of model call N.
+field() { jq -c ".$2" "fake/req-0$1.json"; }
 
 # Prints the totals and returns non-zero if anything failed.
 summary() {

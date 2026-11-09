@@ -216,13 +216,21 @@ static void MergeKit(Spec* spec, cJSON* kit_root, int spec_is_config) {
 }
 
 // Builds the active list from config.yaml (`config`, may be empty), the
-// spec (when it is not the defaults) and `sets`, and merges the kit.
+// spec (when it is not the defaults) and `sets`, and merges the kit. Notes
+// where the base prompt comes from so far: the spec's own instructions win
+// over the kit's, which win over config.yaml's.
 static int BuildList(Spec* spec, Spec* config, int spec_is_config, cJSON* sets,
                      Buffer* err) {
   cJSON* kit_root = NULL;
   int rc =
       ActiveBuild(spec, spec_is_config ? spec->root : config->root,
                   spec_is_config ? NULL : spec->root, sets, &kit_root, err);
+  int own = JsonGet(spec->root, "instructions") != NULL;
+  if (JsonGet(kit_root, "instructions") && (spec_is_config || !own)) {
+    spec->prompt_from = XAsprintf("kit %s", spec->kit);
+  } else if (own) {
+    spec->prompt_from = XStrdup(spec_is_config ? "config.yaml" : "agent.yaml");
+  }
   MergeKit(spec, kit_root, spec_is_config);
   return rc;
 }
@@ -258,6 +266,9 @@ int SpecLoad(const char* path, cJSON* sets, Spec* spec, Buffer* err) {
     }
     if (have_defaults && cJSON_IsObject(spec->root) &&
         cJSON_IsObject(config.root)) {
+      if (!spec->prompt_from && JsonGet(config.root, "instructions")) {
+        spec->prompt_from = XStrdup("config.yaml");
+      }
       MergeDefaults(spec->root, config.root, "", spec, &config);
       spec->config = XStrdup(config.path);
     }
@@ -266,6 +277,12 @@ int SpecLoad(const char* path, cJSON* sets, Spec* spec, Buffer* err) {
   if (listed == 0 && cJSON_IsObject(spec->root)) {
     for (cJSON* kv = sets ? sets->child : NULL; kv; kv = kv->next) {
       JsonSet(spec->root, kv->string, cJSON_Duplicate(kv, 1));
+    }
+    if (cJSON_GetObjectItemCaseSensitive(sets, "instructions")) {
+      free(spec->prompt_from);
+      spec->prompt_from = XStrdup("--set");
+    } else if (!spec->prompt_from) {
+      spec->prompt_from = XStrdup("default");
     }
     PluginsLoad(spec);
   }
@@ -294,6 +311,9 @@ void SpecFree(Spec* spec) {
   free(spec->kit_dir);
   free(spec->kit_from);
   cJSON_Delete(spec->rows);
+  cJSON_Delete(spec->setting_from);
+  BufferFree(&spec->warnings);
+  free(spec->prompt_from);
   memset(spec, 0, sizeof(*spec));
 }
 

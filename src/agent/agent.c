@@ -22,6 +22,10 @@ static const char kDefaultInstructions[] =
     "later: do it now. When everything is done, reply with a short summary "
     "and no tool calls.\n\n{{harness}}";
 
+// Set while plugin text renders, where {{plugin_instructions}} would recurse.
+// Validation rejects it there, but a file can change after the check.
+static int g_rendering_plugins;
+
 // Parses one --cap; see agent.h.
 int CapsParse(Caps* c, const char* key_value) {
   const char* eq = strchr(key_value, '=');
@@ -121,6 +125,31 @@ static void SkillsIndex(Agent* a, Buffer* out) {
   if (out->len == before) BufferAppendStr(out, "(no skills yet)");
 }
 
+// Appends a sentence that names the plugins that add text to the prompt,
+// so the agent can find that text: "The plugins a and b add text ...".
+static void TextPlugins(Agent* a, Buffer* out) {
+  int n = 0, at = 0;
+  for (int l = 0; l < a->spec.layer_count; l++) {
+    n += a->spec.layers[l].plugin && a->spec.layers[l].instructions;
+  }
+  if (!n) return;
+  BufferAppendStr(out, n == 1 ? " The plugin " : " The plugins ");
+  for (int l = 0; l < a->spec.layer_count; l++) {
+    const Layer* layer = &a->spec.layers[l];
+    if (!layer->plugin || !layer->instructions) continue;
+    at++;
+    BufferPrintf(out, "%s%s",
+                 at == 1   ? ""
+                 : at == n ? " and "
+                           : ", ",
+                 layer->plugin);
+  }
+  BufferPrintf(out,
+               " %s text after your instructions, from the instructions key "
+               "of %s plugin.yaml.",
+               n == 1 ? "adds" : "add", n == 1 ? "its" : "their");
+}
+
 // Appends a line about the plugins in use, if there are any.
 static void PluginsText(Agent* a, Buffer* out) {
   size_t before = out->len;
@@ -144,6 +173,7 @@ static void PluginsText(Agent* a, Buffer* out) {
                  a->spec.kit_dir);
   }
   free(list);
+  TextPlugins(a, out);
 }
 
 // Tells the agent where its harness lives and how to change it.
@@ -203,6 +233,38 @@ static void FileVar(const char* spec, Buffer* out) {
   free(path);
 }
 
+// Appends `part` (consumed; may be NULL) to `out`, after one blank line
+// when `out` has text; line breaks at the end of `out` give way to it.
+static void AppendPart(Buffer* out, char* part) {
+  if (part && *part) {
+    while (out->len && out->data[out->len - 1] == '\n') {
+      out->data[--out->len] = 0;
+    }
+    BufferPrintf(out, "%s%s", out->len ? "\n\n" : "", part);
+  }
+  free(part);
+}
+
+// The text of each plugin layer, each rendered on its own and joined by a
+// blank line, or NULL when none adds text. With `policy`, the text of each
+// policy layer instead: those come with trust (--policy DIR), so there are
+// none yet.
+static char* PluginText(Agent* a, int policy) {
+  Buffer out = {0};
+  g_rendering_plugins = 1;
+  for (int l = 0; !policy && l < a->spec.layer_count; l++) {
+    const Layer* layer = &a->spec.layers[l];
+    char* text =
+        layer->plugin ? SpecText(&a->spec, layer->instructions, NULL) : NULL;
+    AppendPart(&out, text ? RenderTemplate(a, text) : NULL);
+    free(text);
+  }
+  g_rendering_plugins = 0;
+  if (out.len) return BufferTake(&out);
+  BufferFree(&out);
+  return NULL;
+}
+
 // Appends the value of one {{name}}.
 static void AppendVar(Agent* a, const char* name, Buffer* out) {
   char tmp[4096];
@@ -212,6 +274,10 @@ static void AppendVar(Agent* a, const char* name, Buffer* out) {
     HarnessText(a, out);
   } else if (!strcmp(name, "skills")) {
     SkillsIndex(a, out);
+  } else if (!strcmp(name, "plugin_instructions") && !g_rendering_plugins) {
+    char* text = PluginText(a, 0);
+    BufferAppendStr(out, text ? text : "");
+    free(text);
   } else if (!strcmp(name, "date")) {
     time_t t = time(NULL);
     struct tm tm;
@@ -254,12 +320,34 @@ char* RenderTemplate(Agent* a, const char* tmpl) {
   return BufferTake(&out);
 }
 
-// The spec's instructions, or the default, rendered.
+// True when the template `tmpl` names {{`name`}}, spaces allowed inside.
+static int NamesVar(const char* tmpl, const char* name) {
+  size_t n = strlen(name);
+  for (const char* p = tmpl; (p = strstr(p, "{{"));) {
+    const char* close = strstr(p + 2, "}}");
+    if (!close) return 0;
+    const char* s = p + 2 + strspn(p + 2, " ");
+    if (!strncmp(s, name, n) && s + n + strspn(s + n, " ") == close) return 1;
+    p = close + 2;
+  }
+  return 0;
+}
+
+// The system prompt: a policy's text, then the spec's instructions (or the
+// default) rendered, with the plugins' text at {{plugin_instructions}} or
+// else after it.
 char* SystemPrompt(Agent* a) {
   char* text = SpecText(&a->spec, JsonGet(a->spec.root, "instructions"), NULL);
-  char* rendered = RenderTemplate(a, text ? text : kDefaultInstructions);
+  const char* base = text ? text : kDefaultInstructions;
+  Buffer out = {0};
+  BufferAppendStr(&out, "");
+  AppendPart(&out, PluginText(a, 1));
+  AppendPart(&out, RenderTemplate(a, base));
+  if (!NamesVar(base, "plugin_instructions")) {
+    AppendPart(&out, PluginText(a, 0));
+  }
   free(text);
-  return rendered;
+  return BufferTake(&out);
 }
 
 // The first_message template with {{prompt}}, or the prompt itself.

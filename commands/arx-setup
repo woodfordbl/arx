@@ -1,38 +1,67 @@
 #!/usr/bin/env bash
 # arx-setup: set your provider, API key and default model (run this first)
 #
-# Like fx setup: the key is checked against the endpoint, then saved in the
-# macOS Keychain (service "arx"), or in a 0600 credentials file elsewhere.
-# An environment variable with the same name always wins over the saved key.
+# On a terminal, the first run is a wizard: provider, key, model, kit and
+# PATH, one question each; nothing is saved until the end. Once a model is
+# set, `arx setup` opens a settings menu instead. Flags answer questions,
+# and the terminal asks the rest; without a terminal (a pipe, CI,
+# ARX_UI=off), it asks nothing and uses the flags and defaults, as before.
+#
+# The key is checked against the endpoint, then saved in the macOS
+# Keychain (service "arx"), or in a 0600 credentials file elsewhere. An
+# environment variable with the same name always wins over the saved key.
 # The defaults go to config.yaml in the arx config folder; any project's
-# agent.yaml overrides them.
+# agent.yaml overrides them. The steps live in lib/setup-steps.sh, the
+# save in lib/setup-save.sh and the menu in lib/setup-menu.sh.
 set -u
 
 usage() {
   cat <<'EOF'
-usage: arx setup [options]
-  --provider NAME   vercel (default), openrouter, openai, ollama or custom
+usage: arx setup [STEP] [options]
+  STEP              run one step: provider, key, model, kit, plugins or path
+  --provider NAME   vercel (default), openrouter, openai, chatgpt, ollama or
+                    custom
   --base-url URL    endpoint for --provider custom
   --key-env NAME    the variable the key is saved under
   --model ID        default model (else you pick one)
   --key-stdin       read the key from stdin instead of asking
+  --kit NAME|none   make NAME your default kit, or have none
+  --add-to-path     add arx's bin folder to your shell's startup file
   --no-test         skip the test call at the end
+  --wizard          ask every question, even when arx is set up
+  --if-needed       do nothing (one line, exit 0) when a model is set
+On a terminal, flags answer questions and arx asks the rest; without one,
+arx asks nothing. Esc goes back a step; Ctrl-C quits and changes nothing.
 EOF
 }
 
 arx=${ARX_BIN:-arx}
-provider="" base_url="" key_env="" model="" key_stdin=0 run_test=1
+lib=$(dirname "$0")/lib  # ui.sh and the setup steps, next to this file
+f_provider="" f_base_url="" f_key_env="" f_model="" key_stdin=0 run_test=1
+f_kit="" add_path=0 wizard=0 if_needed=0 step="" flags=0
 while [ $# -gt 0 ]; do
   case "$1" in
-    --provider) provider=$2; shift 2 ;;
-    --base-url) base_url=$2; shift 2 ;;
-    --key-env) key_env=$2; shift 2 ;;
-    --model) model=$2; shift 2 ;;
+    --provider | --base-url | --key-env | --model | --kit)
+      [ $# -gt 1 ] || { echo "arx setup: $1 needs a value" >&2; usage >&2; exit 2; } ;;
+  esac
+  case "$1" in
+    --provider) f_provider=$2; shift 2 ;;
+    --base-url) f_base_url=$2; shift 2 ;;
+    --key-env) f_key_env=$2; shift 2 ;;
+    --model) f_model=$2; shift 2 ;;
+    --kit) f_kit=$2; shift 2 ;;
     --key-stdin) key_stdin=1; shift ;;
     --no-test) run_test=0; shift ;;
+    --add-to-path) add_path=1; shift ;;
+    --wizard) wizard=1; shift ;;
+    --if-needed) if_needed=1; flags=$((flags - 1)); shift ;;
     -h | --help) usage; exit 0 ;;
+    provider | key | model | kit | plugins | path)
+      [ -z "$step" ] || { usage >&2; exit 2; }
+      step=$1 flags=$((flags - 1)); shift ;;
     *) echo "arx setup: unknown option $1" >&2; usage >&2; exit 2 ;;
   esac
+  flags=$((flags + 1))
 done
 
 # The same lookup as ConfigDir() in arx.
@@ -43,163 +72,96 @@ elif [ -n "${XDG_CONFIG_HOME:-}" ]; then
 else
   config_dir=$HOME/.config/arx
 fi
-mkdir -p "$config_dir"
-interactive=0
-[ -t 0 ] && [ "$key_stdin" -eq 0 ] && interactive=1
+config=$config_dir/config.yaml
 
-# Asks a question with a default answer (non-interactive: the default).
-ask() {
-  local answer=""
-  if [ "$interactive" -eq 1 ]; then read -r -p "$1 [$2]: " answer; fi
-  echo "${answer:-$2}"
-}
+for file in "$lib/ui.sh" "$lib/setup-steps.sh" "$lib/setup-save.sh" "$lib/setup-menu.sh"; do
+  [ -f "$file" ] || { echo "arx setup: $file is missing; reinstall arx" >&2; exit 1; }
+done
+UI_NAME="arx setup"
+. "$lib/ui.sh"
+. "$lib/setup-steps.sh"
+. "$lib/setup-save.sh"
+. "$lib/setup-menu.sh"
+# --key-stdin means stdin is the key, so nothing is asked (as before).
+[ "$key_stdin" -eq 0 ] || [ -n "${ARX_UI:-}" ] || UI_MODE=off
 
-if [ -z "$provider" ]; then
-  if [ "$interactive" -eq 1 ]; then
-    echo "Which provider? Any OpenAI-compatible endpoint works."
-    echo "  1) Vercel AI Gateway   2) OpenRouter   3) OpenAI"
-    echo "  4) Ollama (local)      5) Other OpenAI-compatible URL"
-  fi
-  case "$(ask "Provider" 1)" in
-    1 | vercel) provider=vercel ;;
-    2 | openrouter) provider=openrouter ;;
-    3 | openai) provider=openai ;;
-    4 | ollama) provider=ollama ;;
-    *) provider=custom ;;
-  esac
+tmp=$(mktemp -d) || exit 1
+trap 'rm -rf "$tmp"' EXIT
+# What the steps choose; save_all writes it.
+provider="" base_url="" key_env="" key="" key_how="" model="" models="" kit=""
+path_how="" bindir="" saved=""
+read_current
+if [ "$key_stdin" -eq 1 ]; then key=$(cat) key_how=stdin; fi
+
+if [ "$if_needed" -eq 1 ] && [ -n "$cur_model" ]; then
+  echo "arx is already set up (model $cur_model). Change it with \`arx setup\`."
+  exit 0
 fi
-case "$provider" in
-  vercel) url=https://ai-gateway.vercel.sh/v1 env=AI_GATEWAY_API_KEY def=anthropic/claude-haiku-5.5 ;;
-  openrouter) url=https://openrouter.ai/api/v1 env=OPENROUTER_API_KEY def="" ;;
-  openai) url=https://api.openai.com/v1 env=OPENAI_API_KEY def=gpt-5-mini ;;
-  ollama) url=http://localhost:11434/v1 env="" def="" ;;
-  custom) url="" env=ARX_API_KEY def="" ;;
-  *) echo "arx setup: unknown provider $provider" >&2; exit 2 ;;
-esac
-base_url=${base_url:-$url}
-[ -n "$base_url" ] || base_url=$(ask "Base URL (ending in /v1)" "http://localhost:8000/v1")
-key_env=${key_env:-$env}
 
-# The keys that choose plugins (kit:, plugins:, enable:, disable:), which
-# `arx kit add --default` and `arx plugin enable --global` write: kept.
-keep=$(awk '/^(kit|plugins|enable|disable):/ {k = 1; print; next}
-  k && /^[ \t-]/ {print; next} {k = 0}' "$config_dir/config.yaml" 2>/dev/null)
-
-# Writes config.yaml; the previous one is kept as config.yaml.bak.
-write_config() {
-  [ -f "$config_dir/config.yaml" ] && cp "$config_dir/config.yaml" "$config_dir/config.yaml.bak"
-  {
-    echo "# Written by \`arx setup\` on $(date +%Y-%m-%d). A project's agent.yaml"
-    echo "# overrides any key here; rerun \`arx setup\` to change them."
-    echo "model: \"$1\""
-    if [ -n "$key_env" ]; then
-      echo "endpoint: {base_url: \"$base_url\", api_key_env: $key_env}"
-    else
-      echo "endpoint: {base_url: \"$base_url\"}"
-    fi
-    if [ -n "${2:-}" ]; then echo "$2"; fi
-    if [ -n "$keep" ]; then echo "$keep"; fi
-  } >"$config_dir/config.yaml"
-}
-write_config "${model:-$def}"
-
-# Saves the key: macOS Keychain, else the 0600 credentials file. Neither
-# path puts the key on a command line, so it never shows in a process list.
-save_key() {
-  if [ "$(uname)" = Darwin ] && [ -z "${ARX_DISABLE_KEYCHAIN:-}" ]; then
-    if printf 'add-generic-password -U -s arx -a %s -w "%s"\n' "$key_env" "$1" |
-      security -i >/dev/null 2>&1; then
-      echo "Saved the key in your macOS Keychain (service arx, account $key_env)."
-      return
-    fi
-  fi
-  local file=$config_dir/credentials
-  (umask 077 && touch "$file")
-  grep -v "^$key_env=" "$file" >"$file.tmp" 2>/dev/null
-  echo "$key_env=$1" >>"$file.tmp"
-  chmod 600 "$file.tmp" && mv "$file.tmp" "$file"
-  echo "Saved the key in $file (readable only by you)."
-}
-
-if [ -n "$key_env" ]; then
-  key=""
-  if [ "$key_stdin" -eq 1 ]; then
-    key=$(cat)
-  elif [ -n "$(printenv "$key_env")" ] &&
-    [ "$(ask "Use \$$key_env from your environment? (y/n)" y)" = y ]; then
-    key=$(printenv "$key_env")
-  fi
-  while :; do
-    if [ -z "$key" ] && [ "$interactive" -eq 1 ]; then
-      read -r -s -p "Paste your API key for $base_url (hidden): " key
-      echo
-    fi
-    [ -n "$key" ] || { echo "arx setup: no key given" >&2; exit 2; }
-    (export "$key_env=$key" && "$arx" request /models >/dev/null 2>&1)
+# Runs the steps in order. Esc (4) goes back to the last step that asked
+# something; Esc on the first one, or Ctrl-C, cancels.
+run_steps() {
+  local i=1 dir=1 code n=$#
+  while [ "$i" -ge 1 ] && [ "$i" -le "$n" ]; do
+    "step_${!i}"
     code=$?
-    if [ "$code" -eq 0 ]; then echo "The key works."; break; fi
-    if [ "$code" -eq 4 ] && [ "$interactive" -eq 1 ]; then
-      echo "The endpoint rejected that key; try again."
-      key=""
-      continue
-    fi
-    echo "arx setup: could not check the key (arx request exited $code); saving it anyway." >&2
-    break
+    case "$code" in
+      0) dir=1 ;;
+      5) ;;  # skipped: keep going the same way
+      4) dir=-1 ;;
+      *) ui_stop "$code"; exit "$code" ;;
+    esac
+    i=$((i + dir))
   done
-  save_key "$key"
-  export "$key_env=$key"
-fi
+  [ "$i" -gt "$n" ] || return 4
+}
 
-# Picks the default model, with context size and prices when the endpoint
-# lists them.
-models=$("$arx" request /models 2>/dev/null)
-if [ -z "$model" ]; then
-  if [ "$interactive" -eq 1 ] && [ -n "$models" ]; then
-    echo "Some models from $base_url (see all with \`arx models\`):"
-    printf '%s' "$models" | jq -r '.data[].id' 2>/dev/null |
-      grep -E "${def:-.}|haiku|sonnet|gpt-5-mini|gemini-3-flash|qwen|llama" |
-      head -8 | sed 's/^/  /'
-  fi
-  first=$(printf '%s' "$models" | jq -r '.data[0].id // empty' 2>/dev/null)
-  model=$(ask "Default model" "${def:-$first}")
-fi
-extra=$(printf '%s' "$models" | jq -r --arg m "$model" '
-  def per_million: tonumber * 1e9 | round / 1000;
-  .data[]? | select(.id == $m) |
-  [ (if .context_window then "context_window: \(.context_window)" else empty end),
-    (if .pricing.input then "prices: {input: \(.pricing.input | per_million), output: \(.pricing.output | per_million)}" else empty end)
-  ] | join("\n")' 2>/dev/null)
-write_config "$model" "$extra"
-echo "Wrote $config_dir/config.yaml (model $model)."
-
-# arx has no tools of its own: bash and edit come from the shell plugin,
-# which ships next to these commands. A link keeps it at the version of arx
-# after `arx update`. Without a copy here, it comes from the arx repo.
-shell_plugin=$config_dir/plugins/shell
-if [ ! -e "$shell_plugin" ] && [ ! -L "$shell_plugin" ]; then
-  shell_ref=shell link=""
-  for dir in "${ARX_LIBEXEC:-.}/plugins/shell" "${ARX_LIBEXEC:-.}/../plugins/shell"; do
-    if [ -n "${ARX_LIBEXEC:-}" ] && [ -f "$dir/plugin.yaml" ]; then shell_ref=$dir link=--link; break; fi
-  done
-  if "$arx" plugin add $link "$shell_ref" --yes >/dev/null; then
-    echo "Turned on the shell plugin: the agent's bash and edit tools."
+# The first run on a terminal (or --wizard, or flags with a model set).
+wizard() {
+  if [ "$UI_MODE" = menu ]; then
+    ui__say "Set up arx. Esc goes back, Ctrl-C quits; nothing is saved until the end."
   else
-    echo "arx setup: could not add the shell plugin, so the agent has no tools; try \`arx plugin add shell\`." >&2
+    ui__say "Set up arx. Ctrl-C quits; nothing is saved until the end."
   fi
-fi
+  run_steps provider key model kit path || ui_stop 130
+  save_all
+  step_test
+  cat <<'EOF'
 
-if [ "$run_test" -eq 1 ]; then
-  tmp=$(mktemp -d)
-  echo "Test call..."
-  reply=$(cd "$tmp" && "$arx" -p "Reply with exactly: arx is ready" --quiet --cap usd=0.02 --cap turns=2 2>&1)
-  code=$?
-  rm -rf "$tmp"
-  if [ "$code" -eq 0 ]; then echo "  $reply"; else echo "  The test call failed (exit $code): $reply"; fi
-fi
-cat <<'EOF'
+  arx            talk to the agent in this folder
+  arx init       start a harness here
+  arx setup      change any of this later
+EOF
+}
+
+# Without a terminal: the flags and the defaults, with today's messages.
+unattended() {
+  local s
+  for s in provider key model kit path; do
+    "step_$s"
+    case $? in 0 | 5) ;; *) exit 2 ;; esac
+  done
+  save_all
+  step_test
+  cat <<'EOF'
 
 Done. Next:
   arx                 talk to the agent here
   arx init            start a harness in this folder (tools, hooks, prompts)
   arx doctor          check everything
 EOF
+}
+
+if [ -n "$step" ]; then
+  run_step "$step"
+  code=$?
+  [ "$code" -ne 4 ] || code=0
+  ui_stop "$code"
+  exit "$code"
+elif [ "$UI_MODE" = off ]; then
+  unattended
+elif [ -n "$cur_model" ] && [ "$wizard" -eq 0 ] && [ "$flags" -eq 0 ]; then
+  settings_menu
+else
+  wizard
+fi
