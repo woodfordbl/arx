@@ -326,6 +326,20 @@ check "and the version" has out.txt 'version=1.2.3'
 check "and what is missing" has out.txt 'missing=no-such-program-arx'
 check "and its tools and commands" grep -q '^tools=hello$' out.txt
 check "commands are listed" has out.txt 'commands=arx-kit'
+check "a plugin without text or settings has empty instructions=" grep -q '^instructions=$' out.txt
+check "  and empty model_settings=" grep -q '^model_settings=$' out.txt
+cat >>kit/plugin.yaml <<'EOF'
+instructions: [{file: prompts/rules.md}, "Be kind."]
+model_settings: {parallel_tool_calls: true, temperature: 0.2}
+EOF
+mkdir -p kit/prompts && printf 'Rule one.\n' >kit/prompts/rules.md
+"$ARX" check --plugin kit >out.txt 2>err.txt
+check "instructions= is the size of the raw text" grep -q '^instructions=20$' out.txt
+check "model_settings= lists the field names" grep -q '^model_settings=parallel_tool_calls temperature$' out.txt
+"$ARX" plugin add ./kit --yes </dev/null >add.txt 2>&1
+check "arx plugin add shows the prompt it adds" has add.txt 'prompt    adds 20 bytes to the system prompt'
+check "  and the settings" has add.txt 'settings  parallel_tool_calls temperature'
+clean_config
 echo "tols: {}" >kit/plugin.yaml
 "$ARX" check --plugin kit >out.txt 2>err.txt
 code=$?
