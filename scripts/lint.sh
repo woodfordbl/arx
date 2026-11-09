@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# lint.sh: style checks for the harness sources in src/.
+# lint.sh: style checks for the C sources in src/ (arx) and pick/ (the menu
+# program that the commands call).
 #
 # These rules are for people (and agents) building arx itself. They are not in
 # the binary, and harness files an agent writes at run time (tools/, hooks/,
@@ -13,7 +14,7 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 
 shopt -s nullglob
-src=(src/*.c src/*/*.c src/*/*.h)
+src=(src/*.c src/*/*.c src/*/*.h pick/*.c pick/*.h)
 fail=0
 
 # Formatting can differ between clang-format major versions, so everyone
@@ -42,7 +43,8 @@ else
 fi
 
 echo "== file length (max 400 lines)"
-for f in "${src[@]}" scripts/* tests/*.sh tests/fake-curl commands/* install.sh Makefile; do
+for f in "${src[@]}" scripts/* tests/*.sh tests/*.py tests/fake-curl commands/* commands/lib/*.sh \
+  install.sh Makefile; do
   [ -f "$f" ] || continue
   n=$(wc -l <"$f")
   if [ "$n" -gt 400 ]; then

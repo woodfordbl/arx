@@ -84,6 +84,7 @@ begin "arx setup (non-interactive)"
 rm agent.yaml
 models_json | reply 1 "200 OK"
 models_json | reply 2 "200 OK"
+models_json | reply 3 "200 OK"
 printf 'sk-test' | "$ARX" setup --provider custom --base-url http://fake.invalid/v1 \
   --key-env TEST_KEY --model test-model --key-stdin --no-test >setup.txt 2>&1
 check "writes the model" has "$ARX_CONFIG_DIR/config.yaml" 'model: "test-model"'
@@ -94,6 +95,29 @@ check "saves the key" has "$ARX_CONFIG_DIR/credentials" 'TEST_KEY=sk-test'
 check "key file is private" test "$(stat -c %a "$ARX_CONFIG_DIR/credentials" 2>/dev/null ||
   stat -f %Lp "$ARX_CONFIG_DIR/credentials")" = 600
 check "validated the key with the endpoint" has fake/hdr-01.txt 'Bearer sk-test'
+
+"$ARX" setup model --model other-model </dev/null >model.txt 2>&1
+check "setup model --model sets only the model" has "$ARX_CONFIG_DIR/config.yaml" 'model: "other-model"'
+check "and keeps the endpoint" has "$ARX_CONFIG_DIR/config.yaml" 'api_key_env: TEST_KEY'
+check "and drops the old model's prices" lacks "$ARX_CONFIG_DIR/config.yaml" 'prices:'
+"$ARX" setup model </dev/null >model.txt 2>&1
+code=$?
+check "setup model without a terminal asks for --model" has model.txt 'no terminal to ask on; pass --model'
+check "and exits 2" exited 2
+"$ARX" setup --if-needed </dev/null >needed.txt 2>&1
+check "--if-needed once set up prints one line" has needed.txt 'arx is already set up (model other-model)'
+rm "$ARX_CONFIG_DIR/config.yaml" "$ARX_CONFIG_DIR/credentials"
+"$ARX" setup </dev/null >nokey.txt 2>&1
+code=$?
+check "no flags and no key: no key given" has nokey.txt 'arx setup: no key given'
+check "exits 2" exited 2
+check "and writes nothing" test ! -e "$ARX_CONFIG_DIR/config.yaml"
+"$ARX" kit add </dev/null >/dev/null 2>&1
+code=$?
+check "kit add with no REF is a usage error" exited 2
+"$ARX" plugin enable </dev/null >/dev/null 2>&1
+code=$?
+check "plugin enable with no NAME is a usage error" exited 2
 
 begin "arx init"
 defaults
@@ -152,6 +176,40 @@ echo "0000  arx-$os-$arch.tar.gz" >release/arx-$os-$arch.tar.gz.sha256
 echo v9.9.10 >release/latest
 ARX_UPDATE_DIR=$PWD/release ARX_BIN=$PWD/prefix/bin/arx "$ROOT/commands/arx-update" >bad.txt 2>&1
 check "a bad checksum changes nothing" has bad.txt 'checksum mismatch'
+
+begin "ARX_LIB, and the agent without lib/"
+"$ARX" plugin new libdemo >/dev/null 2>&1
+script libdemo/commands/arx-libdemo <<'END'
+#!/usr/bin/env bash
+# arx-libdemo: sources ui.sh from ARX_LIB
+. "$ARX_LIB/ui.sh" && echo "lib=$ARX_LIB mode=$UI_MODE"
+END
+"$ARX" plugin add --link ./libdemo --yes </dev/null >/dev/null 2>&1
+"$ARX" libdemo </dev/null >lib.txt 2>&1
+check "a plugin command sees ARX_LIB" has lib.txt "lib=$ROOT/commands/lib"
+check "and sources ui.sh from it" has lib.txt 'mode=off'
+"$ARX" plugin remove libdemo --yes </dev/null >/dev/null 2>&1
+mkdir -p prefix/bin prefix/libexec/arx
+cp "$ARX" prefix/bin/arx
+cp "$ROOT"/commands/arx-* prefix/libexec/arx/
+check "an install without libexec/arx/lib checks out" prefix/bin/arx check
+sse_text "done" | reply 1 "200 OK"
+prefix/bin/arx -p go --quiet >out.txt 2>err.txt
+check "and runs the agent" has out.txt 'done'
+
+begin "install.sh"
+release_site "$WS/site"
+ARX_DOWNLOAD_URL=file://$WS/site sh "$ROOT/install.sh" --prefix "$WS/prefix" </dev/null >install.txt 2>&1
+code=$?
+check "installs from the site" test -x prefix/bin/arx
+check "with pick next to the commands" test -x prefix/libexec/arx/lib/pick
+check "says what it downloads, once" test "$(grep -c '^Downloading arx v9.9.9' install.txt)" -eq 1
+check "without a terminal it says what is next" has install.txt 'Next: arx setup'
+check "and asks nothing" lacks install.txt 'Set up arx'
+check "exits 0" exited 0
+ARX_DOWNLOAD_URL=file://$WS/site sh "$ROOT/install.sh" --nope </dev/null >install.txt 2>&1
+code=$?
+check "an unknown flag is a usage error" exited 2
 
 begin "arx plugin"
 plugins=$ARX_CONFIG_DIR/plugins

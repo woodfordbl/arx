@@ -23,6 +23,34 @@ To install somewhere else, pass `--prefix DIR`. To pin a release, pass
 `--version vX.Y.Z`. Later, `arx update` installs the newest release the same
 way, with the same checksum check.
 
+**Planned:** on a terminal, the installer goes straight on into
+[`arx setup`](#connect-a-model), and a first install ends like this:
+
+```text
+Downloading arx v0.2.0 for darwin-arm64...
+Updated arx ? -> 0.2.0 in /Users/you/.local.
+Set up arx. Esc goes back, Ctrl-C quits; nothing is saved until the end.
+✓ Provider  OpenRouter
+✓ API key   from $OPENROUTER_API_KEY, checked
+✓ Model     anthropic/claude-sonnet-5.5
+✓ Kit       No kit
+~/.local/bin is not on your PATH.
+✓ PATH      Add it to ~/.zshrc
+✓ Saved     the key in your macOS Keychain
+✓ Saved     ~/.config/arx/config.yaml (model anthropic/claude-sonnet-5.5)
+✓ Tools     bash and edit (the shell plugin)
+✓ PATH      added to ~/.zshrc
+✓ Test      "arx is ready" in 2 s
+
+  arx            talk to the agent in this folder
+  arx init       start a harness here
+  arx setup      change any of this later
+```
+
+The installer asks nothing when its output is not a terminal or `CI` is
+set, and it leaves an arx that is set up already as it is. Scripts can pass
+`--no-setup` to stop after the install.
+
 ### Build from source
 
 You need a C compiler and `make`:
@@ -53,6 +81,24 @@ key against the endpoint, then saves:
 
 An environment variable with the same name as the saved key always wins, so
 CI jobs and containers can pass the key in the environment instead.
+
+**Planned:** on a terminal, `arx setup` is a wizard of five questions:
+provider, key, model, kit and `PATH`. Each question is one menu, and each
+answer collapses to one line:
+
+- **Up and Down** (or `j` and `k`): move. Typing filters the model list.
+- **Enter**: choose.
+- **Esc**: go back one question.
+- **Ctrl-C**: quit. Nothing is saved until you answer the last question,
+  so quitting leaves your settings as they were.
+
+Once a model is set, `arx setup` opens a settings menu instead: provider and
+key, model, kit, plugins, update and doctor. Every answer also has a flag;
+[Command line](cli.md#arx-setup) lists them.
+
+> [!TIP]
+> If the menus don't draw well in your terminal, set `ARX_UI=plain` to get
+> numbered questions instead.
 
 Check that everything works:
 
