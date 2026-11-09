@@ -140,6 +140,12 @@ OpenAI answers. Nothing in the tests reaches OpenAI.
   `ARX_CHATGPT_DIR`.
 - **No reasoning carried between turns.** With `store: false`, arx does not
   send the model's earlier reasoning back.
+- **Prompt cache hits depend on OpenAI.** Each request starts with the
+  exact bytes of the one before it, so the whole earlier prompt can come
+  from the cache. But on 2026-11-09 the plan route ignored
+  `prompt_cache_key`, and requests landed on servers with and without the
+  cache. The `tokens_cached` field of each `model.message` event shows the
+  hits.
 - **The tests use fake answers.** The flow was checked by hand against the
   live service on 2026-11-09: first sign-in, `arx models`, text and tool
   calls through the `responses` adapter, and a refresh that rotated the

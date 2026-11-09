@@ -285,7 +285,7 @@ new `v`.
 | `prompt.start` | `text`: a prompt from you, cut at 64 KB. Sent for the `-p` task, each interactive line and each `--input jsonl` prompt, not for hook messages or harness notes. |
 | `turn.start` | none |
 | `model.delta` | `text`: streamed model text, batched about every 50 ms |
-| `model.message` | `tokens_in`, `tokens_out`, `cost`, `tool_calls` (a count) |
+| `model.message` | `tokens_in`, `tokens_out`, `tokens_cached` (the part of `tokens_in` the provider read from its prompt cache; 0 when it reports none), `cost`, `tool_calls` (a count) |
 | `model.retry` | `attempt`, `status` (HTTP), `curl_exit`, `wait_s`, `error` |
 | `model.credential` | `program`, `reason` (`start`, `expired` or `rejected`), `secs`, and `expires_in` or `error`; never the value |
 | `tool.start` | `id`, `name`, `preview`, and `args`: the arguments as the model wrote them, parsed, or the raw string when they are not JSON. Arguments over 16 KB are left out, and `args_cut` is `true`. Sent before the `before_tool` hooks. |

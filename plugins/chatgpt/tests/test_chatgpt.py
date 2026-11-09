@@ -407,6 +407,9 @@ class AdapterTest(unittest.TestCase):
              "output": "ok"}])
         self.assertEqual(out["tools"][0]["type"], "namespace")
         self.assertEqual(out["tools"][0]["tools"][0]["name"], "bash")
+        # The history goes last, so a request starts with the bytes of the
+        # one before it (see to_responses).
+        self.assertEqual(list(out)[-1], "input")
 
     def test_settings(self):
         out = adapter.to_responses({
@@ -460,6 +463,17 @@ class AdapterTest(unittest.TestCase):
         self.assertEqual(chunks[4]["usage"],
                          {"prompt_tokens": 5, "completion_tokens": 2})
         self.assertTrue(raw.endswith("data: [DONE]\n\n"))
+
+    def test_cached_tokens(self):
+        chunks, _ = self.translate([
+            {"type": "response.output_text.delta", "delta": "hi"},
+            {"type": "response.completed", "response": {"usage": {
+                "input_tokens": 900, "output_tokens": 2,
+                "input_tokens_details": {"cached_tokens": 768}}}},
+        ])
+        self.assertEqual(chunks[-1]["usage"], {
+            "prompt_tokens": 900, "completion_tokens": 2,
+            "prompt_tokens_details": {"cached_tokens": 768}})
 
     def test_failure_becomes_a_status(self):
         path = os.path.join(tempfile.mkdtemp(), "headers")

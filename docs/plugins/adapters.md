@@ -71,8 +71,10 @@ its command line.
 
 The adapter prints the reply on stdout as a Chat Completions stream: `data:`
 lines with `choices[0].delta` chunks, a chunk with `finish_reason`, a chunk
-with `usage`, then `data: [DONE]`. An error body that is not a stream passes
-through as it is, and arx reads its `error.message`.
+with `usage`, then `data: [DONE]`. Put the prompt tokens read from the
+provider's prompt cache in `usage.prompt_tokens_details.cached_tokens`, if
+the endpoint reports them. An error body that is not a stream passes through
+as it is, and arx reads its `error.message`.
 
 Exit with `curl`'s exit code. arx retries the exit codes it retries for
 `curl` (timeouts, refused connections) and stops on the others.

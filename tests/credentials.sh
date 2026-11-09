@@ -37,7 +37,8 @@ resp_text() {
   printf 'event: response.created\ndata: {"type":"response.created"}\n\n'
   printf 'data: {"type":"response.output_text.delta","delta":"%s"}\n\n' "$1"
   printf 'data: {"type":"response.completed","response":{"usage":'
-  printf '{"input_tokens":120,"output_tokens":7}}}\n\n'
+  printf '{"input_tokens":120,"input_tokens_details":{"cached_tokens":96},'
+  printf '"output_tokens":7}}}\n\n'
 }
 
 # A Responses stream that calls tool $1 with the JSON arguments $2 (escaped
@@ -305,6 +306,44 @@ check "the tool call goes back with its namespace" json fake/req-02.json \
 check "and its result" json fake/req-02.json \
   "[i['output'] for i in j['input'] if i.get('type') == 'function_call_output'] == ['hi\\n']"
 check "usage is counted" has .arx/sessions/last/events.jsonl '"tokens_in":120'
+check "and the cached part of it" has .arx/sessions/last/events.jsonl '"tokens_cached":96'
+
+# For the prompt cache, each request must start with the bytes of the one
+# before it. Templates render once, notes.md changes, a retry resends.
+begin "responses adapter: each request extends the one before"
+mkdir -p plugins prompts
+ln -s "$ROOT/plugins/chatgpt" plugins/chatgpt
+echo 'Today is {{date}}, turn {{turn}}, session {{session}}.' >prompts/system.md
+printf '{{file:notes.md}}\n\n{{prompt}}\n' >prompts/first.md
+echo "notes v1" >notes.md
+script hooks/stop <<'EOF'
+#!/bin/sh
+echo '{"decision": "continue", "message": "Next experiment."}'
+EOF
+{ cred_spec 'base_url: "http://fake.invalid/v1", adapter: responses'
+  echo 'instructions: [{file: prompts/system.md}]'
+  echo 'first_message: {file: prompts/first.md}'; } >agent.yaml
+resp_tool bash '{\"command\":\"echo notes v2 >notes.md; echo one\"}' | reply 1 "200 OK"
+reply 2 "500 Internal Server Error" <<<'{"error":{"message":"oops"}}'
+resp_text "first answer" | reply 3 "200 OK"
+resp_tool bash '{\"command\":\"echo two\"}' | reply 4 "200 OK"
+resp_text "second answer" | reply 5 "200 OK"
+run "go" --cap turns=4
+check "a retry sends the same bytes" cmp fake/req-02.json fake/req-03.json
+# extends A B: B is A with items added at the end of its input list.
+extends() {
+  python3 - "$1" "$2" <<'EOF'
+import json, sys
+a, b = (open(p, "rb").read() for p in sys.argv[1:3])
+assert list(json.loads(a))[-1] == "input" and b.startswith(a[:-2] + b", ")
+EOF
+}
+for n in 1 3 4; do
+  check "request $((n + 1)) starts with the bytes of request $n" \
+    extends "fake/req-0$n.json" "fake/req-0$((n + 1)).json"
+done
+check "templates are rendered once" json fake/req-05.json \
+  "'turn 0,' in j['instructions'] and 'notes v1' in j['input'][0]['content']"
 
 begin "responses adapter: failures"
 mkdir -p plugins
