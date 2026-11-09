@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# ui.sh: tests pick (the menu program in commands/lib) on a pseudo-terminal,
-# driven by tests/pty.py. Run with `make test`.
+# ui.sh: tests pick (the menu program in commands/lib) and ui.sh (the shell
+# side) on a pseudo-terminal, driven by tests/pty.py. Run with `make test`.
 # Without python3 the terminal cases are skipped.
 set -u
 . "$(dirname "$0")/lib.sh"
 PICK=$ROOT/commands/lib/pick
+UI=$ROOT/commands/lib/ui.sh
 
 if ! command -v python3 >/dev/null; then
   echo "  skip  ui: python3 is missing, so no terminal tests"
@@ -154,5 +155,38 @@ check "--pid waits for the process" exited 0
 "$PICK" select --nope </dev/null >/dev/null 2>&1
 code=$?
 check "an unknown option is a usage error" exited 2
+
+begin "ui.sh modes"
+# A script that sources ui.sh and asks one question.
+printf 'a\tAlpha\nb\tBeta\nc\tGamma\n' >letters.txt
+cat >ask.sh <<EOF
+#!/usr/bin/env bash
+. "$UI"
+ui_select Letter a <letters.txt
+code=\$?
+echo "code \$code mode \$UI_MODE" >&2
+[ "\$code" -eq 0 ] || ui_stop "\$code"
+EOF
+chmod +x ask.sh
+
+pty --env ARX_UI=plain --err err.txt --keys '<wait:Choose>2<enter>' -- ./ask.sh
+check "plain mode: a numbered list" has screen.txt ' 2) Beta'
+check "plain mode: 2 picks the second" answer b
+pty --err err.txt --keys '<down><down><enter>' -- ./ask.sh
+check "menu mode on a terminal" has err.txt 'mode menu'
+check "and pick answers" answer c
+pty --env ARX_UI=off --err err.txt -- ./ask.sh
+check "ARX_UI=off asks nothing and takes the default" answer a
+pty --env CI=1 --err err.txt -- ./ask.sh
+check "CI=1 asks nothing" has err.txt 'mode off'
+./ask.sh </dev/null >out.txt 2>err.txt
+check "no terminal: off" has err.txt 'mode off'
+pty --env TERM=dumb --err err.txt --keys '<wait:Choose><enter>' -- ./ask.sh
+check "pick exit 3 drops to plain" has err.txt 'mode plain'
+pty --err err.txt --stty stty.txt --keys '<c-c>' -- ./ask.sh
+check "Ctrl-C: Cancelled. Nothing changed." has err.txt 'Cancelled. Nothing changed.'
+pty --env ARX_UI=plain --err err.txt --stty stty.txt --keys '<wait:Choose><c-c>' -- ./ask.sh
+check "Ctrl-C in plain mode exits 130" exited 130
+check "and leaves the terminal as it was" has stty.txt same
 
 summary
