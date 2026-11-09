@@ -6,3 +6,4 @@
 *.dSYM/
 .arx/
 .claude/
+*.o
