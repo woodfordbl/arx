@@ -153,6 +153,26 @@ echo v9.9.10 >release/latest
 ARX_UPDATE_DIR=$PWD/release ARX_BIN=$PWD/prefix/bin/arx "$ROOT/commands/arx-update" >bad.txt 2>&1
 check "a bad checksum changes nothing" has bad.txt 'checksum mismatch'
 
+begin "ARX_LIB, and the agent without lib/"
+"$ARX" plugin new libdemo >/dev/null 2>&1
+script libdemo/commands/arx-libdemo <<'END'
+#!/usr/bin/env bash
+# arx-libdemo: sources ui.sh from ARX_LIB
+. "$ARX_LIB/ui.sh" && echo "lib=$ARX_LIB mode=$UI_MODE"
+END
+"$ARX" plugin add --link ./libdemo --yes </dev/null >/dev/null 2>&1
+"$ARX" libdemo </dev/null >lib.txt 2>&1
+check "a plugin command sees ARX_LIB" has lib.txt "lib=$ROOT/commands/lib"
+check "and sources ui.sh from it" has lib.txt 'mode=off'
+"$ARX" plugin remove libdemo --yes </dev/null >/dev/null 2>&1
+mkdir -p prefix/bin prefix/libexec/arx
+cp "$ARX" prefix/bin/arx
+cp "$ROOT"/commands/arx-* prefix/libexec/arx/
+check "an install without libexec/arx/lib checks out" prefix/bin/arx check
+sse_text "done" | reply 1 "200 OK"
+prefix/bin/arx -p go --quiet >out.txt 2>err.txt
+check "and runs the agent" has out.txt 'done'
+
 begin "arx plugin"
 plugins=$ARX_CONFIG_DIR/plugins
 "$ARX" plugin new demo >new.txt 2>&1
