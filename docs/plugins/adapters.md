@@ -83,6 +83,37 @@ usage limit, and print a JSON error body. arx then retries, compacts or
 stops as it would for that status. See
 [Retries](../spec.md#endpoint) for what each status does.
 
+### Map model settings
+
+arx merges `model_settings` from the spec, the kit, `config.yaml` and
+plugins into top-level Chat Completions fields before the adapter runs. The
+adapter cannot tell which source set a field, and does not need to. For
+each field, it does one of three things:
+
+- **A field it knows**: it translates the field.
+- **A native field that the provider takes**: it passes the field through.
+- **A field that the provider rejects**: it drops the field, and does not
+  fail the call. A setting from a plugin must not break a run on one
+  provider.
+
+List the mapping in the adapter's README. For the routes that arx supports:
+
+| Field | No adapter (OpenAI, OpenRouter, vLLM, Ollama) | `responses` (ChatGPT plan) |
+|---|---|---|
+| `temperature`, `top_p` | passed | dropped: the route rejects it |
+| `max_tokens`, `max_completion_tokens` | passed | dropped |
+| `reasoning_effort` | passed | `reasoning.effort` |
+| `verbosity` | passed | `text.verbosity` |
+| `tool_choice` | passed | mapped |
+| `parallel_tool_calls`, `reasoning`, `text`, `include`, `prompt_cache_key`, `service_tier` | passed | passed |
+| any other field | passed | dropped |
+
+Plugin authors use Chat Completions names. An adapter for another API writes
+its own row: for the Anthropic Messages API, `max_tokens` would stay
+`max_tokens`, `stop` would become `stop_sequences`, and
+`parallel_tool_calls: false` would become
+`tool_choice.disable_parallel_tool_use`.
+
 ## Write an adapter
 
 An adapter that changes nothing shows the shape. It runs the command it is
@@ -123,6 +154,7 @@ it at a real endpoint.
 | The adapter buffers the whole reply | the terminal shows nothing until the reply ends | translate and flush each line |
 | The adapter puts the key on `curl`'s command line | the key shows up in process listings | leave the headers in the `-H @` file |
 | The adapter translates every URL | `arx request /models` breaks | translate only the URLs you know; run the rest unchanged |
+| The adapter fails on a field it does not know | a setting from a plugin breaks every call on that route | drop the field, and list it in the README |
 
 ## Related
 
