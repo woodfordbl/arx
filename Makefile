@@ -2,8 +2,8 @@
 #   make            release binary ./arx (-Os, LTO, dead-code stripped)
 #   make debug      ./arx-debug with AddressSanitizer and UBSan
 #   make test       run tests/run.sh, plugins.sh, layers.sh, cli.sh, shell.sh,
-#                   hooks.sh, runtime.sh, kits.sh, credentials.sh and climb.sh
-#                   against ./arx-debug
+#                   hooks.sh, runtime.sh, kits.sh, credentials.sh, climb.sh
+#                   and climb-run.sh against ./arx-debug
 #   make bench      check the performance budgets against ./arx
 #   make lint       style checks (scripts/lint.sh)
 #   make format     rewrite src/ in Google style
@@ -71,14 +71,16 @@ test: arx-debug
 	ARX=./arx-debug tests/kits.sh
 	ARX=./arx-debug tests/credentials.sh
 	ARX=./arx-debug tests/climb.sh
+	ARX=./arx-debug tests/climb-run.sh
 
 install: arx
 	mkdir -p $(PREFIX)/bin $(PREFIX)/libexec/arx
 	rm -f $(PREFIX)/bin/arx
 	cp arx $(PREFIX)/bin/arx
 	cp commands/arx-* $(PREFIX)/libexec/arx/
-	rm -rf $(PREFIX)/libexec/arx/plugins $(PREFIX)/libexec/arx/kits
-	cp -R plugins kits $(PREFIX)/libexec/arx/
+	rm -rf $(PREFIX)/libexec/arx/plugins $(PREFIX)/libexec/arx/kits \
+	  $(PREFIX)/libexec/arx/climb
+	cp -R plugins kits commands/climb $(PREFIX)/libexec/arx/
 	chmod 755 $(PREFIX)/bin/arx $(PREFIX)/libexec/arx/arx-*
 	@echo "installed arx $(VERSION) in $(PREFIX)/bin; run \`arx setup\` next"
 
@@ -90,7 +92,7 @@ dist: arx
 	mkdir -p dist/arx-$(TARGET)/bin dist/arx-$(TARGET)/libexec/arx
 	cp arx dist/arx-$(TARGET)/bin/
 	cp commands/arx-* dist/arx-$(TARGET)/libexec/arx/
-	cp -R plugins kits dist/arx-$(TARGET)/libexec/arx/
+	cp -R plugins kits commands/climb dist/arx-$(TARGET)/libexec/arx/
 	tar -C dist -czf dist/arx-$(TARGET).tar.gz arx-$(TARGET)
 	cd dist && $(SHA256) arx-$(TARGET).tar.gz >arx-$(TARGET).tar.gz.sha256
 
