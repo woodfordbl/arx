@@ -320,6 +320,18 @@ run "go"
 check "a user who is not eligible stops the run" exited 4
 check "with OpenAI's reason" has err.txt "subscription_sharing_user_not_eligible"
 
+begin "responses adapter: settings from a plugin"
+mkdir -p plugins/terse
+ln -s "$ROOT/plugins/chatgpt" plugins/chatgpt
+printf 'name: terse\nmodel_settings: {verbosity: low, temperature: 0.3}\n' >plugins/terse/plugin.yaml
+cred_spec 'base_url: "http://fake.invalid/v1", adapter: responses' >agent.yaml
+resp_text "short" | reply 1 "200 OK"
+run "go"
+check "the run succeeds" exited 0
+check "verbosity becomes text.verbosity" json fake/req-01.json "j['text'] == {'verbosity': 'low'}"
+check "temperature is left out, not an error" json fake/req-01.json \
+  "not {'temperature', 'verbosity'} & set(j)"
+
 begin "chatgpt credential"
 mkdir -p plugins
 ln -s "$ROOT/plugins/chatgpt" plugins/chatgpt

@@ -8,8 +8,10 @@ docs/plugins/adapters.md). For a model call (a URL that ends in
 - sends the request to /responses instead, as a Responses request with
   `store: false` and `stream: true`, and the tools in one namespace, as
   ChatGPT plan usage requires (developers.openai.com/siwc, "Preview
-  limitations"). Settings that route does not accept, such as temperature
-  and max_tokens, are left out;
+  limitations"). It maps `reasoning_effort`, `verbosity` and `tool_choice`,
+  passes the fields in PASSED, and leaves out every other setting, such as
+  temperature and max_tokens, which that route does not accept, so a
+  setting from a plugin never fails the call;
 - turns the Responses event stream back into Chat Completions chunks;
 - turns a failure inside the stream into an HTTP status in curl's -D file,
   so arx retries, compacts or stops as it would for that status.
@@ -134,6 +136,10 @@ def to_responses(request):
     for key in PASSED:
         if key in request:
             out[key] = request[key]
+    if request.get("verbosity"):
+        # A `text` that the request sets itself wins, as `reasoning` does.
+        text = out.get("text") if isinstance(out.get("text"), dict) else {}
+        out["text"] = dict({"verbosity": request["verbosity"]}, **text)
     return out
 
 

@@ -408,6 +408,26 @@ class AdapterTest(unittest.TestCase):
         self.assertEqual(out["tools"][0]["type"], "namespace")
         self.assertEqual(out["tools"][0]["tools"][0]["name"], "bash")
 
+    def test_settings(self):
+        out = adapter.to_responses({
+            "model": "m", "messages": [], "verbosity": "low",
+            "temperature": 0.2, "top_p": 0.5, "max_completion_tokens": 9,
+            "parallel_tool_calls": True, "service_tier": "flex",
+            "seed": 7,
+        })
+        self.assertEqual(out["text"], {"verbosity": "low"})
+        self.assertIs(out["parallel_tool_calls"], True)
+        self.assertEqual(out["service_tier"], "flex")
+        for gone in ("verbosity", "temperature", "top_p",
+                     "max_completion_tokens", "seed"):
+            self.assertNotIn(gone, out)
+        out = adapter.to_responses({
+            "model": "m", "messages": [], "verbosity": "low",
+            "text": {"verbosity": "high", "format": {"type": "text"}},
+        })
+        self.assertEqual(out["text"],
+                         {"verbosity": "high", "format": {"type": "text"}})
+
     def translate(self, events, headers_file=None):
         out = io.StringIO()
         t = adapter.Translator(out, headers_file)
