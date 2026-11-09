@@ -3,7 +3,7 @@
 # the list comes from and in which order, --kit pinned across a reload,
 # enable and disable, hook bands and the final policy result, the warnings
 # of arx check, arx kit add, arx init <kit>, kit.lock, and the kits in
-# kits/. Run with `make test`.
+# kits/ (climber too). Run with `make test`.
 set -u
 . "$(dirname "$0")/lib.sh"
 
@@ -258,6 +258,13 @@ check "  (no edit)" lacks <("$ARX" check --kit explorer 2>&1) ' edit'
 "$ARX" check --kit coding >check.txt 2>&1
 check "coding loads every plugin it names" has check.txt 'plugins: guard shell git-context fail-hint reviewer plugin-authoring keep-last word-count clock notify'
 check "guard comes first" has <("$ARX" check --kit coding --list) $'1\tguard\ton'
+"$ARX" kit add climber --yes </dev/null >add.txt 2>&1
+check "climber is a shipped kit" test -L "$ARX_CONFIG_DIR/kits/climber"
+mkdir -p "$WS/climb" && (cd "$WS/climb" && "$ARX" init climber && "$ARX" check) >"$WS/climb.txt" 2>&1
+check "arx init climber writes climb.yaml" test -f "$WS/climb/climb.yaml"
+check "  which arx check --climb reads" "$ARX" check --climb "$WS/climb/climb.yaml"
+check "  and the kit's agent.yaml" has "$WS/climb.txt" 'kit: climber (from agent.yaml)'
+check "a climber has no stop hook" lacks "$WS/climb.txt" ' stop'
 mkdir -p "$WS/missing" && (cd "$WS/missing" && "$ARX" init nosuch) >init.txt 2>&1
 check "init with a kit that is not installed says so" has init.txt 'run `arx kit add nosuch`'
 unset ARX_LIBEXEC

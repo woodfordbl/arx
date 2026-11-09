@@ -4,8 +4,8 @@
 #   make debug      ./arx-debug with AddressSanitizer and UBSan
 #   make test       run the src/base unit tests (tests/base_test.c), then
 #                   tests/run.sh, plugins.sh, layers.sh, cli.sh, shell.sh,
-#                   hooks.sh, runtime.sh, kits.sh, credentials.sh, state.sh
-#                   and ui.sh against ./arx-debug
+#                   hooks.sh, runtime.sh, kits.sh, credentials.sh, state.sh,
+#                   climb.sh, climb-run.sh and ui.sh against ./arx-debug
 #   make bench      check the performance budgets against ./arx
 #   make lint       style checks (scripts/lint.sh)
 #   make format     rewrite src/ and pick/ in Google style
@@ -100,6 +100,8 @@ test: arx-debug build/dbg/base_test $(PICK)
 	ARX=./arx-debug tests/kits.sh
 	ARX=./arx-debug tests/credentials.sh
 	ARX=./arx-debug tests/state.sh
+	ARX=./arx-debug tests/climb.sh
+	ARX=./arx-debug tests/climb-run.sh
 	ARX=./arx-debug tests/ui.sh
 
 # The browser build: the same sources with proc_host.c in place of the
@@ -138,8 +140,9 @@ install: all
 	rm -f $(PREFIX)/bin/arx
 	cp arx $(PREFIX)/bin/arx
 	cp commands/arx-* $(PREFIX)/libexec/arx/
-	rm -rf $(PREFIX)/libexec/arx/plugins $(PREFIX)/libexec/arx/kits $(PREFIX)/libexec/arx/lib
-	cp -R plugins kits commands/lib $(PREFIX)/libexec/arx/
+	rm -rf $(PREFIX)/libexec/arx/plugins $(PREFIX)/libexec/arx/kits \
+	  $(PREFIX)/libexec/arx/climb $(PREFIX)/libexec/arx/lib
+	cp -R plugins kits commands/climb commands/lib $(PREFIX)/libexec/arx/
 	chmod 755 $(PREFIX)/bin/arx $(PREFIX)/libexec/arx/arx-*
 	@echo "installed arx $(VERSION) in $(PREFIX)/bin; run \`arx setup\` next"
 
@@ -151,7 +154,7 @@ dist: all
 	mkdir -p dist/arx-$(TARGET)/bin dist/arx-$(TARGET)/libexec/arx
 	cp arx dist/arx-$(TARGET)/bin/
 	cp commands/arx-* dist/arx-$(TARGET)/libexec/arx/
-	cp -R plugins kits commands/lib dist/arx-$(TARGET)/libexec/arx/
+	cp -R plugins kits commands/climb commands/lib dist/arx-$(TARGET)/libexec/arx/
 	tar -C dist -czf dist/arx-$(TARGET).tar.gz arx-$(TARGET)
 	@tar -tzf dist/arx-$(TARGET).tar.gz | grep -qx 'arx-$(TARGET)/libexec/arx/lib/pick' || \
 	  { echo "dist: the tarball has no libexec/arx/lib/pick" >&2; exit 1; }

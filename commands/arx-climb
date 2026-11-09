@@ -1,0 +1,306 @@
+#!/usr/bin/env bash
+# arx-climb: run an agent in rounds; score each change and keep or revert it
+#
+# Each round runs `arx -p` (then `arx --resume`) until the agent ends its
+# turn. climb, not the agent, then commits the change paths, scores the
+# commit with eval.command in a fresh export whose eval files come from a
+# pinned commit, and keeps or reverts it on the median of the runs. The
+# agent never runs the scorer that counts. See docs/climb.md.
+#
+# Needs bash 3.2 or later (macOS /bin/bash), jq, git 2.23 and awk; the
+# arithmetic is in jq. climb/ next to this file holds the parts: round.sh,
+# git.sh, eval.sh and report.sh. Everything runs inside main, called on the last
+# line, so an edit to these files during a climb changes nothing.
+set -u
+
+usage() {
+  cat <<'EOF'
+usage: arx climb [--config PATH] [--name RUN] [--rounds N] [--patience N]
+                 [--target X] [--cap usd=N|tokens=N|wall=D] [--round turns=N|wall=D]
+                 [--spec PATH] [--kit NAME] [--set KEY=VALUE]... [--json] [--quiet]
+                 [--dry-run]
+       arx climb --resume RUN|last [budget flags] [--new-session]
+       arx climb status [RUN|last] [--json]
+       arx climb stop [RUN|last]
+       arx climb rm RUN [--yes]
+Runs the agent in rounds. After each round climb commits the change paths,
+scores them with eval.command outside the agent's reach, and keeps or
+reverts the change. climb.yaml says what is scored and the budget; one of
+budget.usd, budget.tokens or budget.wall (or --cap) is required.
+  --config PATH   climb.yaml (default ./climb.yaml)
+  --name RUN      the run and its branch climb/RUN (default: the time)
+  --dry-run       check everything and score the baseline, then stop
+  --json          print summary.json on stdout at the end
+  --quiet         no line per round on stderr
+Results: .arx/climb/RUN/ (results.jsonl, results.tsv, summary.json, logs/).
+Exit codes: 0 done, 1 error, 2 usage, 3 budget, 4 auth, 130 interrupted.
+EOF
+}
+
+warn() { echo "arx climb: $*" >&2; }
+die() {
+  local code=$1
+  shift
+  echo "arx climb: $*" >&2
+  exit "$code"
+}
+usage_error() {
+  echo "arx climb: $*" >&2
+  usage >&2
+  exit 2
+}
+
+# Adds a jq override of key $1 to the config: num, dur, str or add (to a
+# list) value $3, from a flag.
+override() {
+  ov_n=$((ov_n + 1))
+  ov_args+=(--arg "v$ov_n" "$3")
+  case "$2" in
+    num) ov_prog="$ov_prog | $1 = (\$v$ov_n | tonumber)" ;;
+    dur) ov_prog="$ov_prog | $1 = (\$v$ov_n | secs)" ;;
+    str) ov_prog="$ov_prog | $1 = \$v$ov_n" ;;
+    add) ov_prog="$ov_prog | $1 = ($1 // []) + [\$v$ov_n]" ;;
+  esac
+}
+
+# Handles one option that takes a value.
+option() {
+  case "$1" in
+    --config) config=$2 nonbudget=1 ;;
+    --name) name=$2 nonbudget=1 ;;
+    --resume) resume=$2 ;;
+    --rounds) override .budget.rounds num "$2" ;;
+    --patience) override .budget.patience num "$2" ;;
+    --target) override .budget.target num "$2" ;;
+    --spec) override .agent.spec str "$2" && nonbudget=1 ;;
+    --kit) override .agent.kit str "$2" && nonbudget=1 ;;
+    --set) override .agent.set_args add "$2" && nonbudget=1 ;;
+    --cap)
+      case "${2%%=*}" in
+        usd | tokens) override ".budget.${2%%=*}" num "${2#*=}" ;;
+        wall) override .budget.wall dur "${2#*=}" ;;
+        turns) usage_error "--cap turns does not fit rounds; use --round turns=N" ;;
+        *) override .agent.cap_args add "$2" ;;
+      esac ;;
+    --round)
+      case "${2%%=*}" in
+        turns) override .round.turns num "${2#*=}" ;;
+        wall) override .round.wall dur "${2#*=}" ;;
+        *) usage_error "--round takes turns=N or wall=D" ;;
+      esac ;;
+  esac
+}
+
+parse_args() {
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json=1 ;;
+      --quiet | -q) quiet=1 ;;
+      --dry-run) dry=1 nonbudget=1 ;;
+      --new-session) new_session=1 ;;
+      -h | --help) usage; exit 0 ;;
+      --config | --name | --resume | --rounds | --patience | --target | --cap | --round | --spec | --kit | --set)
+        [ $# -ge 2 ] || usage_error "$1 needs a value"
+        option "$1" "$2"
+        shift ;;
+      *) usage_error "unknown option $1" ;;
+    esac
+    shift
+  done
+}
+
+# Applies the flags to the config JSON in $1, checks the budget and loads
+# it into shell variables.
+resolve_config() {
+  jq -c "$climb_jq $ov_prog" "${ov_args[@]}" "$1" >"$tmp/resolved.json" 2>"$tmp/jq.err" ||
+    die 2 "a flag has a bad value ($(head -n 1 "$tmp/jq.err"))"
+  jq -e '[.budget.usd, .budget.tokens, .budget.wall] | any(. != null)' \
+    "$tmp/resolved.json" >/dev/null ||
+    die 2 "set a budget: budget.usd, budget.tokens or budget.wall in climb.yaml, or --cap usd=5, --cap tokens=2000000 or --cap wall=8h. A climb runs alone, so it does not start without one."
+  jq -e '(.budget.usd // 1) > 0 and (.budget.tokens // 1) >= 1 and (.budget.wall // 1) > 0
+    and (.budget.rounds // 1) >= 1 and (.budget.patience // 1) >= 1
+    and .round.turns >= 1 and .round.wall > 0' "$tmp/resolved.json" >/dev/null ||
+    die 2 "each budget and round limit must be more than 0"
+  eval "$(jq -r '
+    def s: if . == null then "" else tostring end;
+    def up: if . == null then "" else ceil | tostring end;
+    def list: map(@sh) | join(" ");
+    @sh "c_task=\(.task) c_spec=\(.agent.spec | s) c_kit=\(.agent.kit | s)",
+    "c_change=(\(.change | list)) change_text=\(.change | join(", ") | @sh)",
+    "c_sets=(\([.agent.set | to_entries[]
+      | "\(.key)=\(.value | if type == "string" then . else tojson end)"]
+      + (.agent.set_args // []) | list))",
+    "c_caps=(\(.agent.cap_args // [] | list)) n_caps=\(.agent.cap_args // [] | length)",
+    "e_files=(\(.eval.files | list)) n_files=\(.eval.files | length)",
+    @sh "e_command=\(.eval.command) e_ref=\(.eval.ref) e_goal=\(.eval.goal)",
+    @sh "e_pattern=\(.eval.pattern) e_timeout=\(.eval.timeout)",
+    @sh "e_repeats=\(.eval.repeats) e_confirm=\(.eval.confirm) e_show=\(.eval.show)",
+    @sh "e_delta=\(.eval.min_delta) e_pct=\(.eval.min_delta_percent)",
+    @sh "e_rescore=\(.eval.rescore) e_compare=\(.eval.compare | s)",
+    @sh "h_command=\(.holdout.command | s) h_when=\(.holdout.when)",
+    @sh "b_usd=\(.budget.usd | s) b_tokens=\(.budget.tokens | s) b_wall=\(.budget.wall | up)",
+    @sh "b_rounds=\(.budget.rounds | s) b_patience=\(.budget.patience | s)",
+    @sh "b_target=\(.budget.target | s) r_turns=\(.round.turns) r_wall=\(.round.wall | up)"
+  ' "$tmp/resolved.json")" || die 2 "cannot read the climb config"
+  spec_args=()
+  [ -z "$c_spec" ] || spec_args+=(--spec "$c_spec")
+  [ -z "$c_kit" ] || spec_args+=(--kit "$c_kit")
+  local s
+  for s in ${c_sets[@]+"${c_sets[@]}"}; do spec_args+=(--set "$s"); done
+}
+
+# Takes .arx/climb/lock for run `name`, or exits 2 when another climb holds
+# it. A lock whose pid is gone is taken over.
+take_lock() {
+  local pid
+  if ! mkdir "$lock" 2>/dev/null; then
+    pid=$(cat "$lock/pid" 2>/dev/null)
+    [ -n "$pid" ] || { sleep 1; pid=$(cat "$lock/pid" 2>/dev/null); }
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      die 2 "another climb ($(cat "$lock/run" 2>/dev/null)) runs here, pid $pid; stop it with \`arx climb stop\`"
+    fi
+    rm -rf "$lock" && mkdir "$lock" 2>/dev/null || die 2 "cannot take $lock"
+  fi
+  locked=1
+  echo $$ >"$lock/pid"
+  echo "$name" >"$lock/run"
+}
+
+# Checks that the rounds' spec loads, and warns about a stop hook that
+# would keep a round going.
+check_spec() {
+  local hooks stop
+  if ! "$arx" check ${spec_args[@]+"${spec_args[@]}"} >"$tmp/check.txt" 2>&1; then
+    sed 's/^/  /' "$tmp/check.txt" >&2
+    die 2 "the spec for the rounds does not load (arx check, above)"
+  fi
+  hooks=$(sed -n 's/^hooks://p' "$tmp/check.txt")
+  stop=$(printf '%s\n' $hooks | grep '^stop' | head -n 1)
+  [ -n "$stop" ] || return 0
+  case "$stop" in "stop("*) stop="from ${stop#stop(}" stop=${stop%)} ;; *) stop="hooks/stop" ;; esac
+  warn "the spec has a stop hook ($stop) that can keep a round going.
+  Until climb can end a round itself (planned, with --policy), such a round
+  runs to its turn cap of $r_turns turns. Turn the hook off for a climb:
+  \`disable: [never-stop]\` in the spec, or delete hooks/stop."
+}
+
+# Prints what climb protects against without a sandbox, and what it does not.
+isolation_warning() {
+  local copy="in a fresh export of each commit, where only the change paths come from the agent"
+  [ "$n_files" -eq 0 ] ||
+    copy="in a fresh export with its own copy of ${e_files[*]} from commit ${eval_commit:0:7}"
+  warn "isolation none: the agent's tools, and its code when the scorer runs
+  it, run as you, with no sandbox. climb still commits and scores each change
+  itself, $copy,
+  and never reads a score the agent reports. That stops mistakes and casual
+  reward hacking, not a determined agent: its shell can still rewrite .git,
+  .arx/climb/ or anything else you can. See docs/climb.md."
+}
+
+# Starts a new climb: config, preflight, the run folder and the branch.
+setup_start() {
+  local f id trees="{}"
+  [ -f "$config" ] || die 2 "there is no $config here: write one (see docs/climb.md), or name it with --config PATH"
+  "$arx" check --climb "$config" >"$tmp/config.json" || exit 2
+  resolve_config "$tmp/config.json"
+  git_preflight
+  if [ -z "$name" ]; then
+    name=$(date +%Y%m%d-%H%M)
+    [ ! -e ".arx/climb/$name" ] || name=$(date +%Y%m%d-%H%M%S)
+  fi
+  case "$name" in "" | .* | *[!A-Za-z0-9._-]*) die 2 "--name takes letters, digits, ., _ and -" ;; esac
+  git check-ref-format "refs/heads/climb/$name" || die 2 "climb/$name is not a valid branch name"
+  branch=climb/$name dir=$PWD/.arx/climb/$name
+  take_lock
+  [ ! -e "$dir" ] || die 2 "$dir exists; pick another --name, or remove it with \`arx climb rm $name\`"
+  ! git rev-parse -q --verify "refs/heads/$branch" >/dev/null ||
+    die 2 "the branch $branch exists; pick another --name, or remove it with \`arx climb rm $name\`"
+  eval_commit=$(git rev-parse -q --verify "$e_ref^{commit}") || die 2 "eval.ref: $e_ref is not a commit"
+  for f in ${e_files[@]+"${e_files[@]}"}; do
+    id=$(git rev-parse -q --verify "$eval_commit:${f%/}") || die 2 "eval.files: $f is not in eval.ref ($e_ref)"
+    trees=$(jq -nc --argjson t "$trees" --arg k "$f" --arg v "$id" '$t + {($k): $v}')
+  done
+  check_spec
+  best=$(git rev-parse HEAD) base=$best
+  mkdir -p "$dir/logs" || die 1 "cannot create $dir"
+  : >"$dir/results.jsonl" && : >"$dir/holdout.jsonl"
+  printf 'round\tstatus\tscore\tbest\tdelta\tcommit\tturns\tcost\tnote\n' >"$dir/results.tsv"
+  jq -n --slurpfile c "$tmp/resolved.json" --arg run "$name" --arg eval "$eval_commit" \
+    --argjson trees "$trees" --arg base "$base" --arg branch "$branch" \
+    --arg arx "$("$arx" version 2>/dev/null)" --argjson dry "$([ "$dry" -eq 1 ] && echo true || echo false)" \
+    '{v: 1, $run, config: $c[0], eval: {commit: $eval, $trees}, $base, $branch,
+      session: null, isolation: "none", $arx, started: (now | todate), dry_run: $dry}' \
+    >"$dir/climb.json"
+  ln -sfn "$name" .arx/climb/last
+  [ "$dry" -eq 1 ] && return 0
+  git_branch
+  f=$(git_repair_eval) || die 1 "cannot check out eval.files from $e_ref"
+  [ -z "$f" ] || warn "eval.files now match eval.ref ($e_ref) in the tree: $(printf '%s' "$f" | tr '\n' ' ')"
+}
+
+# Continues a climb from its climb.json, with a fresh budget.
+setup_resume() {
+  [ "$nonbudget" -eq 0 ] || usage_error "--resume keeps the run's climb.yaml; only the budget flags, --new-session, --json and --quiet apply"
+  name=$(resolve_run "$resume") || exit 2
+  dir=$PWD/.arx/climb/$name branch=climb/$name
+  jq '.config' "$dir/climb.json" >"$tmp/config.json" 2>/dev/null || die 2 "$dir/climb.json cannot be read"
+  resolve_config "$tmp/config.json"
+  git_preflight
+  take_lock
+  git rev-parse -q --verify "refs/heads/$branch" >/dev/null ||
+    die 2 "the branch $branch is gone (or $name was a dry run); start a new climb"
+  if [ "$(git symbolic-ref -q HEAD)" != "refs/heads/$branch" ]; then
+    git checkout -q "$branch" || die 2 "cannot check out $branch; commit or stash your changes first"
+  fi
+  best=$(git rev-parse "refs/heads/$branch")
+  eval "$(jq -r '@sh "eval_commit=\(.eval.commit) base=\(.base) session=\(.session // "")"' "$dir/climb.json")"
+  [ "$new_session" -eq 0 ] || session=""
+  round=$(jq -s 'map(.round) | max // 0' "$dir/results.jsonl")
+  eval "$(jq -r '@sh "secs_before=\(.secs // 0) best_round=\(.best_round // 0)"' "$dir/summary.json" 2>/dev/null)"
+  if [ -n "$session" ]; then
+    eval "$(jq -r '@sh "s_turns=\(.turns // 0) s_cost=\(.cost // 0) s_tokens=\((.tokens_in // 0) + (.tokens_out // 0))"' \
+      ".arx/sessions/$session/meta.json" 2>/dev/null)"
+  fi
+  check_spec
+  rm -f "$dir/stop"
+  ln -sfn "$name" .arx/climb/last
+}
+
+main() {
+  local here part
+  here=$(cd "$(dirname "$0")" && pwd -P) || exit 1
+  for part in report eval git round; do
+    . "$here/climb/$part.sh" || die 1 "cannot read $here/climb/$part.sh"
+  done
+  arx=${ARX_BIN:-arx}
+  case "${1:-}" in
+    status) shift; cmd_status "$@"; return ;;
+    stop) shift; cmd_stop "$@"; return ;;
+    rm) shift; cmd_rm "$@"; return ;;
+    help) usage; return 0 ;;
+  esac
+  config=climb.yaml name="" resume="" new_session=0 json=0 quiet=0 dry=0 nonbudget=0
+  ov_prog="." ov_args=(--arg _ _) ov_n=0
+  parse_args "$@"
+  agent_pid="" eval_pid="" watch_pid="" locked=0
+  lock=$PWD/.arx/climb/lock session="" round=0 started=0 no_keep=0 errors=0
+  spent_usd=0 spent_tokens=0 s_turns=0 s_cost=0 s_tokens=0 secs_before=0
+  best_round=0 B="[]" vs="" agent_json="" note="" msg="" over="" reserve=0 round_base=0
+  stop_code="" stop_reason="" start_epoch=$(date +%s)
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/arx-climb.XXXXXX") || die 1 "cannot make a temp folder"
+  # The climb runs in a worker that ignores INT and TERM; this shell only
+  # waits, and answers a signal with a flag file the worker checks. A trap
+  # that fires while bash is busy can break it (bash 5.2 can fail inside a
+  # $(...)), so the worker never takes one.
+  trap 'rm -rf "$tmp"' EXIT
+  trap on_signal INT TERM
+  (
+    trap '' INT TERM
+    trap cleanup EXIT
+    if [ -n "$resume" ]; then setup_resume; else setup_start; fi
+    climb
+  ) &
+  wait_child $!
+}
+
+main "$@"

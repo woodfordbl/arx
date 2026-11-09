@@ -13,7 +13,7 @@ program, not more code in the core loop.
 | 4 | `arx acp`: an Agent Client Protocol server | planned |
 | 5 | A TUI plugin | planned |
 | 6 | MCP client | planned |
-| 7 | `arx climb`: a keep/revert driver | planned |
+| 7 | `arx climb`: a keep/revert driver | **done**: [`arx climb`](climb.md) and the `climber` kit |
 | 8 | Installer and settings menus | planned for 0.2.0 |
 
 None of the planned items exist yet. The sections that follow describe each
@@ -67,10 +67,3 @@ and a settings menu after that for the provider, key, model, kit, plugins,
 updates and doctor. The menus will be drawn by `pick`, a small C program
 next to the commands, so the core binary gains nothing and its startup does
 not change. Every flag that works today will keep working with no prompt.
-
-## `arx climb`
-
-`arx climb` will be a driver that runs the official evaluation outside the
-agent's reach, and keeps or reverts each change itself. Today the agent runs
-its own scorer, as in [self-improving runs](autoresearch.md). `arx climb`
-will remove the need to trust it.

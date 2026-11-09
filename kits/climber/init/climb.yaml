@@ -1,0 +1,10 @@
+# climb.yaml: what `arx climb` scores and how much it may spend. Check it
+# with `arx climb --dry-run`, which scores the starting version and stops.
+# Every key: docs/climb.md.
+task: Improve the score from eval/score. See program.md.
+change: [work/]              # only these paths are scored and committed
+eval:
+  command: eval/score        # run with sh -c in a fresh export of each change
+  files: [eval/]             # always from the commit the climb started at
+  goal: min                  # min or max
+budget: {usd: 5, wall: 8h, patience: 25}

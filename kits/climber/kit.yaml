@@ -1,0 +1,12 @@
+# The climber kit: the agent's side of `arx climb`. Each round the agent
+# makes one change and ends its turn; climb scores it with its own copy of
+# the scorer and keeps or reverts it. There is no never-stop here: a turn's
+# end is a round's end. `arx init climber` copies init/: program.md, the
+# first message, an agent.yaml with restart compaction, and climb.yaml.
+name: climber
+version: 0.1.0
+description: One change per round for arx climb, which scores, keeps or reverts each change itself.
+plugins:
+  - shell
+  - git-context
+prompt: prompts/system.md

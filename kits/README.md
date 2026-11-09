@@ -9,6 +9,7 @@ their order and settings, and the prompt, so it makes one kind of agent.
 | [coding](coding) | a general coding agent: `guard` first, then `shell` and the other plugins |
 | [explorer](explorer) | reads and answers: `shell` with `edit` turned off |
 | [research](research) | an experiment loop that never stops (what `arx init autoresearch` makes) |
+| [climber](climber) | one change per round for [`arx climb`](../docs/climb.md), which scores and keeps or reverts each change itself |
 
 ```sh
 arx kit add coding          # the kit and each plugin it names

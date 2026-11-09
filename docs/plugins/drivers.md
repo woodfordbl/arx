@@ -6,7 +6,9 @@ batch job or a CI step.
 arx does not load a driver. A driver uses only the command line, the exit
 code, the JSON result and the event stream. Write one when a run must go on
 without you: resume it after a cap, repeat it until a score climbs, or run it
-on every commit.
+on every commit. arx ships one, [`arx climb`](../climb.md), which runs an
+agent in rounds and keeps or reverts each change with a scorer the agent
+can't reach.
 
 **Status:** today. **Example:**
 [`examples/plugins/drivers/resume_on_cap.sh`](../../examples/plugins/drivers/resume_on_cap.sh).
@@ -103,7 +105,7 @@ full version, with a limit on the rounds, is
 | The driver uses `last` while other runs start in the same folder | `last` points at the newest session, which may be another one | read `session` from the JSON result and use the id |
 | The driver lets the agent choose its plugins | the agent can edit `kit:` and `plugins:` in its spec | pin them with `--kit NAME`, or `--set 'plugins=["guard","shell"]'`; keep `shell`, or the agent has no `bash` and `edit` |
 | A climb uses a kit that names plugins without versions | a later `arx kit add` can change a plugin between runs | pin versions in the kit (`guard@v0.2.0`), and keep the `kit.lock` that arx writes |
-| The driver trusts `final_output` as the score | the agent can write anything | measure the result with your own program |
+| The driver trusts `final_output` as the score | the agent can write anything | measure it with your own program, or use [`arx climb`](../climb.md) |
 
 ## Planned
 
@@ -113,6 +115,8 @@ spec cannot remove. See [Planned changes](planned.md#trust).
 ## Related
 
 - [Command line](../cli.md#caps): every option, and each cap in detail.
+- [arx climb](../climb.md): the driver that ships with arx, built on this
+  contract.
 - [Self-improving runs](../autoresearch.md): set up an agent that climbs a
   score without supervision.
 - [Observers](observers.md): read the event stream from inside the session.

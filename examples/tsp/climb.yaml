@@ -1,0 +1,17 @@
+# climb.yaml: run this example with `arx climb`, which scores every change
+# with its own copy of eval/ and keeps or reverts it, so the agent never runs
+# the scorer that counts. Until climb can end a round itself (planned, with
+# --policy), delete harness/hooks/stop first: it never lets a round end, so
+# each round would run to its turn cap. See README.md.
+task: Lower the score from eval/score. See program.md.
+agent:
+  spec: harness/agent.yaml
+  set: {instructions: [{file: prompts/climb.md}]}   # the round prompt
+change: [work/]
+eval:
+  command: python3 eval/score
+  files: [eval/]
+  goal: min
+  timeout: 5m
+holdout: {command: python3 eval/score --holdout}   # never shown to the agent
+budget: {usd: 5, wall: 2h, patience: 25}

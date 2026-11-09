@@ -11,6 +11,7 @@ arx init [basic|autoresearch|KIT]     start a harness in this folder
 arx doctor [--live]                   check the install, spec, key and endpoint
 arx models [FILTER]                   the endpoint's models, with prices
 arx sessions                          the sessions in this folder
+arx climb [--dry-run] [--resume RUN]  run in rounds; climb scores and keeps each change
 arx update [--check]                  update to the latest release
 arx plugin add|rm|ls|new              install and manage plugins (`arx add` for short)
 arx kit add|rm|ls                     install and manage kits
@@ -179,6 +180,7 @@ plugin can add a command but not replace one. See
 | `arx check --hosts` | Prints the network hosts the run needs, one per line, for an egress allowlist. See [Hosts](plugins/reference.md#hosts). |
 | `arx check --plugin DIR` | Checks one plugin folder without loading it. |
 | `arx check --kit-dir DIR` | Checks one kit folder. |
+| `arx check --climb FILE` | Checks a `climb.yaml` and prints it as JSON, with every default filled in and durations in seconds. |
 | `arx tools [--spec PATH]` | Prints the tools JSON as the model sees it. |
 | `arx schema` | Prints the JSON Schema of `agent.yaml`, for editors. |
 | `arx tool bash\|edit [--schema]` | Runs a tool of the `shell` plugin with JSON arguments on stdin, or prints its schema. |
@@ -221,6 +223,50 @@ arx ctl last stop
 
 Both append a line to the session's `inbox` file, so anything that can write
 a file can steer a run.
+
+## Climbing a score
+
+`arx climb` runs the agent in rounds and scores each change itself, with
+your evaluation outside the agent's reach. It reads `./climb.yaml` and keeps
+or reverts every change on the branch `climb/RUN`. See
+[arx climb](climb.md) for the keep rule, the isolation levels and every key.
+
+```text
+arx climb [--config PATH] [--name RUN] [--rounds N] [--patience N]
+          [--target X] [--cap usd=N|tokens=N|wall=D] [--round turns=N|wall=D]
+          [--spec PATH] [--kit NAME] [--set KEY=VALUE]... [--json] [--quiet]
+          [--dry-run]
+arx climb --resume RUN|last [budget flags] [--new-session]
+arx climb status [RUN|last] [--json]
+arx climb stop [RUN|last]
+arx climb rm RUN [--yes]
+```
+
+| Option | Description |
+|---|---|
+| `--config PATH` | The climb file. Default `./climb.yaml`. |
+| `--name RUN` | Names the run, its folder `.arx/climb/RUN/` and the branch `climb/RUN`. Default: the time, such as `20261109-1530`. |
+| `--rounds N`, `--patience N`, `--target X` | Stop after N rounds, after N rounds in a row without a keep, or once the best reaches X. |
+| `--cap usd=N`, `tokens=N`, `wall=D` | The climb's budget, over `budget:` in `climb.yaml`. Other caps, such as `depth`, pass through to each round. |
+| `--round turns=N`, `wall=D` | The limits of one round. Default 40 turns and 30 minutes. |
+| `--spec PATH`, `--kit NAME`, `--set KEY=VALUE` | Added to every round, after the values in `agent:`. |
+| `--dry-run` | Checks everything and scores the baseline, then stops without starting the agent. |
+| `--resume RUN\|last` | Scores the best commit again and continues the run's session. Budget flags count from the resume; `--new-session` starts a fresh session. |
+| `--json` | Prints `summary.json` on stdout at the end. |
+| `--quiet` | No line per round on stderr. |
+
+`arx climb status` prints a run's state, and `--json` its `summary.json`.
+`arx climb stop` ends the climb after the current round. `arx climb rm`
+deletes a run's branch, its candidate refs and its folder, after asking.
+
+| Code | Meaning |
+|---|---|
+| `0` | done: rounds, patience, target, `arx climb stop`, or a dry run |
+| `1` | error: three arx errors in a row, a baseline that crashes, or a git step that fails |
+| `2` | usage: a bad `climb.yaml`, no budget, dirty change paths, not at the top of a git repository, or another climb running here |
+| `3` | a budget was spent: `usd`, `tokens` or `wall` |
+| `4` | authentication failed |
+| `130` | interrupted (Ctrl-C) |
 
 ## Environment
 

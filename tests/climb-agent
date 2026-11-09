@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# climb-agent: a stand-in for arx in tests/climb.sh (set ARX_BIN to it).
+# Commands such as check, ctl and version go to the real arx ($ARX). A run
+# (-p or --resume) is one round, numbered NN from 01: it runs
+# $FAKE_DIR/round-NN.sh in the working folder, saves its arguments one per
+# line in argv-NN, prints round-NN.json (or a result like arx's, adding 2
+# turns, 1100 tokens and $0.01 to the session), and exits with the code in
+# round-NN.exit (default 0). INT or TERM ends it with exit 130.
+set -u
+case "${1:-}" in -*) ;; *) exec "$ARX" "$@" ;; esac
+n=$(($(cat "$FAKE_DIR/agent-count" 2>/dev/null || echo 0) + 1))
+echo "$n" >"$FAKE_DIR/agent-count"
+id=$(printf %02d "$n")
+printf '%s\n' "$@" >"$FAKE_DIR/argv-$id"
+session=""
+while [ $# -gt 0 ]; do
+  [ "$1" != --resume ] || session=$2
+  shift
+done
+if [ -z "$session" ]; then
+  session=stub-$id
+  mkdir -p ".arx/sessions/$session"
+  ln -sfn "$session" .arx/sessions/last
+fi
+meta=.arx/sessions/$session/meta.json
+[ -f "$meta" ] || echo '{"turns": 0, "tokens_in": 0, "tokens_out": 0, "cost": 0}' >"$meta"
+
+# Prints the result and updates meta.json, as arx does at the end.
+result() {
+  local out
+  if [ -f "$FAKE_DIR/round-$id.json" ]; then
+    out=$(cat "$FAKE_DIR/round-$id.json")
+  else
+    out=$(jq -c --arg s "$session" --arg status "$1" --argjson code "$2" --arg note "idea $id" \
+      '{session: $s, $status, exit: $code, final_output: $note, turns: (.turns + 2),
+        tokens: {input: (.tokens_in + 1000), output: (.tokens_out + 100)},
+        cost: (.cost + 0.01)}' "$meta")
+  fi
+  echo "$out" | jq '{turns, tokens_in: .tokens.input, tokens_out: .tokens.output, cost}' >"$meta"
+  echo "$out"
+}
+
+child=""
+trap '[ -z "$child" ] || kill "$child" 2>/dev/null; result interrupted 130; exit 130' INT TERM
+if [ -f "$FAKE_DIR/round-$id.sh" ]; then
+  bash "$FAKE_DIR/round-$id.sh" &
+  child=$!
+  wait "$child"
+  while kill -0 "$child" 2>/dev/null; do wait "$child"; done
+  child=""
+fi
+code=$(cat "$FAKE_DIR/round-$id.exit" 2>/dev/null || echo 0)
+result "$([ "$code" -eq 0 ] && echo "done" || echo error)" "$code"
+exit "$code"

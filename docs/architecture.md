@@ -129,7 +129,7 @@ Every build, test and release step is a `make` target:
 |---|---|
 | `make` | release build: `-Os`, LTO, dead code stripped; also `commands/lib/pick` |
 | `make debug` | `./arx-debug` with AddressSanitizer and UBSan |
-| `make test` | the unit tests of `src/base` (`tests/base_test.c`), then 743 end-to-end checks in eleven suites against `tests/fake-curl` (49 core, 38 marketplace plugins, 74 plugin loading, 83 CLI, 56 shell plugin, 70 hooks, 56 tool runtime, 88 kits, 84 credentials, 35 plugin state, 110 terminal UI). No network or API key needed. The terminal UI suite drives pick and `arx setup` on a pseudo-terminal with `tests/pty.py`, and skips itself without python3. |
+| `make test` | the unit tests of `src/base` (`tests/base_test.c`), then 910 end-to-end checks in thirteen suites against `tests/fake-curl` (49 core, 38 marketplace plugins, 74 plugin loading, 83 CLI, 56 shell plugin, 70 hooks, 56 tool runtime, 93 kits, 84 credentials, 35 plugin state, 89 climb config, 73 climb runs, 110 terminal UI). No network or API key needed. The terminal UI suite drives pick and `arx setup` on a pseudo-terminal with `tests/pty.py`, and skips itself without python3. |
 | `make bench` | the [performance budgets](#performance-budgets) |
 | `make lint` | clang-format, cpplint, files of 400 lines or fewer, doc comments, for `src/` and `pick/`, and process calls only in `proc.c` and `proc_posix.c` |
 | `make format` | rewrites `src/` and `pick/` in Google style |

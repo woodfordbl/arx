@@ -1,0 +1,9 @@
+# A harness for `arx climb`: one change per round, scored by climb. The
+# climber kit chooses the plugins and the prompt; the model and endpoint
+# come from `arx setup`. Describe the task in program.md, and what is
+# scored and the budget in climb.yaml.
+name: climber
+kit: climber
+first_message: {file: prompts/first.md}
+compaction: {strategy: restart, trigger: 0.6}
+skills: skills

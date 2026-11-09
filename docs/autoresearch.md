@@ -94,6 +94,8 @@ An agent can build these for itself:
 
 - **A tool that runs one whole experiment**: commit, score, log, keep or
   revert, in one call. This cuts four or five turns per experiment to one.
+  Under [`arx climb`](climb.md) the tool only edits and checks: climb
+  commits, scores and keeps.
 - **A fast eval tool**: scores a smaller input, to reject bad ideas in
   seconds.
 - **An `after_tool` hook**: adds the current best score to every result.
@@ -149,6 +151,39 @@ To start a harness of your own instead, run `arx init autoresearch`. It
 writes the same pieces into the current folder: a program, an
 experiment-loop prompt, a never-stop hook and restart compaction.
 
+## Let arx climb keep the score
+
+[`arx climb`](climb.md) runs the same example in rounds and scores each
+change itself, with its own copy of `eval/`, so the agent never runs the
+scorer that counts. The example's `climb.yaml` sets what is scored and the
+budget.
+
+1. Copy the example into its own git repository, without its never-stop
+   hook, which would keep each round going to its turn cap:
+
+   ```sh
+   cp -r examples/tsp /tmp/tsp-climb && cd /tmp/tsp-climb
+   rm harness/hooks/stop
+   printf 'results.tsv\nnotes.md\nrun.log\n.arx/\n' > .gitignore
+   git init -q && git add -A && git commit -qm baseline
+   ```
+
+2. Score the baseline, then start the climb:
+
+   ```sh
+   arx climb --dry-run --set model=<model id>   # scores the start 3 times
+   arx climb --set model=<model id>             # rounds until the budget ends
+   ```
+
+The prompt changes with it. `climb.yaml` points `instructions` at
+`harness/prompts/climb.md`, which asks for one change to `work/solve.py`
+per round. It has no scorer step and no keep or revert step: climb does
+both, and tells the agent the result at the start of the next round.
+
+When the climb ends, the branch `climb/RUN` holds only kept, scored commits,
+`.arx/climb/last/results.tsv` holds every round, and `summary.json` has the
+holdout score of the starting version and of the best.
+
 ## Before a long run
 
 Check each of these before you leave a run alone:
@@ -159,7 +194,7 @@ Check each of these before you leave a run alone:
 | **Git** | Run in its own repository, so every kept change is a commit and a revert is cheap. |
 | **Holdout** | Keep instances the agent never sees, and check the final result on them. |
 | **Isolation** | Tools run as your user. Use a container or VM for anything you would not run yourself. |
-| **Trust** | The agent runs its own scorer, so it could edit it. Keep the official score outside its reach. A planned [`arx climb`](roadmap.md#arx-climb) driver will do this. |
+| **Trust** | Run the climb with [`arx climb`](climb.md), so the agent never runs the scorer that counts. |
 | **Plugins** | Name the plugins a run may use, such as `plugins: [guard]`, or `plugins: []` for none, so a plugin you install later can't change the run. |
 | **Observe** | Run `arx watch`, or an observer that posts to a channel, so you see a run go wrong early. |
 
@@ -169,6 +204,8 @@ Check each of these before you leave a run alone:
   compaction.
 - [Hooks](plugins/hooks.md): every hook point, including `stop` and
   `after_tool`.
+- [arx climb](climb.md): run the loop in rounds, with a scorer the agent
+  can't reach.
 - [Planned changes](plugins/planned.md#trust): how arx plans to keep a
   policy out of the agent's reach.
 - [`examples/tsp`](../examples/tsp): the complete self-improving TSP solver.
