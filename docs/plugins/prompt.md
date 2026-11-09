@@ -15,7 +15,9 @@ Plugins add to them.
 | a [skill](skills.md) | long guides that the agent reads when it needs them | the know-how matters for some tasks only |
 | `session_start` [context](hooks.md#points-with-a-decision) | facts that change with each session | the text comes from the state of the project, such as the git branch |
 
-**Status:** today, since arx 0.2.0.
+**Status:** today, since arx 0.2.0. **Example:**
+[`plugins/plugin-authoring`](../../plugins/plugin-authoring), whose one line
+of text points the agent to its skill.
 
 ## Contract
 

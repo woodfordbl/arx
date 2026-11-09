@@ -72,6 +72,18 @@ check "exits 0" exited 0
 check "review came back" has fake/req-03.json 'nothing serious'
 check "reviewer has no edit tool" lacks fake/req-02.json '"name":"edit"'
 
+# The coding kit's prompt, then the line that plugin-authoring adds.
+begin_examples "coding kit prompt"
+mkdir -p kits && cp -R "$ROOT/kits/coding" kits/ && touch DONE
+sse_text "done" | reply 1 "200 OK"
+run "go" --kit coding
+check "exits 0" exited 0
+msg0 1 >msg0.txt
+check "message 0 starts with the kit's prompt" grep -q '^You are a coding agent' msg0.txt
+check "and ends with plugin-authoring's line" [ "$(tail -1 msg0.txt)" = "Before you add a tool, hook or observer to your harness, read the plugin-authoring skill." ]
+"$ARX" check --kit coding >check.txt 2>&1
+check "arx check names it" has check.txt 'prompt: kit coding; plugins add plugin-authoring (89 bytes)'
+
 # The driver resumes a session each time the turn cap stops it.
 begin_examples "driver"
 sse_tool now '{}' | reply 1 "200 OK"
