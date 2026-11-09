@@ -105,6 +105,7 @@ static int Spawn(const Proc* p, Pipes* io, int want_in, pid_t* pid) {
   posix_spawn_file_actions_adddup2(&fa, io->out[1], 1);
   posix_spawn_file_actions_adddup2(&fa, p->on_err ? io->err[1] : io->out[1], 2);
   if (p->on_fd3) posix_spawn_file_actions_adddup2(&fa, io->fd3[1], 3);
+  if (p->dir) posix_spawn_file_actions_addchdir_np(&fa, p->dir);
 
   posix_spawnattr_t attr;
   sigset_t defaults, mask;
@@ -136,6 +137,7 @@ struct ProcChild {
   pid_t pid;
   Buffer more;  // stdin queued by ProcWrite (Proc.open_in)
   size_t written;
+  int closing;  // ProcClose: close stdin once `more` is written
   int status, reaped, killed, done;
   double start, kill_at, drain_until, deadline;
   ProcResult r;
@@ -178,7 +180,7 @@ ProcChild* ProcStart(const Proc* p) {
 
 // Queues stdin for a child started with open_in; see base.h.
 void ProcWrite(ProcChild* c, const char* data, size_t n) {
-  if (c->io.in[1] >= 0) BufferAppend(&c->more, data, n);
+  if (c->io.in[1] >= 0 && !c->closing) BufferAppend(&c->more, data, n);
 }
 
 // True when the child has ended and its output is read; see base.h.
@@ -203,9 +205,18 @@ static void Feed(ProcChild* c) {
     CloseFd(&c->io.in[1]);
   } else if (c->p.open_in && c->written == c->more.len) {
     c->more.len = c->written = 0;
+    if (c->closing) CloseFd(&c->io.in[1]);
   } else if (!c->p.open_in && c->written >= c->p.in_len) {
     CloseFd(&c->io.in[1]);
   }
+}
+
+// Closes stdin once the queued bytes are written; see base.h.
+void ProcClose(ProcChild* c) {
+  size_t n;
+  c->closing = 1;
+  Pending(c, &n);
+  if (!n) CloseFd(&c->io.in[1]);
 }
 
 // Reaps the child, and stops it at its deadline or on Ctrl-C.

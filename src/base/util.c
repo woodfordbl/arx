@@ -117,6 +117,23 @@ void BufferSink(void* ctx, const char* data, size_t n) {
   if (b->len < (1 << 20)) BufferAppend(b, data, n);
 }
 
+// Appends up to 64 MB, for output read line by line; see base.h.
+void LineSink(void* ctx, const char* data, size_t n) {
+  Buffer* b = ctx;
+  if (b->len < ((size_t)64 << 20)) BufferAppend(b, data, n);
+}
+
+// Takes the first whole line out of a buffer; see base.h.
+char* LinePop(Buffer* b) {
+  char* nl = b->len ? memchr(b->data, '\n', b->len) : NULL;
+  if (!nl) return NULL;
+  size_t len = (size_t)(nl - b->data);
+  char* line = XStrndup(b->data, len);
+  b->len -= len + 1;
+  memmove(b->data, nl + 1, b->len + 1);  // with the trailing NUL
+  return line;
+}
+
 // Formats into a new string.
 char* XAsprintf(const char* fmt, ...) {
   Buffer b = {0};

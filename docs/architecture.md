@@ -103,6 +103,7 @@ Every source file, by folder:
 | | `proc.c` | the process runner: pipes, timeouts, process groups, and children kept for the session |
 | | `proc_posix.c` | the rest of the platform natively: signals, exec, the executable check, observers, sleeping, and `HttpStart` by curl |
 | | `http.c` | `HttpRun`: one HTTP request, start to end |
+| | `rpc.c` | JSON-RPC 2.0 over JSON lines, in either role, with no I/O of its own, for MCP servers and `arx acp` |
 
 ## Building and testing
 
@@ -112,7 +113,7 @@ Every build, test and release step is a `make` target:
 |---|---|
 | `make` | release build: `-Os`, LTO, dead code stripped |
 | `make debug` | `./arx-debug` with AddressSanitizer and UBSan |
-| `make test` | 434 end-to-end checks in eight suites against `tests/fake-curl` (47 core, 32 marketplace plugins, 46 plugin loading, 57 CLI, 56 shell plugin, 70 hooks, 56 tool runtime, 70 kits). No network or API key needed. |
+| `make test` | the unit tests of `src/base` (`tests/base_test.c`), then 558 end-to-end checks in ten suites against `tests/fake-curl` (49 core, 34 marketplace plugins, 46 plugin loading, 61 CLI, 56 shell plugin, 70 hooks, 56 tool runtime, 70 kits, 81 credentials, 35 plugin state). No network or API key needed. |
 | `make bench` | the [performance budgets](#performance-budgets) |
 | `make lint` | clang-format, cpplint, files of 400 lines or fewer, doc comments, and process calls only in `proc.c` and `proc_posix.c` |
 | `make format` | rewrites `src/` in Google style |

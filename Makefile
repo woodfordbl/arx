@@ -1,7 +1,8 @@
 # Makefile for arx.
 #   make            release binary ./arx (-Os, LTO, dead-code stripped)
 #   make debug      ./arx-debug with AddressSanitizer and UBSan
-#   make test       run tests/run.sh, plugins.sh, layers.sh, cli.sh, shell.sh,
+#   make test       run the src/base unit tests (tests/base_test.c), then
+#                   tests/run.sh, plugins.sh, layers.sh, cli.sh, shell.sh,
 #                   hooks.sh, runtime.sh, kits.sh, credentials.sh and
 #                   state.sh against ./arx-debug
 #   make bench      check the performance budgets against ./arx
@@ -60,7 +61,14 @@ build/dbg/vendor/%.o: vendor/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CPPFLAGS) -w $(DBG) -c $< -o $@
 
-test: arx-debug
+# Unit tests for src/base: the JSON-RPC peer and the process helpers.
+BASE_TEST_OBJ := $(patsubst %.c,build/dbg/%.o,$(wildcard src/base/*.c) \
+  vendor/cjson/cJSON.c)
+build/dbg/base_test: tests/base_test.c $(BASE_TEST_OBJ)
+	$(CC) $(CPPFLAGS) $(WARN) $(DBG) $^ -o $@
+
+test: arx-debug build/dbg/base_test
+	build/dbg/base_test
 	ARX=./arx-debug tests/run.sh
 	ARX=./arx-debug tests/plugins.sh
 	ARX=./arx-debug tests/layers.sh

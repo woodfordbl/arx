@@ -6,8 +6,8 @@
 //   proc_posix.c  the rest of the platform natively: signals, exec, the
 //           executable check, observers, sleeping, and HttpStart by curl
 //   http.c  one HTTP request on top of the platform (HttpRun)
-// The browser build replaces proc.c and proc_posix.c with proc_host.c, so
-// the platform section below is all that differs between the two.
+//   rpc.c   JSON-RPC 2.0 over JSON lines, with no I/O of its own
+// The browser build swaps proc.c and proc_posix.c for proc_host.c.
 
 #ifndef SRC_BASE_BASE_H_
 #define SRC_BASE_BASE_H_
@@ -65,6 +65,12 @@ void BufferFree(Buffer* b);
 
 // A DataFn (see Proc below) that appends to the Buffer in `ctx`, up to 1 MB.
 void BufferSink(void* ctx, const char* data, size_t n);
+
+// A DataFn like BufferSink that keeps up to 64 MB, for LinePop.
+void LineSink(void* ctx, const char* data, size_t n);
+
+// Takes the first whole line out of `b` (malloc'd, no newline), or NULL.
+char* LinePop(Buffer* b);
 
 // Set by the SIGINT/SIGTERM handler; long waits check it and return early.
 extern volatile sig_atomic_t g_interrupted;
@@ -143,8 +149,7 @@ void IsoTime(char out[32]);
 // Parses "30", "10s", "250ms", "5m" or "1h" into seconds. Returns 0 or -1.
 int ParseDuration(const char* s, double* out);
 
-// Parses "2048", "2kb" or "1mb" (case-insensitive) into bytes.
-// Returns 0 or -1.
+// Parses "2048", "2kb" or "1mb" (any case) into bytes. Returns 0 or -1.
 int ParseSize(const char* s, size_t* out);
 
 // ---- proc.c ----
@@ -167,6 +172,7 @@ typedef struct Proc {
   void* fd3_ctx;
   int open_in;            // stdin stays open for ProcWrite (`in` is NULL)
   int keep_on_interrupt;  // Ctrl-C does not stop it (a long-lived helper)
+  const char* dir;        // the child's working folder, or NULL for ours
 } Proc;
 
 // How the child finished.
@@ -180,8 +186,7 @@ typedef struct ProcResult {
 
 // Runs `p` and waits for it. The child gets its own process group, so a
 // timeout or Ctrl-C kills it and everything it started (SIGTERM, then
-// SIGKILL after a grace period). Returns 0, or -1 if the child could not be
-// started.
+// SIGKILL after a grace period). Returns 0, or -1 if it could not start.
 int ProcRun(const Proc* p, ProcResult* r);
 
 // A child started by ProcStart.
@@ -192,10 +197,9 @@ typedef struct ProcChild ProcChild;
 // child could not be started (errno says why).
 ProcChild* ProcStart(const Proc* p);
 
-// Runs one round of the loop for `n` children at once: waits up to
-// `max_wait` seconds (at most 0.1) for any of them, feeds stdin, drains
-// output, reaps them, and stops each at its timeout or on Ctrl-C, as
-// ProcRun does. Call it again until the children are done (ProcDone).
+// Runs one round for `n` children and the kept ones: waits up to `max_wait`
+// seconds (at most 0.1), feeds stdin, drains output, reaps, and stops each
+// at its timeout or on Ctrl-C, as ProcRun does. Repeat until ProcDone.
 void ProcPoll(ProcChild* const* kids, int n, double max_wait);
 
 // True when the child has exited and its output has been read.
@@ -205,25 +209,24 @@ int ProcDone(const ProcChild* c);
 // writes them.
 void ProcWrite(ProcChild* c, const char* data, size_t n);
 
-// Fills `r` and frees the child. A child that still runs is stopped first
-// (SIGTERM to its group, then SIGKILL after a grace period). A kept child
-// is released first.
+// Closes the child's stdin once what ProcWrite queued is written, so it can
+// finish and exit. Later ProcWrite calls are dropped.
+void ProcClose(ProcChild* c);
+
+// Fills `r` and frees the child, releasing a kept one. A child that still
+// runs is stopped first (SIGTERM to its group, SIGKILL after a grace period).
 void ProcFinish(ProcChild* c, ProcResult* r);
 
-// Keeps a child for the session: from now on every ProcPoll round serves it
-// (feeds, drains, reaps, enforces its timeout) whoever calls ProcPoll, so a
-// long-lived helper never stalls on a full pipe while arx waits for a model
-// call or a hook. Its owner checks ProcDone and finishes it. A child is
-// kept or in the owner's own ProcPoll list, never both.
+// Keeps a child for the session: every ProcPoll round serves it, whoever
+// calls, so its pipes drain while arx waits for a model call or a hook. Its
+// owner checks ProcDone and finishes it, and never also lists it.
 void ProcKeep(ProcChild* c);
 
-// Stops keeping a child; its owner polls it again. Does nothing for a child
-// that is not kept.
+// Stops keeping a child (if kept); its owner polls it again.
 void ProcRelease(ProcChild* c);
 
-// Starts stopping a child without waiting: closes its stdin, sends SIGTERM
-// to its group, and ProcPoll sends SIGKILL after the grace period. Does
-// nothing once it has ended or is being stopped.
+// Starts stopping a child without waiting: closes stdin, sends SIGTERM to
+// its group, and ProcPoll sends SIGKILL after the grace period.
 void ProcStop(ProcChild* c);
 
 // Returns a copy of the environment with `extra` ("KEY=value", NULL-terminated)
@@ -232,22 +235,19 @@ char** EnvWith(char* const* extra);
 
 // ---- platform: proc_posix.c natively, proc_host.c in the browser ----
 
-// Installs the SIGINT and SIGTERM handlers and ignores SIGPIPE. The first
-// Ctrl-C sets g_interrupted; a second one exits at once.
+// Ctrl-C and SIGTERM set g_interrupted (a second Ctrl-C exits); no SIGPIPE.
 void ProcInit(void);
 
-// Replaces this process with `argv` (argv[0] is looked up in PATH). With
-// `null_stdin`, stdin becomes /dev/null and SIGPIPE its default. Returns
-// only on failure, with errno set (ENOSYS in the browser).
+// Replaces this process with `argv` (argv[0] from PATH); `null_stdin` gives
+// it /dev/null and the default SIGPIPE. Returns -1 and errno on failure.
 int ProcExec(char* const* argv, int null_stdin);
 
 // True when `path` is a regular file this platform can run: natively, one
 // we may execute; in the browser, one the runtime has a runner for.
 int IsRunnable(const char* path);
 
-// Starts `sh -c command`, with `env` added (as in Proc), reading the event
-// stream on stdin. Returns the write end (non-blocking, close-on-exec) and
-// sets *pid, or returns -1.
+// Starts `sh -c command` with `env` added, to read events on stdin. Returns
+// the write end (non-blocking, close-on-exec) and sets *pid, or -1.
 int ProcObserverStart(const char* command, char* const* env, int* pid);
 
 // Waits up to `secs` for observer `pid` to exit.
@@ -261,9 +261,8 @@ void SleepSeconds(double s);
 
 // ---- http.c, on top of the platform ----
 
-// One HTTP request. Natively it runs curl (through the endpoint's adapter,
-// if any) with the headers in a 0600 file it deletes after; in the browser
-// it is a fetch.
+// One HTTP request: natively curl (through any adapter), with the headers
+// in a 0600 file it deletes after; in the browser, a fetch.
 typedef struct HttpRequest {
   const char* method;  // NULL: POST with a body, else GET
   const char* url;
@@ -290,18 +289,82 @@ typedef struct HttpResult {
   double secs;
 } HttpResult;
 
-// Starts a request; ProcPoll runs it like any child. `req` and the strings
-// and context it names must stay valid until HttpFinish. Returns NULL if it
-// could not start (errno says why).
+// Starts a request, which ProcPoll runs like a child; `req` and what it
+// names stay valid until HttpFinish. Returns NULL (errno) if it can't start.
 ProcChild* HttpStart(const HttpRequest* req);
 
-// Ends a started request (stopping it if it still runs), fills `r` and
-// frees `c`.
+// Ends a started request (stopping it if it runs), fills `r`, frees `c`.
 void HttpFinish(ProcChild* c, HttpResult* r);
 
 // HttpStart, ProcPoll until it is done, then HttpFinish. Returns 0, or -1
 // when it could not start (r->spawn_failed, with the reason in r->err).
 int HttpRun(const HttpRequest* req, HttpResult* r);
+
+// ---- rpc.c ----
+
+// One JSON-RPC 2.0 peer, in either role, speaking one message per line.
+typedef struct RpcPeer RpcPeer;
+
+// How a call of ours ended.
+typedef enum RpcStatus { kRpcOk, kRpcError, kRpcTimeout, kRpcClosed } RpcStatus;
+
+// What the owner gives a peer. Only `write` is required.
+typedef struct RpcHandlers {
+  void (*write)(void* ctx, const char* data, size_t n);  // one whole line
+  // An incoming request; answer now or later with RpcReply or
+  // RpcReplyError. NULL: every request gets -32601.
+  void (*request)(void* ctx, RpcPeer* p, cJSON* id, const char* method,
+                  cJSON* params);
+  void (*notify)(void* ctx, const char* method, cJSON* params);    // or NULL
+  void (*bad_line)(void* ctx, const char* line, const char* why);  // or NULL
+  void* ctx;
+} RpcHandlers;
+
+// Called once per call: `value` is the result (kRpcOk), the error object
+// (kRpcError) or RpcClose's reason as a string (kRpcClosed; NULL without
+// one), borrowed; NULL for kRpcTimeout.
+typedef void (*RpcDoneFn)(void* ctx, RpcStatus status, cJSON* value);
+
+// Creates a peer. Lines longer than `max_line` (0: 64 MB) are skipped and
+// reported to bad_line. With a `request` handler it also answers a line
+// that is not JSON (-32700) and a message that is not valid (-32600).
+RpcPeer* RpcNew(const RpcHandlers* h, size_t max_line);
+
+// A DataFn: handles each line that ends in the bytes read so far.
+void RpcFeed(void* peer, const char* data, size_t n);
+
+// Sends a request; `params` is consumed (NULL: none). `done` runs once, when
+// the response comes or at `timeout` seconds (0: no deadline). Returns its
+// id, counting from 1 for each peer, or 0 once the peer is closed.
+int64_t RpcCall(RpcPeer* p, const char* method, cJSON* params, double timeout,
+                RpcDoneFn done, void* ctx);
+
+// Sends a notification; `params` is consumed (NULL: none).
+void RpcNotify(RpcPeer* p, const char* method, cJSON* params);
+
+// Answers request `id` (borrowed; an owner that answers after the request
+// handler returned keeps cJSON_Duplicate(id, 1)) with `result` (consumed).
+void RpcReply(RpcPeer* p, cJSON* id, cJSON* result);
+
+// Answers `id` (borrowed; NULL: null) with an error; `data` is consumed.
+void RpcReplyError(RpcPeer* p, cJSON* id, int code, const char* message,
+                   cJSON* data);
+
+// Drops a call that waits; its done never runs, and its response is ignored.
+void RpcForget(RpcPeer* p, int64_t id);
+
+// Ends the calls whose deadline is past `now` (Now()) with kRpcTimeout.
+// Returns the seconds to the next deadline, or -1 when none waits.
+double RpcTick(RpcPeer* p, double now);
+
+// Ends each waiting call with kRpcClosed and `why`; then nothing is sent.
+void RpcClose(RpcPeer* p, const char* why);
+
+// The number of calls that wait for a response.
+int RpcPending(const RpcPeer* p);
+
+// Frees the peer, or, inside one of its callbacks, when the callback ends.
+void RpcFree(RpcPeer* p);
 
 // ---- json.c ----
 
