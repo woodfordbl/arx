@@ -268,13 +268,12 @@ typedef struct ToolSet {
   int count;
 } ToolSet;
 
-// Rebuilds a->tools from the spec and the tools/ folder of every layer. An
-// executable in tools/ is a tool named after its file, described by
-// <file>.json or else `<tool> --schema`; {{timeout}} and {{tool_output.*}}
-// in its description become the spec's values. The first layer with a
-// working tool of a name wins. A file that only runs `exec "$ARX_BIN" tool
-// NAME "$@"` starts as `arx tool NAME` with no shell. A spec entry with
-// `agent: path` is a subagent. Problems become harness notes, once each.
+// Rebuilds a->tools from the spec and every layer's tools/: an executable
+// is a tool named after its file, described by <file>.json or else
+// `<tool> --schema`, with {{timeout}} and {{tool_output.*}} filled in. The
+// first layer with a working tool of a name wins. A file that only runs
+// `exec "$ARX_BIN" tool NAME "$@"` starts as `arx tool NAME`. A spec entry
+// with `agent: path` is a subagent. Problems become notes, once each.
 void ToolsBuild(struct Agent* a);
 
 // Frees every tool and empties the set.
@@ -291,9 +290,8 @@ Tool* ToolFind(struct Agent* a, const char* name);
 
 // Starts tool `name` with JSON `args` and returns at once; ProcPoll on
 // ToolChild() runs it, and ToolFinish ends it. Stores the full-output path
-// in `*output_path` (malloc'd, or NULL). Returns NULL when the call ends
-// at once (an unknown tool, bad arguments, or a process that could not
-// start): then `*text` is the result (malloc'd) and `*is_error` is set.
+// in `*output_path` (malloc'd, or NULL). Returns NULL when the call ends at
+// once (unknown tool, bad arguments, no start), with `*text` and `*is_error`.
 ToolRun* ToolStart(struct Agent* a, const char* name, const char* args,
                    char** text, int* is_error, char** output_path,
                    cJSON* end_event);
@@ -312,7 +310,10 @@ char* ToolFinish(ToolRun* run, int* is_error, cJSON* end_event);
 // (<session>/plugins/<name>) and ARX_DATA_DIR (<cwd>/.arx/data/<name>).
 char** ToolEnv(struct Agent* a, const char* plugin_dir, const char* plugin);
 
-// Frees an array from ToolEnv.
+// ToolEnv for a program of `layer`, plus ARX_PLUGIN_SETTINGS for a plugin's.
+char** PluginEnv(struct Agent* a, const Layer* layer);
+
+// Frees an array from ToolEnv or PluginEnv.
 void FreeEnv(char** env);
 
 // ---- keys.c ----
@@ -323,11 +324,10 @@ void AppendHost(Buffer* b, const char* url);
 // True when `keys` is an array of strings.
 int KeysValid(cJSON* keys);
 
-// Returns the keys of a call to `tool` (NULL for an unknown tool, which gets
-// []) with the arguments `args`, as a new array. A tool that declares no
-// keys gets ["*"]; a subagent gets []. In each key, {name} becomes the value
-// of the top-level argument `name` ("" when missing), and in a "host:" key
-// just its host, so ["host:{url}"] gives "host:example.com".
+// Returns the keys of a call to `tool` (NULL: unknown, which gets []) with
+// `args`, as a new array: ["*"] when it declares none, [] for a subagent.
+// In each key, {name} becomes the top-level argument `name` ("" if
+// missing), and in a "host:" key its host: "host:{url}" -> "host:a.com".
 cJSON* KeysFor(const Tool* tool, cJSON* args);
 
 // True when two calls with these keys may not run at the same time: one of

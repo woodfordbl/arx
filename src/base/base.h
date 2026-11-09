@@ -206,8 +206,25 @@ int ProcDone(const ProcChild* c);
 void ProcWrite(ProcChild* c, const char* data, size_t n);
 
 // Fills `r` and frees the child. A child that still runs is stopped first
-// (SIGTERM to its group, then SIGKILL after a grace period).
+// (SIGTERM to its group, then SIGKILL after a grace period). A kept child
+// is released first.
 void ProcFinish(ProcChild* c, ProcResult* r);
+
+// Keeps a child for the session: from now on every ProcPoll round serves it
+// (feeds, drains, reaps, enforces its timeout) whoever calls ProcPoll, so a
+// long-lived helper never stalls on a full pipe while arx waits for a model
+// call or a hook. Its owner checks ProcDone and finishes it. A child is
+// kept or in the owner's own ProcPoll list, never both.
+void ProcKeep(ProcChild* c);
+
+// Stops keeping a child; its owner polls it again. Does nothing for a child
+// that is not kept.
+void ProcRelease(ProcChild* c);
+
+// Starts stopping a child without waiting: closes its stdin, sends SIGTERM
+// to its group, and ProcPoll sends SIGKILL after the grace period. Does
+// nothing once it has ended or is being stopped.
+void ProcStop(ProcChild* c);
 
 // Returns a copy of the environment with `extra` ("KEY=value", NULL-terminated)
 // added or replaced. Free only the array; the strings are borrowed.

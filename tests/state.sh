@@ -64,6 +64,7 @@ state = os.environ["ARX_STATE_DIR"]
 os.makedirs(state, exist_ok=True)
 with open(os.path.join(state, "seen"), "a") as f:
     f.write("sched %s %s\n" % (state, os.environ["ARX_DATA_DIR"]))
+    f.write("settings %s\n" % os.environ.get("ARX_PLUGIN_SETTINGS", "unset"))
 for line in sys.stdin:
     m = json.loads(line)
     if "ready" in m:
@@ -77,6 +78,7 @@ check "exits 0" exited 0
 check "the tool ran" has fake/req-02.json "state=$(session)/plugins/st"
 check "the hook got them" has "$(session)/plugins/st/seen" "hook $want"
 check "the scheduler got them" has "$(session)/plugins/st/seen" "sched $want"
+check "and its settings" has "$(session)/plugins/st/seen" "settings {}"
 check "the observer got them" has "$(session)/plugins/st/seen" "obs $want"
 clean
 

@@ -212,5 +212,6 @@ int AgentMain(Agent* a) {
   cJSON_Delete(a->messages);
   BufferFree(&a->notes);
   free(a->final_output);
+  free(a->calls);
   return code;
 }

@@ -3,6 +3,8 @@
 // named `scheduler` at the top of a layer (the first in layer order wins).
 // arx and the process exchange one JSON object per line; when the process
 // exits or prints a bad line, arx says so and uses the built-in scheduler.
+// The process is kept for the session (ProcKeep), so every ProcPoll round
+// reads what it prints, also during a model call or a hook.
 
 #include <stdlib.h>
 #include <string.h>
@@ -37,7 +39,7 @@ static void Discard(void* ctx, const char* data, size_t n) {
   (void)n;
 }
 
-// Stops the process and forgets it.
+// Stops the process and forgets it (ProcFinish releases it).
 static void Stop(void) {
   if (g_sched.child) {
     ProcResult r;
@@ -93,7 +95,7 @@ int SchedOpen(Agent* a) {
     return 1;
   }
   g_sched.path = path;
-  char** env = ToolEnv(a, layer->plugin ? layer->dir : NULL, layer->plugin);
+  char** env = PluginEnv(a, layer);
   char* argv[] = {path, NULL};
   Proc p = {.argv = argv,
             .env = env,
@@ -104,15 +106,16 @@ int SchedOpen(Agent* a) {
             .on_err = Discard};
   g_sched.child = ProcStart(&p);
   FreeEnv(env);
-  if (!g_sched.child) Fail("could not start it");
-  return g_sched.child != NULL;
+  if (!g_sched.child) {
+    Fail("could not start it");
+    return 0;
+  }
+  ProcKeep(g_sched.child);
+  return 1;
 }
 
 // True while a plugin schedules; see agent.h.
 int SchedActive(void) { return g_sched.child != NULL; }
-
-// The plugin's process, for ProcPoll; see agent.h.
-ProcChild* SchedChild(void) { return g_sched.child; }
 
 // Sends one message (consumed) as a line.
 static void Send(cJSON* message) {

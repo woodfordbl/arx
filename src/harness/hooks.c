@@ -55,28 +55,12 @@ static int FailsClosed(struct Agent* a, const Layer* layer, const char* point) {
   return !strcmp(JsonStr(Options(a, layer, point), "fail", "open"), "closed");
 }
 
-// The environment for a hook: ToolEnv, plus ARX_PLUGIN_SETTINGS (the
-// plugin's settings from the active list, as JSON) for a plugin's hook.
-static char** HookEnv(struct Agent* a, const Layer* layer) {
-  char** env = ToolEnv(a, layer->plugin ? layer->dir : NULL, layer->plugin);
-  if (!layer->plugin) return env;
-  int n = 0;
-  while (env[n]) n++;
-  env = XRealloc(env, (size_t)(n + 2) * sizeof(*env));
-  char* json =
-      layer->settings ? cJSON_PrintUnformatted(layer->settings) : XStrdup("{}");
-  env[n] = XAsprintf("ARX_PLUGIN_SETTINGS=%s", json);
-  env[n + 1] = NULL;
-  free(json);
-  return env;
-}
-
 // Runs one hook with `text` on stdin; see harness.h.
 int HookRunOne(struct Agent* a, const Layer* layer, const char* point,
                const char* path, const char* text, cJSON** output,
                cJSON** event) {
   Buffer out = {0}, err = {0};
-  char** env = HookEnv(a, layer);
+  char** env = PluginEnv(a, layer);
   char* argv[] = {(char*)path, NULL};
   Proc p = {.argv = argv,
             .in = text,

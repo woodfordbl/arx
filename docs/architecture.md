@@ -72,7 +72,7 @@ Every source file, by folder:
 | | `external.c` | `arx foo` runs `arx-foo`; `arx help` lists every command |
 | `agent/` | `loop.c` | the turn loop: caps, reload, inbox, notes, compaction, tool calls, stop hook |
 | | `model_call.c` | one model call through its hooks |
-| | `tool_calls.c` | the tool runtime for the calls of one reply |
+| | `tool_calls.c` | the tool runtime, over the session's call table |
 | | `scheduler.c` | the scheduler plugin, which decides when queued tool calls run |
 | | `run.c` | session lifecycle: load, open or resume, observers, headless or interactive, result |
 | | `agent.c` | caps parsing, notes, the system prompt and `{{templates}}` |
@@ -100,7 +100,7 @@ Every source file, by folder:
 | | `render.c` | the terminal view and `arx watch` |
 | `base/` | `util.c` | buffers, files, paths, durations and sizes |
 | | `json.c` | small cJSON helpers |
-| | `proc.c` | the process runner: pipes, timeouts, process groups |
+| | `proc.c` | the process runner: pipes, timeouts, process groups, and children kept for the session |
 | | `proc_posix.c` | the rest of the platform natively: signals, exec, the executable check, observers, sleeping, and `HttpStart` by curl |
 | | `http.c` | `HttpRun`: one HTTP request, start to end |
 

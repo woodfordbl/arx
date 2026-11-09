@@ -22,6 +22,25 @@ typedef struct Caps {
   int64_t depth;  // deepest subagent level allowed
 } Caps;
 
+// Where a tool call is in the runtime.
+typedef enum CallState { kQueued, kRunning, kDone } CallState;
+
+// One tool call in the session's call table, from its before_tool hooks to
+// its result. It owns copies of the model's id and arguments, so the reply
+// they came from may be freed (by compaction) while it runs.
+typedef struct Call {
+  char* id;           // the model's tool call id
+  char* args;         // the arguments as the model wrote them
+  cJSON* model_call;  // {id, name, args, keys} as the model made it
+  cJSON* call;        // the same after the before_tool hooks
+  CallState state;
+  ToolRun* run;  // while it runs
+  char* text;    // the result
+  int is_error;
+  char* out_path;  // the full output, or NULL
+  cJSON* end;      // the tool.end event, until it is sent
+} Call;
+
 // A running agent.
 typedef struct Agent {
   // Options from the command line.
@@ -49,6 +68,8 @@ typedef struct Agent {
   int64_t tokens_at_call;    // prompt_tokens the provider reported for it
   char* final_output;        // the last answer without tool calls
   int stop_requested;        // `arx ctl stop` arrived
+  Call** calls;              // the session's call table (tool_calls.c)
+  int call_count;
 } Agent;
 
 // Parses one --cap argument ("turns=50", "usd=2", "wall=8h", "depth=2")
@@ -73,12 +94,20 @@ int RunTurns(Agent* a);
 int ModelTurn(Agent* a, cJSON** message);
 
 // Runs the tool calls in `calls` through the before_tool hooks, then
-// queues the allowed calls and runs them by their keys (calls that share a
-// key run one at a time, "*" runs alone, [] runs with anything), or as a
-// scheduler plugin says. after_tool runs as each call ends. Adds the
-// results to the history and the transcript in the order of the calls.
-// Calls after a Ctrl-C still get a result, so the history stays valid.
+// queues the allowed calls in the session's call table and runs them by
+// their keys (calls that share a key run one at a time, "*" runs alone, []
+// runs with anything), or as a scheduler plugin says. after_tool runs as
+// each call ends. Adds the results to the history and the transcript in
+// the order of the calls, and removes the calls from the table. Calls after
+// a Ctrl-C still get a result, so the history stays valid.
 void RunToolCalls(Agent* a, cJSON* calls);
+
+// Runs one round of the session's call table: after Ctrl-C, ends the
+// queued calls; reads the scheduler plugin; starts calls (as the plugin
+// says, else by keys); waits up to `wait` seconds (at most 0.1) on the
+// running processes; and finishes each call whose process ended, with its
+// after_tool hooks. Returns the number of calls still queued or running.
+int CallsPoll(Agent* a, double wait);
 
 // The scheduler plugin (scheduler.c): one process for each session, an
 // executable `scheduler` at the top of a layer (the first wins).
@@ -91,9 +120,6 @@ int SchedOpen(Agent* a);
 // True while a plugin schedules; it stops when it exits or prints a bad
 // line (with an error event), and then the built-in scheduler takes over.
 int SchedActive(void);
-
-// The plugin's process, for ProcPoll, or NULL.
-ProcChild* SchedChild(void);
 
 // Sends {"ready": {id, name, keys}}: a call is in the queue.
 void SchedReady(const char* id, const char* name, cJSON* keys);

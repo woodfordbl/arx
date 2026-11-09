@@ -81,6 +81,22 @@ char** ToolEnv(Agent* a, const char* plugin_dir, const char* plugin) {
   return env;
 }
 
+// ToolEnv for a layer's program, plus ARX_PLUGIN_SETTINGS (its settings
+// from the active list, as JSON) for a plugin's; see harness.h.
+char** PluginEnv(Agent* a, const Layer* layer) {
+  char** env = ToolEnv(a, layer->plugin ? layer->dir : NULL, layer->plugin);
+  if (!layer->plugin) return env;
+  int n = 0;
+  while (env[n]) n++;
+  env = XRealloc(env, (size_t)(n + 2) * sizeof(*env));
+  char* json =
+      layer->settings ? cJSON_PrintUnformatted(layer->settings) : XStrdup("{}");
+  env[n] = XAsprintf("ARX_PLUGIN_SETTINGS=%s", json);
+  env[n + 1] = NULL;
+  free(json);
+  return env;
+}
+
 // Frees the strings and the array.
 void FreeEnv(char** env) {
   for (char** p = env; *p; p++) free(*p);

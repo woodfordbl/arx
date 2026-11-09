@@ -2,6 +2,8 @@
 // subagent. One poll() loop serves many children at once: it feeds stdin,
 // drains stdout, stderr and fd 3, and enforces each timeout and Ctrl-C on
 // the child's whole process group. ProcRun is the same loop for one child.
+// Children that live for the session (ProcKeep) join every round, so their
+// pipes drain while arx waits for something else.
 
 #include <errno.h>
 #include <fcntl.h>
@@ -139,6 +141,10 @@ struct ProcChild {
   ProcResult r;
 };
 
+// The session-lived children that every ProcPoll round serves.
+static ProcChild** g_kept;
+static int g_kept_count, g_kept_cap;
+
 // Starts a child without waiting; see base.h.
 ProcChild* ProcStart(const Proc* p) {
   Pipes io = {{-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}};
@@ -251,14 +257,59 @@ static void Serve(ProcChild* c, const struct pollfd* e) {
   if (e->fd == c->io.fd3[0]) Pump(&c->io.fd3[0], c->p.on_fd3, c->p.fd3_ctx);
 }
 
+// Keeps a child for the session; see base.h.
+void ProcKeep(ProcChild* c) {
+  for (int k = 0; k < g_kept_count; k++) {
+    if (g_kept[k] == c) return;
+  }
+  if (g_kept_count == g_kept_cap) {
+    g_kept_cap = g_kept_cap ? 2 * g_kept_cap : 8;
+    g_kept = XRealloc(g_kept, (size_t)g_kept_cap * sizeof(*g_kept));
+  }
+  g_kept[g_kept_count++] = c;
+}
+
+// Hands a kept child back to its owner; see base.h.
+void ProcRelease(ProcChild* c) {
+  for (int k = 0; k < g_kept_count; k++) {
+    if (g_kept[k] != c) continue;
+    g_kept[k] = g_kept[--g_kept_count];
+    return;
+  }
+}
+
+// Starts stopping the child's group; see base.h.
+void ProcStop(ProcChild* c) {
+  if (c->done || c->killed) return;
+  CloseFd(&c->io.in[1]);
+  kill(-c->pid, SIGTERM);
+  c->killed = 1;
+  c->kill_at = Now() + kKillGraceSeconds;
+}
+
+// The caller's children, then the kept ones it did not list. Free the array.
+static ProcChild** Round(ProcChild* const* kids, int count, int* total) {
+  ProcChild** all = XMalloc((size_t)(count + g_kept_count + 1) * sizeof(*all));
+  int m = 0;
+  for (int k = 0; k < count; k++) all[m++] = kids[k];
+  for (int j = 0; j < g_kept_count; j++) {
+    int listed = 0;
+    for (int k = 0; k < count && !listed; k++) listed = kids[k] == g_kept[j];
+    if (!listed) all[m++] = g_kept[j];
+  }
+  *total = m;
+  return all;
+}
+
 // One round of the loop for many children; see base.h.
 void ProcPoll(ProcChild* const* kids, int count, double max_wait) {
+  ProcChild** all = Round(kids, count, &count);
   struct pollfd* pf = XMalloc((size_t)(4 * count + 1) * sizeof(*pf));
   int* slot = XMalloc((size_t)(4 * count + 1) * sizeof(*slot));
   int n = 0;
   double wait = max_wait > 0.1 ? 0.1 : max_wait;  // see exits and Ctrl-C
   for (int k = 0; k < count; k++) {
-    ProcChild* c = kids[k];
+    ProcChild* c = all[k];
     if (c->done) continue;
     AddChild(c, k, pf, slot, &n);
     if (c->reaped && c->drain_until - Now() < wait) {
@@ -268,23 +319,20 @@ void ProcPoll(ProcChild* const* kids, int count, double max_wait) {
   if (wait < 0) wait = 0;
   int wait_ms = n ? (int)(wait * 1000) + 1 : 1;  // no pipes: wait for exit
   if (poll(n ? pf : NULL, (nfds_t)n, wait_ms) > 0) {
-    for (int i = 0; i < n; i++) Serve(kids[slot[i]], &pf[i]);
+    for (int i = 0; i < n; i++) Serve(all[slot[i]], &pf[i]);
   }
   for (int k = 0; k < count; k++) {
-    if (!kids[k]->done) Check(kids[k]);
+    if (!all[k]->done) Check(all[k]);
   }
+  free(all);
   free(pf);
   free(slot);
 }
 
 // Stops the child if it still runs, then frees it; see base.h.
 void ProcFinish(ProcChild* c, ProcResult* r) {
-  if (!c->done && !c->killed) {
-    CloseFd(&c->io.in[1]);
-    kill(-c->pid, SIGTERM);
-    c->killed = 1;
-    c->kill_at = Now() + kKillGraceSeconds;
-  }
+  ProcRelease(c);
+  ProcStop(c);
   while (!c->done) ProcPoll(&c, 1, 0.1);
   ClosePipes(&c->io);
   if (c->killed) kill(-c->pid, SIGKILL);  // anything left in the group
