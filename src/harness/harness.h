@@ -63,6 +63,7 @@ typedef struct Spec {
   cJSON* rows;      // for `arx check --list`: [{name, state, why, dir}]
   cJSON* setting_from;  // {"model_settings.<path>": plugin}, from plugins
   Buffer warnings;      // for `arx check`: plugins that set a field apart
+  char* prompt_from;    // where the base prompt came from, for `arx check`
 } Spec;
 
 // Loads and validates `path`, merged over the kit and the user's defaults
@@ -86,9 +87,8 @@ void SpecMergeUnder(Spec* spec, Spec* from);
 // Frees a loaded spec.
 void SpecFree(Spec* spec);
 
-// Returns the text of a text node: a string, {file: path} (relative to the
-// spec) or a list of them joined by blank lines. Returns NULL when `node` is
-// missing; a file that cannot be read is reported in `err` (may be NULL).
+// The text of a text node: a string, {file: path} (relative to the spec) or a
+// list of them joined by blank lines; NULL if missing. Read errors go to `err`.
 char* SpecText(const Spec* spec, cJSON* node, Buffer* err);
 
 // Parses one --set argument ("limits.max_turns=10") into `sets`. A value

@@ -24,10 +24,10 @@ static void AbsoluteText(cJSON* node, const char* dir) {
 }
 
 // Records `plugin` as the source of every leaf of `value` at `path`. A
-// scalar, an array or null is a leaf; a mapping recurses.
+// scalar, an array, null or an empty mapping is a leaf; a mapping recurses.
 static void RecordLeaves(Spec* spec, cJSON* value, const char* path,
                          const char* plugin) {
-  if (!cJSON_IsObject(value)) {
+  if (!cJSON_IsObject(value) || !value->child) {
     if (!spec->setting_from) spec->setting_from = cJSON_CreateObject();
     cJSON_AddStringToObject(spec->setting_from, path, plugin);
     return;

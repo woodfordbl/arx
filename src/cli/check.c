@@ -1,7 +1,8 @@
 // check.c: `arx check` and `arx tools`. They load the harness the way a run
-// does, without a session, and report it: the kit, tools, hooks and
-// plugins in order, the problems, and warnings about plugins that change
-// the same field or hide a tool without saying so.
+// does, without a session, and report it: the kit, tools, hooks, the prompt
+// and model settings, and plugins in order, the problems, and warnings about
+// plugins that change the same field, hide a tool without saying so, set a
+// model setting apart, or add long text to the prompt.
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,6 +15,8 @@
 #include "src/harness/harness.h"
 
 static const char* const kBandNames[] = {"policy", "normal", "final"};
+// Bytes of text above which one plugin's instructions get a warning.
+static const size_t kLongText = 4096;
 
 // Loads the spec for a command; prints problems. Returns 0 or kExitUsage.
 static int LoadSpec(Agent* a) {
@@ -62,6 +65,66 @@ static void PrintHooks(Agent* a) {
     BufferFree(&from);
   }
   printf("\n");
+}
+
+// The size of a text node's raw text, before it renders.
+static size_t TextBytes(const Spec* spec, cJSON* node) {
+  char* text = SpecText(spec, node, NULL);
+  size_t n = text ? strlen(text) : 0;
+  free(text);
+  return n;
+}
+
+// Prints where the base prompt comes from, and the plugins that add text:
+// "prompt: kit coding; plugins add reviewer (212 bytes), ...".
+static void PrintPrompt(const Spec* spec) {
+  printf("prompt: %s", spec->prompt_from ? spec->prompt_from : "default");
+  int any = 0;
+  for (int l = 0; l < spec->layer_count; l++) {
+    const Layer* layer = &spec->layers[l];
+    if (!layer->plugin || !layer->instructions) continue;
+    printf("%s%s (%zu bytes)", any ? ", " : "; plugins add ", layer->plugin,
+           TextBytes(spec, layer->instructions));
+    any = 1;
+  }
+  printf("\n");
+}
+
+// Prints each model setting under `node` (at `path`) as compact JSON, with
+// the plugin that set it, or "spec" for the spec, kit, config.yaml and
+// --set: "model_settings: top_p=0.9 (spec), seed=1 (plugin p)".
+static void PrintSettings(const Spec* spec, cJSON* node, const char* path,
+                          int* any) {
+  cJSON* c;
+  cJSON_ArrayForEach(c, node) {
+    char* p = *path ? XAsprintf("%s.%s", path, c->string) : XStrdup(c->string);
+    if (cJSON_IsObject(c) && c->child) {
+      PrintSettings(spec, c, p, any);
+    } else {
+      char* key = XAsprintf("model_settings.%s", p);
+      cJSON* from = cJSON_GetObjectItemCaseSensitive(spec->setting_from, key);
+      char* value = cJSON_PrintUnformatted(c);
+      printf("%s%s=%s (%s%s)", *any ? ", " : "model_settings: ", p, value,
+             from ? "plugin " : "spec", from ? from->valuestring : "");
+      *any = 1;
+      free(value);
+      free(key);
+    }
+    free(p);
+  }
+}
+
+// Warns about each plugin that adds more than kLongText bytes to the prompt.
+static void LongTextWarnings(const Spec* spec, Buffer* out) {
+  for (int l = 0; l < spec->layer_count; l++) {
+    const Layer* layer = &spec->layers[l];
+    size_t n = layer->plugin ? TextBytes(spec, layer->instructions) : 0;
+    if (n <= kLongText) continue;
+    BufferPrintf(out,
+                 "- plugin %s adds %zu bytes to the prompt; keep instructions "
+                 "short and put long guides in a skill\n",
+                 layer->plugin, n);
+  }
 }
 
 // Prints the plugins in use, in order, if there are any.
@@ -224,11 +287,17 @@ static void PrintCheck(Agent* a) {
     printf(" %s", a->tools.items[i].name);
   }
   PrintHooks(a);
+  PrintPrompt(spec);
+  int any = 0;
+  PrintSettings(spec, JsonGet(spec->root, "model_settings"), "", &any);
+  if (any) printf("\n");
   PrintPlugins(a);
   if (a->notes.len) printf("problems:\n%s", a->notes.data);
   Buffer warnings = {0};
   OverlapWarnings(spec, &warnings);
   HiddenWarnings(spec, &warnings);
+  if (spec->warnings.len) BufferAppendStr(&warnings, spec->warnings.data);
+  LongTextWarnings(spec, &warnings);
   if (warnings.len) printf("warnings:\n%s", warnings.data);
   BufferFree(&warnings);
 }

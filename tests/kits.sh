@@ -285,6 +285,9 @@ check "the kit's prompt comes first, then the plugin's text" [ "$(msg0 1)" = "$(
 check "the kit's model_settings win over the plugin's" [ "$(field 1 temperature)" = 0.5 ]
 check "and so do config.yaml's" [ "$(field 1 top_p)" = 0.6 ]
 check "the plugin's other fields stay" [ "$(field 1 seed)" = 1 ]
+"$ARX" check >check.txt 2>&1
+check "arx check: the kit's prompt, then the plugin's text" has check.txt 'prompt: kit k; plugins add p (12 bytes)'
+check "arx check: the source of each model setting" has check.txt 'model_settings: temperature=0.5 (spec), top_p=0.6 (spec), seed=1 (plugin p)'
 with_p '{instructions: null}'
 run "go"
 check "{instructions: null} drops the text" [ "$(msg0 2)" = "Kit prompt." ]
@@ -302,6 +305,19 @@ with_p '{instructions: {file: missing.md}}'
 code=$?
 check "a missing file in the settings is a spec error" exited 2
 check "  that names the plugin" has check.txt 'plugins.p.instructions: cannot read'
+
+fresh "arx check: the prompt, model settings and their warnings"
+mkplugin "$ARX_CONFIG_DIR/plugins/precise" <<<'model_settings: {temperature: 0.2, seed: 1}'
+mkplugin "$ARX_CONFIG_DIR/plugins/creative" <<<'model_settings: {temperature: 0.9, seed: 1, top_p: 0.3}'
+python3 -c 'print("instructions: \"" + "x" * 5000 + "\"")' | mkplugin "$ARX_CONFIG_DIR/plugins/big"
+printf 'plugins: [precise, creative, big]\nmodel_settings: {top_p: 0.1}\n' >>agent.yaml
+"$ARX" check >check.txt 2>&1
+check "two plugins that differ give a warning" has check.txt '- model_settings.temperature: plugins precise (0.2) and creative (0.9) both set it; precise wins, as it loads first'
+check "the same value gives none" lacks check.txt 'model_settings.seed:'
+check "a spec value over a plugin's gives none" lacks check.txt 'model_settings.top_p:'
+check "the model_settings line shows each source" has check.txt 'model_settings: top_p=0.1 (spec), temperature=0.2 (plugin precise), seed=1 (plugin precise)'
+check "more than 4096 bytes of text gets a warning" has check.txt '- plugin big adds 5000 bytes to the prompt; keep instructions short and put long guides in a skill'
+check "the prompt line names the default and the plugin" has check.txt 'prompt: default; plugins add big (5000 bytes)'
 
 fresh "arx setup keeps the kit"
 echo "kit: k" >>"$ARX_CONFIG_DIR/config.yaml"
