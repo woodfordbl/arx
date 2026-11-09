@@ -1,16 +1,14 @@
 // harness.h: everything the agent can change about itself, and how arx reads
-// it. The agent's own files live next to the spec, so edits take effect on
-// the next turn; plugins add more of the same from their own folders.
+// it. Edits take effect on the next turn; plugins add more from their folders.
 //   spec.c       loads agent.yaml (YAML -> cJSON, with line numbers)
 //   active.c     the active list: which plugins a run uses, in which order
 //   kits.c       kits: kit.yaml, extends, kit.lock
-//   plugins.c    the layers: the spec folder, plugins and the user's config
-//                folder; plugin.yaml
+//   plugins.c    the layers (spec folder, plugins, config folder); plugin.yaml
+//   plugin_keys.c  a plugin's instructions and model_settings
 //   describe.c   `arx check --plugin`: one plugin, without loading it
 //   signature.c  fingerprints every layer with stat() for hot reload
 //   fields.c     the field tables of agent.yaml, plugin.yaml and kit.yaml
-//   validate.c   validation against them ("did you mean" hints)
-//   schema.c     the JSON Schema for `arx schema`, from the same table
+//   validate.c, schema.c  validation and `arx schema`, from those tables
 //   tools.c      finds tools: tools/<name> in every layer, and subagents
 //   tool_exec.c  runs one tool call; subagents run arx again
 //   keys.c       the keys of a tool call, which say what may run together
@@ -41,6 +39,7 @@ typedef struct Layer {
   cJSON* hooks;     // a plugin's hook options (from plugin.yaml), or NULL
   cJSON* settings;  // a plugin's settings from the active list, or NULL
   cJSON* replaces;  // the tools a plugin hides on purpose, or NULL
+  cJSON* instructions;  // a plugin's text node, with absolute paths, or NULL
 } Layer;
 
 // A loaded, validated spec.
@@ -62,17 +61,19 @@ typedef struct Spec {
   char* kit_from;   // where it was named: config.yaml, agent.yaml, --kit
   int kit_pinned;   // its plugins name exact versions (@ref): write kit.lock
   cJSON* rows;      // for `arx check --list`: [{name, state, why, dir}]
+  cJSON* setting_from;  // {"model_settings.<path>": plugin}, from plugins
+  Buffer warnings;      // for `arx check`: plugins that set a field apart
+  char* prompt_from;    // where the base prompt came from, for `arx check`
 } Spec;
 
 // Loads and validates `path`, merged over the kit and the user's defaults
 // in ConfigDir()/config.yaml (the spec wins key by key, and the kit wins
-// over the defaults), then applies `sets` (from --set and --kit, which is
-// `kit=NAME`; may be NULL), then builds the active list (see ActiveBuild)
-// and adds the plugins (see PluginsLoad). A kit that is missing is an
-// error. With `path` NULL the defaults are the whole spec, and tools/ and
-// hooks/ come from the config directory. On success returns 0 and fills
-// `spec`. On failure returns -1, appends one line per problem to `err`
-// ("file:line: path: message"), and leaves `spec` empty.
+// over the defaults), applies `sets` (--set, and --kit as `kit=NAME`; may be
+// NULL), builds the active list (see ActiveBuild) and adds the plugins (see
+// PluginsLoad). A missing kit is an error. With `path` NULL the defaults are
+// the whole spec, and tools/ and hooks/ come from the config directory.
+// Returns 0 and fills `spec`, or returns -1, appends one line per problem to
+// `err` ("file:line: path: message") and leaves `spec` empty.
 int SpecLoad(const char* path, cJSON* sets, Spec* spec, Buffer* err);
 
 // Parses the YAML file at `path` into spec->root and spec->lines, without
@@ -86,14 +87,12 @@ void SpecMergeUnder(Spec* spec, Spec* from);
 // Frees a loaded spec.
 void SpecFree(Spec* spec);
 
-// Returns the text of a text node: a string, {file: path} (relative to the
-// spec) or a list of them joined by blank lines. Returns NULL when `node` is
-// missing; a file that cannot be read is reported in `err` (may be NULL).
+// The text of a text node: a string, {file: path} (relative to the spec) or a
+// list of them joined by blank lines; NULL if missing. Read errors go to `err`.
 char* SpecText(const Spec* spec, cJSON* node, Buffer* err);
 
 // Parses one --set argument ("limits.max_turns=10") into `sets`. A value
-// that starts with [ or { is read as JSON ("plugins=[]").
-// Returns 0, or -1 if it has no "=".
+// that starts with [ or { is JSON ("plugins=[]"). Returns 0, or -1 if no "=".
 int SpecAddSet(cJSON* sets, const char* key_value);
 
 // Merges `from` over `target`, recursing into mappings that both have, so
@@ -104,9 +103,8 @@ void JsonMergeOver(cJSON* target, const cJSON* from);
 
 // Builds spec->active, off, settings and kit* from the kit, plugins, enable
 // and disable keys of `config`, `agent` (NULL when the defaults are the
-// spec) and `sets`, in that order; see active.c. Sets `*kit_root` to the
-// kit's model_settings and instructions, or NULL. Returns 0, or -1 with
-// the problem in `err` (a kit that is missing or broken).
+// spec) and `sets`, in that order. Sets `*kit_root` to the kit's spec values
+// or NULL. Returns 0, or -1 with the problem in `err` (a missing or bad kit).
 int ActiveBuild(Spec* spec, cJSON* config, cJSON* agent, cJSON* sets,
                 cJSON** kit_root, Buffer* err);
 
@@ -125,17 +123,15 @@ typedef struct Kit {
   int pinned;             // some entry names an exact version (@ref)
 } Kit;
 
-// Loads the kit `name` (kits/<name> next to the spec, else in the config
-// folder) and the kits it extends. Returns 0, or -1 with the problem in
-// `err` (missing, not valid, or holding an executable).
+// Loads kit `name` (kits/<name> next to the spec, else in the config folder)
+// and the kits it extends. Returns 0, or -1 with the problem in `err`.
 int KitLoad(const char* spec_dir, const char* name, Kit* kit, Buffer* err);
 
 // Frees a kit from KitLoad.
 void KitFree(Kit* kit);
 
 // Checks the kit in `dir` without using it, for `arx check --kit-dir`, and
-// appends key=value lines to `out` (name, version, description, extends,
-// plugins, enable, disable). Returns 0, or -1 with the problems in `err`.
+// appends key=value lines to `out`. Returns 0, or -1 with problems in `err`.
 int KitDescribe(const char* dir, Buffer* out, Buffer* err);
 
 // Writes kit.lock next to the spec when the kit pins versions (@ref): the
@@ -148,11 +144,14 @@ void KitLockWrite(const Spec* spec);
 // the spec folder, then each listed plugin in order, from <spec
 // dir>/plugins/<name>/ or else the config folder's. Without one: the spec
 // folder, its plugins/, then the config folder (when different) and its
-// plugins/, less those `disable` names. A plugin's tools, compactors and
-// observers merge under the spec; its hook options, settings and `replaces`
-// stay with its layer. A broken, missing or too-new plugin is skipped and
-// explained in spec->problems, so it cannot stop the harness.
+// plugins/, less those `disable` names. A plugin's tools, compactors,
+// observers and model_settings merge under the spec; its hook options,
+// settings, `replaces` and instructions stay with its layer. A broken,
+// missing or too-new plugin is skipped and explained in spec->problems.
 void PluginsLoad(Spec* spec);
+
+// Adopt's part for a plugin's instructions and model_settings (plugin_keys.c).
+void PluginKeysAdopt(Spec* spec, cJSON* root, Layer* layer);
 
 // Frees spec->layers.
 void LayersFree(Spec* spec);
@@ -161,23 +160,20 @@ void LayersFree(Spec* spec);
 // the problems in `err`. Free `plugin` with SpecFree either way.
 int PluginRead(const char* dir, Spec* plugin, Buffer* err);
 
-// Lists the entries of `dir` not starting with '.', sorted so lists stay
-// stable between runs. Returns the count; free each name and the array.
+// Lists `dir` sorted, without '.' entries. Returns the count; free them all.
 int ListNames(const char* dir, char*** names);
 
 // ---- describe.c ----
 
 // Checks the plugin in `dir` without loading it, for `arx check --plugin`,
-// and appends key=value lines to `out`: its fields, parts and hosts.
-// Returns 0, or -1.
+// and appends key=value lines to `out`: fields, parts, hosts. Returns 0 or -1.
 int PluginDescribe(const char* dir, Buffer* out, Buffer* err);
 
 // ---- signature.c ----
 
-// Returns a fingerprint of every harness file: the spec, the prompt files it
-// names, and tools/, hooks/ and skills in every layer, plus each
-// plugin.yaml and kit.yaml. It uses stat() only, so calling it before every
-// model call costs microseconds.
+// Fingerprints every harness file with stat() only, so it costs microseconds
+// before each model call: the spec, the prompt files of the spec and each
+// plugin, tools/, hooks/ and skills in every layer, plugin.yaml and kit.yaml.
 uint64_t SpecSignature(const Spec* spec);
 
 // ---- validate.c ----
@@ -199,8 +195,7 @@ typedef enum FieldType {
   kPluginList,  // a list of names or {name: {settings}}
 } FieldType;
 
-// One key of the spec: its name, type, sub-fields (for kMap and kDict) and
-// a short description for the JSON Schema.
+// One key of the spec: name, type, sub-fields (kMap, kDict) and a doc line.
 typedef struct Field {
   const char* key;
   FieldType type;
@@ -224,12 +219,17 @@ extern const char* const kHookPoints[];
 // The characters allowed in tool names (OpenAI function names).
 extern const char kNameChars[];
 
-// Validates `spec->root` against the field table and the extra rules,
-// appending problems to `err`. Called by SpecLoad.
+// True when `v` has the shape that `type` needs (fields.c).
+int TypeOk(FieldType type, const cJSON* v);
+
+// Describes `type` for messages, such as "a string" (fields.c).
+const char* TypeName(FieldType type);
+
+// Validates the spec and the plugins' settings; appends problems to `err`.
 void SpecValidate(const Spec* spec, Buffer* err);
 
-// Validates a parsed plugin.yaml against kPluginFields, and its programs
-// and hosts, appending problems to `err`.
+// Validates a parsed plugin.yaml against kPluginFields, and its programs,
+// hosts and text, appending problems to `err`.
 void PluginValidate(const Spec* plugin, Buffer* err);
 
 // Validates a parsed kit.yaml against kKitFields, appending to `err`.

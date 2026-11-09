@@ -6,7 +6,7 @@ command it sets up, inspects or steers one.
 ```text
 arx [options]                         run the agent (interactive, or headless if stdin is piped)
 arx -p TASK|- [options]               run one task until the agent stops
-arx setup                             provider, API key and default model (run this first)
+arx setup [STEP] [options]            provider, API key and default model (run this first)
 arx init [basic|autoresearch|KIT]     start a harness in this folder
 arx doctor [--live]                   check the install, spec, key and endpoint
 arx models [FILTER]                   the endpoint's models, with prices
@@ -88,13 +88,13 @@ With `--json`, arx prints one object on stdout when the run ends:
 | `2` | usage error, or an invalid spec |
 | `3` | a cap or limit was reached |
 | `4` | authentication failed (HTTP 401 or 403) |
-| `130` | interrupted (Ctrl-C) |
+| `130` | interrupted or cancelled (Ctrl-C) |
 
 ## Setup and maintenance
 
 | Command | What it does |
 |---|---|
-| `arx setup` | Asks for a provider, API key and default model, and checks the key. Saves the key in the macOS Keychain (or a 0600 file) and the defaults in `config.yaml`. `--provider`, `--base-url`, `--key-env`, `--model`, `--key-stdin` and `--no-test` make it scriptable. |
+| `arx setup` | Sets your provider, API key and default model. See [`arx setup`](#arx-setup). |
 | `arx init [basic\|autoresearch\|KIT]` | Writes a harness into this folder: `agent.yaml`, `prompts/system.md` and empty `tools/`, `hooks/` and `skills/`. `autoresearch` adds `program.md`, an experiment-loop prompt, a never-stop hook and restart compaction. `KIT` copies an installed kit's `init/` files, with an `agent.yaml` that uses the kit. Keeps existing files unless you pass `--force`. |
 | `arx doctor [--live]` | Checks the install, `curl`, `jq` and `git`, the spec, the key and the endpoint. `--live` also makes one small model call. |
 | `arx models [FILTER] [--json]` | Lists the endpoint's models whose id contains `FILTER`, with prices per million tokens. `*` marks your default. `--json` prints the endpoint's raw JSON. |
@@ -104,6 +104,63 @@ With `--json`, arx prints one object on stdout when the run ends:
 | `arx kit ...` | Installs, lists and removes kits. See [Kits](plugins/kits.md#commands). |
 | `arx config ...` | Reads or changes one top-level key of `./agent.yaml`, or of `config.yaml` with `--global`. |
 | `arx request [-X METHOD] [--data JSON\|-] PATH` | Sends an authenticated request to the endpoint, such as `arx request /models`. `--auth-source` says where the key came from, without printing it. |
+
+### `arx setup`
+
+`arx setup` asks for a provider, API key and default model, checks the key
+against the endpoint, then saves the key in the macOS Keychain (or a 0600
+file) and the defaults in `config.yaml`. Flags answer its questions, and a
+terminal asks the rest. Without a terminal it asks nothing and uses the
+flags and the defaults, so every flag works in scripts and CI.
+
+**Planned:** one command with three ways in:
+
+| You run | On a terminal | Without one |
+|---|---|---|
+| `arx setup`, no model set yet | a wizard: provider, key, model, kit, `PATH` | the flags and the defaults |
+| `arx setup`, a model set | a settings menu: provider and key, model, kit, plugins, update, doctor | the flags and the defaults |
+| `arx setup STEP` | that step, then exit | that step from its flag |
+
+| Option | Meaning |
+|---|---|
+| `--provider NAME` | `vercel` (the default), `openrouter`, `openai`, `ollama` or `custom`. **Planned:** `chatgpt` signs in with ChatGPT through the [`chatgpt`](../plugins/chatgpt) plugin. |
+| `--base-url URL` | the endpoint, for `--provider custom` |
+| `--key-env NAME` | the variable the key is saved under |
+| `--model ID` | the default model |
+| `--key-stdin` | read the key from stdin; nothing is asked |
+| `--no-test` | skip the test call at the end |
+| `--kit NAME\|none` | **Planned:** make `NAME` your default kit, or have none |
+| `--add-to-path` | **Planned:** add arx's `bin` folder to your shell's startup file |
+| `--wizard` | **Planned:** ask every question, even when arx is set up |
+| `--if-needed` | **Planned:** when a model is set, print one line and exit 0 |
+
+**Planned:** `STEP` is `provider`, `key`, `model`, `kit`, `plugins` or
+`path`. Without a terminal, a step needs its flag:
+`arx setup model --model gpt-5-mini` sets only the model, and
+`arx setup model` alone exits 2.
+
+**Planned:** in the menus, Esc goes back one step and Ctrl-C quits with exit
+code 130. Nothing is saved until the last answer, so a quit leaves your
+settings as they were.
+
+### `install.sh`
+
+`install.sh` installs the latest release into `~/.local`:
+
+```text
+sh install.sh [--prefix DIR] [--version vX.Y.Z] [--kit NAME] [--no-setup]
+```
+
+| Option | Meaning |
+|---|---|
+| `--prefix DIR` | install into `DIR/bin` and `DIR/libexec/arx` |
+| `--version vX.Y.Z` | install this release instead of the latest |
+| `--kit NAME` | then make `NAME` your default kit (`arx kit add NAME --default --yes`) |
+| `--no-setup` | **Planned:** stop after the install |
+
+**Planned:** when its output is a terminal and `CI` is not set, it goes on
+into `arx setup --if-needed`, reading the answers from `/dev/tty`, so it
+works under `curl | sh`.
 
 ### `arx-*` commands
 
@@ -173,6 +230,10 @@ a file can steer a run.
 | `ARX_CONFIG_DIR` | the config folder, instead of `$XDG_CONFIG_HOME/arx` or `~/.config/arx` |
 | `ARX_CURL` | the curl executable, when `endpoint.curl` is not set |
 | `ARX_DOWNLOAD_URL` | where `install.sh`, `arx update` and `arx plugin add` download from, instead of `https://arx-documentation.vercel.app` |
+| `ARX_UI` | **Planned:** how commands ask: `menu`, `plain` (numbered questions) or `off` (no questions); it overrides the terminal test |
+| `NO_COLOR` | **Planned:** set and not empty: menus draw no color or style |
+| `CI` | **Planned:** set and not empty: commands never ask, and `install.sh` never goes on into `arx setup` |
+| `ARX_LIB` | **Planned:** set for every `arx-*` command: the folder with arx's `ui.sh` and `pick` |
 
 arx looks for the API key in this order: the environment variable named by
 `endpoint.api_key_env`, then the key `arx setup` saved under that name, in

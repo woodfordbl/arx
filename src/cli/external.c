@@ -102,6 +102,21 @@ char* FindCommand(const char* name) {
   return found;
 }
 
+// The lib/ folder next to arx's own commands, where ui.sh and pick are:
+// libexec/arx/lib when installed, else commands/lib in a checkout.
+static char* LibDir(void) {
+  char* bin = DirName(g_self);
+  char* prefix = DirName(bin);
+  char* lib = XAsprintf("%s/libexec/arx/lib", prefix);
+  if (access(lib, F_OK)) {
+    free(lib);
+    lib = XAsprintf("%s/commands/lib", bin);
+  }
+  free(prefix);
+  free(bin);
+  return lib;
+}
+
 // Runs arx-<name>; see cli.h.
 int RunExternal(const char* name, int argc, char** argv) {
   if (strchr(name, '/')) return -1;
@@ -110,6 +125,8 @@ int RunExternal(const char* name, int argc, char** argv) {
   char* dir = DirName(path);
   setenv("ARX_BIN", g_self, 1);
   setenv("ARX_LIBEXEC", dir, 1);
+  char* lib = LibDir();  // so plugin commands can source $ARX_LIB/ui.sh
+  setenv("ARX_LIB", lib, 1);
   SetPluginEnv(dir);
   char** args = XMalloc((size_t)argc * sizeof(*args));
   args[0] = path;
@@ -118,6 +135,7 @@ int RunExternal(const char* name, int argc, char** argv) {
   ProcExec(args, 0);
   fprintf(stderr, "arx: cannot run %s: %s\n", path, strerror(errno));
   free(args);
+  free(lib);
   free(dir);
   free(path);
   return kExitError;

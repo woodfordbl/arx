@@ -4,8 +4,15 @@
 # Like fx upgrade: downloads arx-<os>-<arch>.tar.gz and its .sha256 from the
 # arx site, which serves the GitHub release, verifies the checksum, and swaps
 # the new files in with renames, so a running arx is never left half-written.
-# ARX_DOWNLOAD_URL replaces the site, e.g. for a mirror.
+# ARX_DOWNLOAD_URL replaces the site, e.g. for a mirror. On a terminal the
+# download shows a spinner (lib/ui.sh). install.sh runs this file with sh,
+# so it stays POSIX sh and sources ui.sh only under bash.
 set -u
+
+ui_wait() { :; }
+if [ -n "${BASH_VERSION:-}" ] && [ -f "$(dirname "$0")/lib/ui.sh" ]; then
+  . "$(dirname "$0")/lib/ui.sh"
+fi
 
 usage() {
   cat <<'EOF'
@@ -80,9 +87,14 @@ if [ -z "$prefix" ]; then
 fi
 
 tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
+pid=""
+trap '[ -z "$pid" ] || kill "$pid" 2>/dev/null; rm -rf "$tmp"' EXIT
 echo "Downloading arx $tag for $os-$arch..."
-download "$tag" "$tmp" || { echo "arx update: download failed" >&2; exit 1; }
+download "$tag" "$tmp" &
+pid=$!
+ui_wait "Downloading arx $tag" "$pid"
+wait "$pid" || { pid=""; echo "arx update: download failed" >&2; exit 1; }
+pid=""
 # Compare the hashes ourselves: `sha256sum -c` on macOS only warns about a
 # malformed checksum file and still exits 0.
 expected=$(awk '{print $1; exit}' "$tmp/$asset.sha256")

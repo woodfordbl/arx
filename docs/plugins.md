@@ -47,6 +47,11 @@ you want to change:
 Paths are relative to a [layer](plugins/concepts.md#layer): the spec folder,
 a plugin folder, or your config folder.
 
+A plugin can also add text to the system prompt with `instructions`, and
+fields to the model request with `model_settings`. These are keys in its
+`plugin.yaml`, not executables, so the table has no row for them. See
+[Prompt text and model settings](plugins/prompt.md).
+
 A [kit](plugins/kits.md) is not a plugin, because it has no code. It chooses
 the plugins of a run, their order and settings, and the prompt, so it makes
 one kind of agent. arx ships three in [`kits/`](../kits): `coding`,

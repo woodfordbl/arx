@@ -7,3 +7,4 @@
 .arx/
 .claude/
 *.o
+/commands/lib/pick

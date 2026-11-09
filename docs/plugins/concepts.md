@@ -122,6 +122,8 @@ Each kind uses the layer order in its own way:
 | Observers | All of them run. |
 | Compactors | All names are available. When two places name the same compactor, the spec wins, then the first plugin. |
 | Credentials and adapters | The same as compactors. `endpoint.credential` and `endpoint.adapter` choose one by name. |
+| Prompt text | Every plugin's `instructions` is added, in layer order, after the spec's prompt. See [Prompt text and model settings](prompt.md). |
+| Model settings | The spec wins, then the first plugin. The kit and `config.yaml` count as the spec. |
 | Commands | Only user plugins add commands, whether or not they are in the active list. See [Commands](commands.md). |
 
 So a tool that the agent writes in its spec folder always wins over a

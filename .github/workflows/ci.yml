@@ -32,9 +32,10 @@ jobs:
         run: |
           docker run --rm -v "$PWD":/w -w /w alpine:3.20 sh -c '
             apk add -q build-base bash python3 curl jq git &&
-            make arx CC="gcc -static" VERSION=ci &&
+            make all CC="gcc -static" VERSION=ci &&
             ARX=./arx tests/run.sh && ARX=./arx tests/plugins.sh &&
             ARX=./arx tests/layers.sh && ARX=./arx tests/cli.sh &&
+            ARX=./arx tests/ui.sh &&
             tests/bench.sh'
 
   wasm:

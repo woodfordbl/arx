@@ -22,7 +22,6 @@ are not built:
 | Sandboxes | a `sandbox:` value that sandbox plugins read | [Sandboxes](#sandboxes) |
 | Calls that do not block | a result now, the real result later | [Calls that do not block](#calls-that-do-not-block) |
 | Long-lived and concurrent hooks | hooks that keep state, and `before_tool` hooks that run at the same time | [Long-lived and concurrent hooks](#long-lived-and-concurrent-hooks) |
-| New `plugin.yaml` keys | `instructions` and `model_settings` | [New plugin.yaml keys](#new-pluginyaml-keys) |
 | Front-ends | an ACP server and a terminal UI | [Front-ends](#front-ends) |
 | MCP client | MCP servers as tools | [MCP client](#mcp-client) |
 | The marketplace index | `index.yaml` and `arx plugin search` | [More of arx plugin](#more-of-arx-plugin) |
@@ -67,11 +66,6 @@ Two changes would make hooks cheaper and let them wait:
 - **`before_tool` hooks that run at the same time**: today they run for each
   call in call order. Once they run at the same time, a hook could wait for a
   person's approval while the other calls go on.
-
-## New plugin.yaml keys
-
-`instructions` and `model_settings` in `plugin.yaml` would let a plugin add to
-the prompt and the request.
 
 ## Front-ends
 

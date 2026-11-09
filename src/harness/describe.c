@@ -105,6 +105,14 @@ int PluginDescribe(const char* dir, Buffer* out, Buffer* err) {
     }
     const char* programs[] = {"credentials", "adapters", "hosts"};
     for (int i = 0; i < 3; i++) AppendKeys(out, root, programs[i]);
+    // The size of the raw text it adds to the prompt, and the request
+    // fields it sets.
+    char* text = SpecText(&plugin, JsonGet(root, "instructions"), NULL);
+    char* bytes = text ? XAsprintf("%zu", strlen(text)) : NULL;
+    AppendField(out, "instructions", bytes);
+    AppendKeys(out, root, "model_settings");
+    free(bytes);
+    free(text);
     BufferFree(&requires);
     BufferFree(&missing);
     free(real);

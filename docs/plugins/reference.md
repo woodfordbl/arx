@@ -25,6 +25,8 @@ a line number. Only these keys are allowed:
 | `credentials` | map | Named credential programs: `{name: path}`. See [Credentials](credentials.md). |
 | `adapters` | map | Named adapters: `{name: path}`. See [Adapters](adapters.md). |
 | `hosts` | string list | The network hosts its programs connect to, such as `[api.openai.com]`. See [Hosts](#hosts). |
+| `instructions` | text list | Text that arx adds to the system prompt, after the spec's prompt: a string, `{file: path}` or a list of them. See [Prompt text and model settings](prompt.md). |
+| `model_settings` | map | Request fields, as in the spec. `null` removes a field. They rank below the spec, the kit and `config.yaml`. See [Prompt text and model settings](prompt.md). |
 
 A `plugin.yaml` that uses every key:
 
@@ -40,12 +42,15 @@ tools: {word_count: {timeout: 10s}}
 compactors: {keep_last: compactors/keep_last.py}
 hooks: {before_tool: {fail: closed, band: policy, changes: [result]}}
 replaces: [bash]
+instructions: {file: prompts/instructions.md}
+model_settings: {parallel_tool_calls: true}
 ```
 
 arx uses the keys this way:
 
 - **Paths** (`tools.<name>.agent`, `compactors`, `credentials`,
-  `adapters`): relative to the plugin folder.
+  `adapters`, `instructions`): relative to the plugin folder. A path in
+  `instructions` must also stay inside it.
 - **`tools`, `compactors`, `credentials` and `adapters`**: merged under the
   spec, key by key. Where the spec sets the same value, the spec wins.
 - **`hosts`**: added to the spec's `hosts`, each host once.
@@ -53,11 +58,20 @@ arx uses the keys this way:
   set.
 - **`hooks`**: apply only to the plugin's own hooks. The spec's `hooks:`
   does not apply to them.
-- **Settings**: settings from the active list can change `tools` and
-  `hooks`, and reach the plugin's hooks as `ARX_PLUGIN_SETTINGS`. See
-  [The active list](kits.md#the-active-list).
-- **Not allowed**: `instructions`, `model`, `model_settings` and the other
-  spec keys. A plugin cannot change the system prompt or the model today.
+- **`instructions`**: added to the system prompt after the spec's prompt and
+  one blank line, or where the spec's prompt names
+  `{{plugin_instructions}}`, in layer order. The text may use `{{date}}`,
+  `{{cwd}}`, `{{session}}`, `{{turn}}` and `{{file:PATH}}`, and no other
+  template variable.
+- **`model_settings`**: merged under the spec, the kit and `config.yaml`,
+  field by field. Among plugins, the first one to set a field wins. It
+  cannot set `model`, `messages`, `tools`, `stream` or `stream_options`.
+- **Settings**: settings from the active list can change `tools`, `hooks`
+  and `model_settings`, which they merge over, and `instructions`, which a
+  value replaces and `null` drops. All of them reach the plugin's hooks as
+  `ARX_PLUGIN_SETTINGS`. See [The active list](kits.md#the-active-list).
+- **Not allowed**: `model`, `endpoint` and the other spec keys. A plugin
+  cannot change the model or the endpoint.
 
 ### Tool options
 
@@ -139,8 +153,20 @@ commands=
 - **The folder name**: not checked here. Loading checks that `name` matches
   it.
 
-It ends with `credentials=`, `adapters=` and `hosts=`, the names from
-`plugin.yaml`. `arx plugin add` shows the hosts as `network`.
+Then come `credentials=`, `adapters=` and `hosts=`, the names from
+`plugin.yaml`, and two more lines:
+
+```text
+instructions=121
+model_settings=parallel_tool_calls temperature
+```
+
+- **`instructions`**: the size in bytes of the raw text that the plugin adds
+  to the prompt, before it renders. Empty when it adds none.
+- **`model_settings`**: the top-level fields it sets.
+
+`arx plugin add` shows the hosts as `network`, the text as `prompt` and the
+fields as `settings`.
 
 `arx check --kit-dir DIR` does the same for a kit folder, with the keys
 `name`, `version`, `description`, `extends`, `plugins`, `enable` and
@@ -148,8 +174,23 @@ It ends with `credentials=`, `adapters=` and `hosts=`, the names from
 
 `arx check` with no option reports the whole harness: a `kit:` line when
 there is a kit, `credential:` and `adapter:` lines when the endpoint names
-them, then `hosts:`, `tools:`, `hooks:`, `plugins:` (in order), `problems:`
-and `warnings:`. `arx check --list` prints the active list as tab-separated
+them, then `hosts:`, `tools:`, `hooks:`, `prompt:`, `model_settings:` (when
+there are settings), `plugins:` (in order), `problems:` and `warnings:`:
+
+```text
+prompt: kit coding; plugins add test-runner (121 bytes)
+model_settings: reasoning_effort="medium" (spec), parallel_tool_calls=true (plugin test-runner)
+```
+
+- **`prompt:`**: where the base prompt comes from (`agent.yaml`,
+  `kit NAME`, `config.yaml`, `--set` or `default`), then the plugins that
+  add text, with the size of their raw text.
+- **`model_settings:`**: each field as compact JSON, with its source:
+  `spec` (the spec, the kit, `config.yaml` or `--set`) or `plugin NAME`.
+- **`warnings:`**: two hooks at one point that change the same field, a
+  plugin that hides a tool without `replaces:`, two plugins that set one
+  model setting to different values, and a plugin that adds more than 4096
+  bytes to the prompt. `arx check --list` prints the active list as tab-separated
 rows (position, name, state, why, folder) for scripts. `arx plugin list`
 shows the same list as a table.
 
@@ -217,7 +258,7 @@ arx removes any `ARX_PLUGIN_DIR`, `ARX_PLUGIN_SETTINGS`, `ARX_STATE_DIR` and
 | Point | Input | Output it may print |
 |---|---|---|
 | `session_start` | none | `{"context": "..."}` |
-| `before_model` | `{"messages", "tools", "model", "settings", "reason"}` | any of `messages`, `tools`, `model`, `settings` |
+| `before_model` | `{"messages", "tools", "model", "settings", "reason"}`; `settings` is `model_settings` from the spec, the kit, `config.yaml` and plugins, merged | any of `messages`, `tools`, `model`, `settings` |
 | `after_model` | `{"reply", "usage", "finish"}` | `reply` |
 | `before_tool` | `{"id", "name", "args", "keys"}` | any of `name`, `args`, `keys`, `result`; or `{"decision": "deny", "reason": "..."}` |
 | `after_tool` | `{"call": {"id", "name", "args"}, "result", "is_error"}` | `result`, `backoff`; or `{"note": "..."}` |

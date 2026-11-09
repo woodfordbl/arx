@@ -74,7 +74,7 @@ in the "May print" column.
 | `messages` | The history, in OpenAI Chat Completions format (see [Compactors](compactors.md)). | It replaces the history, for this call and every later one. |
 | `tools` | The `tools` array of the request. | It applies to this call only. |
 | `model` | The model id. | It applies to this call only. |
-| `settings` | `model_settings` from the spec. | It applies to this call only. A `null` setting removes the field from the request. |
+| `settings` | `model_settings` from the spec, the kit, `config.yaml` and plugins, merged. | It applies to this call only. A `null` setting removes the field from the request. |
 | `reason` | `turn`, or `context_overflow` when the provider said the prompt is too long (see [Context overflow](#context-overflow)). | Ignored. |
 
 > [!WARNING]

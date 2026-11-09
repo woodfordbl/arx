@@ -262,6 +262,63 @@ mkdir -p "$WS/missing" && (cd "$WS/missing" && "$ARX" init nosuch) >init.txt 2>&
 check "init with a kit that is not installed says so" has init.txt 'run `arx kit add nosuch`'
 unset ARX_LIBEXEC
 
+fresh "plugin text and settings under a kit"
+mkplugin "$ARX_CONFIG_DIR/plugins/p" <<'EOF'
+instructions: "Plugin text."
+model_settings: {temperature: 0.1, top_p: 0.2, seed: 1}
+EOF
+mkdir -p "$ARX_CONFIG_DIR/plugins/p/prompts"
+echo "Short text." >"$ARX_CONFIG_DIR/plugins/p/prompts/short.md"
+mkkit k <<'EOF'
+plugins: [p]
+prompt: prompt.md
+model_settings: {temperature: 0.5}
+EOF
+echo "Kit prompt." >"$ARX_CONFIG_DIR/kits/k/prompt.md"
+echo 'model_settings: {top_p: 0.6}' >>"$ARX_CONFIG_DIR/config.yaml"
+# with_p SETTINGS: agent.yaml uses kit k, with SETTINGS for plugin p.
+with_p() { printf 'name: test\nkit: k\nenable:\n  - p: %s\n' "$1" >agent.yaml; }
+with_p '{}'
+for n in 1 2 3 4 5; do sse_text "done" | reply $n "200 OK"; done
+run "go"
+check "the kit's prompt comes first, then the plugin's text" [ "$(msg0 1)" = "$(printf 'Kit prompt.\n\nPlugin text.')" ]
+check "the kit's model_settings win over the plugin's" [ "$(field 1 temperature)" = 0.5 ]
+check "and so do config.yaml's" [ "$(field 1 top_p)" = 0.6 ]
+check "the plugin's other fields stay" [ "$(field 1 seed)" = 1 ]
+"$ARX" check >check.txt 2>&1
+check "arx check: the kit's prompt, then the plugin's text" has check.txt 'prompt: kit k; plugins add p (12 bytes)'
+check "arx check: the source of each model setting" has check.txt 'model_settings: temperature=0.5 (spec), top_p=0.6 (spec), seed=1 (plugin p)'
+with_p '{instructions: null}'
+run "go"
+check "{instructions: null} drops the text" [ "$(msg0 2)" = "Kit prompt." ]
+with_p '{instructions: "Replaced."}'
+run "go"
+check "a string replaces it" [ "$(msg0 3)" = "$(printf 'Kit prompt.\n\nReplaced.')" ]
+with_p '{instructions: {file: prompts/short.md}}'
+run "go"
+check "{file:} uses another file of the plugin" [ "$(msg0 4)" = "$(printf 'Kit prompt.\n\nShort text.')" ]
+with_p '{model_settings: {seed: 3}}'
+run "go"
+check "settings change the plugin's value" [ "$(field 5 seed)" = 3 ]
+with_p '{instructions: {file: missing.md}}'
+"$ARX" check >check.txt 2>&1
+code=$?
+check "a missing file in the settings is a spec error" exited 2
+check "  that names the plugin" has check.txt 'plugins.p.instructions: cannot read'
+
+fresh "arx check: the prompt, model settings and their warnings"
+mkplugin "$ARX_CONFIG_DIR/plugins/precise" <<<'model_settings: {temperature: 0.2, seed: 1}'
+mkplugin "$ARX_CONFIG_DIR/plugins/creative" <<<'model_settings: {temperature: 0.9, seed: 1, top_p: 0.3}'
+python3 -c 'print("instructions: \"" + "x" * 5000 + "\"")' | mkplugin "$ARX_CONFIG_DIR/plugins/big"
+printf 'plugins: [precise, creative, big]\nmodel_settings: {top_p: 0.1}\n' >>agent.yaml
+"$ARX" check >check.txt 2>&1
+check "two plugins that differ give a warning" has check.txt '- model_settings.temperature: plugins precise (0.2) and creative (0.9) both set it; precise wins, as it loads first'
+check "the same value gives none" lacks check.txt 'model_settings.seed:'
+check "a spec value over a plugin's gives none" lacks check.txt 'model_settings.top_p:'
+check "the model_settings line shows each source" has check.txt 'model_settings: top_p=0.1 (spec), temperature=0.2 (plugin precise), seed=1 (plugin precise)'
+check "more than 4096 bytes of text gets a warning" has check.txt '- plugin big adds 5000 bytes to the prompt; keep instructions short and put long guides in a skill'
+check "the prompt line names the default and the plugin" has check.txt 'prompt: default; plugins add big (5000 bytes)'
+
 fresh "arx setup keeps the kit"
 echo "kit: k" >>"$ARX_CONFIG_DIR/config.yaml"
 for i in 1 2 3 4; do echo '{"data":[{"id":"test-model"}]}' | reply "$i" "200 OK"; done

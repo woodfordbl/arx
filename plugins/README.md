@@ -18,7 +18,7 @@ you get the version that CI tested with it.
 | [notify](notify) | an observer that reports when a session ends |
 | [keep-last](keep-last) | a `keep_last` compactor |
 | [reviewer](reviewer) | a `reviewer` subagent |
-| [plugin-authoring](plugin-authoring) | a skill about changing your own harness |
+| [plugin-authoring](plugin-authoring) | a skill about changing your own harness, and one line in the prompt that points to it |
 | [never-stop](never-stop) | a `stop` hook for experiment loops, turned on by its settings |
 | [op-key](op-key) | a credential program that reads the API key from 1Password |
 | [chatgpt](chatgpt) | Sign in with ChatGPT: a credential program, the `responses` adapter and `arx chatgpt` |

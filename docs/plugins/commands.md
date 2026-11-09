@@ -24,7 +24,9 @@ folder.
   `ARX_PLUGIN_DIR` and `ARX_DATA_DIR`, the plugin's
   [data folder](concepts.md#plugin-state) in the current folder. The
   session variables, such as `ARX_SESSION` and `ARX_STATE_DIR`, are not
-  set, because no session runs.
+  set, because no session runs. **Planned:** `ARX_LIB`, the folder with
+  arx's `ui.sh` and `pick` (see
+  [Ask a question in a command](#ask-a-question-in-a-command)).
 - **Help**: a line `# arx-<name>: one-line summary` in the first 512 bytes
   makes the command show up in `arx help`. `arx help <name>` runs
   `arx-<name> --help`.
@@ -76,6 +78,47 @@ arx help               # lists hello with its summary
 
 To ship it in a plugin, put the file in `commands/arx-hello` and install the
 plugin for your user with `arx plugin add`. Only user plugins add commands.
+
+## Ask a question in a command
+
+**Planned:** a command can ask with the same menus as `arx setup`. Source
+`ui.sh` from `ARX_LIB`, then call its functions:
+
+```sh
+#!/usr/bin/env bash
+# arx-greet: asks for a name, then greets
+. "$ARX_LIB/ui.sh"
+name=$(ui_input "Your name" world) || ui_stop $?
+echo "hello $name"
+```
+
+`ui.sh` decides how to ask once, when you source it: a menu on a terminal,
+numbered questions with `ARX_UI=plain`, and no questions at all without a
+terminal or when `CI` is set. Questions go to the terminal and answers to
+stdout, so `$(...)` captures only the answer. A function fails with 4 when
+you press Esc (go back) and 130 for Ctrl-C; `ui_stop` handles both.
+
+| Function | Does | Without a terminal |
+|---|---|---|
+| `ui_select TITLE DEFAULT [--filter] [--custom]` | one item from stdin; prints its value | prints `DEFAULT`, or fails with 2 when there is none |
+| `ui_multi TITLE` | items from stdin, `checked` ones on; prints each chosen value | prints the `checked` values |
+| `ui_input TITLE DEFAULT` | a line of text | prints `DEFAULT` |
+| `ui_secret TITLE` | a line that is never shown | fails with 2 |
+| `ui_confirm TITLE yes\|no` | succeeds for yes | fails: no |
+| `ui_spin TITLE -- COMMAND...` | runs `COMMAND` with a spinner | runs `COMMAND` |
+| `ui_wait TITLE PID` | a spinner until `PID` exits | returns at once |
+| `ui_done LABEL TEXT` | prints `✓ LABEL  TEXT` | prints nothing |
+| `ui_pause` | waits for a key | returns at once |
+| `ui_need FLAG` | says to pass `FLAG`, then exits 2 | the same |
+| `ui_stop CODE` | 130: prints `Cancelled. Nothing changed.` and exits 130; 4: returns 4 | the same |
+
+Items are lines of `VALUE<TAB>LABEL<TAB>NOTE<TAB>FLAGS`. Only `VALUE` is
+needed, and `FLAGS` can hold `checked` and `off` (shown, but not
+selectable).
+
+A command must still work without a terminal. Give every question a flag,
+and call `ui_need --flag` when the flag is missing and there is no one to
+ask. `ui_spin` runs a program, not a shell function.
 
 ## Common mistakes
 
