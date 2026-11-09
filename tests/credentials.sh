@@ -309,7 +309,7 @@ check "usage is counted" has .arx/sessions/last/events.jsonl '"tokens_in":120'
 check "and the cached part of it" has .arx/sessions/last/events.jsonl '"tokens_cached":96'
 
 # For the prompt cache, each request must start with the bytes of the one
-# before it. Templates render once, notes.md changes, a retry resends.
+# before it, under one session key. Templates render once; a retry resends.
 begin "responses adapter: each request extends the one before"
 mkdir -p plugins prompts
 ln -s "$ROOT/plugins/chatgpt" plugins/chatgpt
@@ -332,11 +332,8 @@ run "go" --cap turns=4
 check "a retry sends the same bytes" cmp fake/req-02.json fake/req-03.json
 # extends A B: B is A with items added at the end of its input list.
 extends() {
-  python3 - "$1" "$2" <<'EOF'
-import json, sys
-a, b = (open(p, "rb").read() for p in sys.argv[1:3])
-assert list(json.loads(a))[-1] == "input" and b.startswith(a[:-2] + b", ")
-EOF
+  python3 -c 'import sys; a, b = (open(p, "rb").read() for p in sys.argv[1:])
+assert a.endswith(b"]}") and b.startswith(a[:-2] + b", ")' "$1" "$2"
 }
 for n in 1 3 4; do
   check "request $((n + 1)) starts with the bytes of request $n" \
@@ -344,6 +341,8 @@ for n in 1 3 4; do
 done
 check "templates are rendered once" json fake/req-05.json \
   "'turn 0,' in j['instructions'] and 'notes v1' in j['input'][0]['content']"
+check "one UUID names the session, in a session_id header too" json fake/req-05.json \
+  "len(j['prompt_cache_key']) == 36 and all('session_id: %s' % j['prompt_cache_key'] in open('fake/hdr-0%d.txt' % n).read() for n in (1, 5))"
 
 begin "responses adapter: failures"
 mkdir -p plugins

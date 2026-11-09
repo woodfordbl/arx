@@ -2,8 +2,8 @@
 # fake-curl: a stand-in for curl in tests (set ARX_CURL to this file).
 #
 # Replays $FAKE_DIR/NN.resp in order, one file per call, and saves each
-# request body as $FAKE_DIR/req-NN.json, its headers as hdr-NN.txt and its
-# URL as url-NN.txt. A
+# request body as $FAKE_DIR/req-NN.json, its headers (-H @file and -H) as
+# hdr-NN.txt and its URL as url-NN.txt. A
 # .resp file is a status line ("HTTP/1.1 200 OK"), optional header lines, a
 # blank line, then the body.
 # A first line "EXIT n" makes it exit with n instead, like a curl error
@@ -13,11 +13,12 @@ set -u
 
 headers=/dev/null
 request_headers=""
+inline=""
 url=""
 while [ $# -gt 0 ]; do
   case "$1" in
     -D) headers=$2; shift 2 ;;
-    -H) case "$2" in @*) request_headers=${2#@} ;; esac; shift 2 ;;
+    -H) case "$2" in @*) request_headers=${2#@} ;; *) inline+="$2"$'\n' ;; esac; shift 2 ;;
     -X | --max-time | --data-binary) shift 2 ;;
     -*) shift ;;
     *) url=$1; shift ;;
@@ -34,6 +35,7 @@ id=$(printf %02d "$n")
 cat >"$FAKE_DIR/req-$id.json"
 echo "$url" >"$FAKE_DIR/url-$id.txt"
 if [ -n "$request_headers" ]; then cp "$request_headers" "$FAKE_DIR/hdr-$id.txt"; fi
+if [ -n "$inline" ]; then printf '%s' "$inline" >>"$FAKE_DIR/hdr-$id.txt"; fi
 resp="$FAKE_DIR/$id.resp"
 if [ ! -f "$resp" ]; then
   echo "fake-curl: no response $resp" >&2

@@ -16,6 +16,7 @@ import time
 import unittest
 import urllib.parse
 import urllib.request
+import uuid
 from importlib.machinery import SourceFileLoader
 from importlib.util import module_from_spec, spec_from_loader
 
@@ -430,6 +431,27 @@ class AdapterTest(unittest.TestCase):
         })
         self.assertEqual(out["text"],
                          {"verbosity": "high", "format": {"type": "text"}})
+
+    def test_cache_key(self):
+        first = {"model": "m", "messages": [
+            {"role": "system", "content": "be brief"},
+            {"role": "user", "content": "task one"}]}
+        later = dict(first, messages=first["messages"] + [
+            {"role": "assistant", "content": "working"},
+            {"role": "user", "content": "go on"}])
+        other = dict(first, messages=first["messages"][:1] + [
+            {"role": "user", "content": "task two"}])
+        key = adapter.to_responses(first)["prompt_cache_key"]
+        self.assertEqual(str(uuid.UUID(key)), key)
+        self.assertEqual(adapter.to_responses(later)["prompt_cache_key"], key)
+        self.assertNotEqual(adapter.to_responses(other)["prompt_cache_key"],
+                            key)
+        mine = dict(first, prompt_cache_key="climb-a01")
+        self.assertEqual(adapter.to_responses(mine)["prompt_cache_key"],
+                         "climb-a01")
+        bad = dict(first, prompt_cache_key="a\r\nX-Evil: 1")
+        self.assertEqual(adapter.to_responses(bad)["prompt_cache_key"], key)
+        self.assertEqual(list(adapter.to_responses(bad))[-1], "input")
 
     def translate(self, events, headers_file=None):
         out = io.StringIO()
