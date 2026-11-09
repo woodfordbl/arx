@@ -109,6 +109,8 @@ const Field kPluginFields[] = {
     {"credentials", kAnyMap, NULL, "Named credential programs: name -> path"},
     {"adapters", kAnyMap, NULL, "Named request adapters: name -> path"},
     {"hosts", kStringList, NULL, "Network hosts its programs reach"},
+    {"instructions", kTextList, NULL, "Text added to the system prompt"},
+    {"model_settings", kAnyMap, NULL, "Request fields, below the spec's"},
     {NULL, 0, NULL, NULL}};
 
 const Field kKitFields[] = {

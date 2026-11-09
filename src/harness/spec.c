@@ -294,6 +294,8 @@ void SpecFree(Spec* spec) {
   free(spec->kit_dir);
   free(spec->kit_from);
   cJSON_Delete(spec->rows);
+  cJSON_Delete(spec->setting_from);
+  BufferFree(&spec->warnings);
   memset(spec, 0, sizeof(*spec));
 }
 

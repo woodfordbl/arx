@@ -23,6 +23,10 @@ EOF
 # Removes everything the tests put in the shared config folder.
 clean_config() { rm -rf "$ARX_CONFIG_DIR/plugins" "$ARX_CONFIG_DIR/tools" "$ARX_CONFIG_DIR/commands"; }
 
+# text_plugin NAME: a project plugin with only a plugin.yaml: its name, then
+# the lines on stdin.
+text_plugin() { mkdir -p "plugins/$1"; { echo "name: $1"; cat; } >"plugins/$1/plugin.yaml"; }
+
 begin "project plugin"
 plugin plugins/greet - <<'EOF'
 name: greet
@@ -174,6 +178,82 @@ sse_tool bash '{\"command\":\"mkdir -p plugins && mv staging/late plugins/late\"
 sse_text "done" | reply 2 "200 OK"
 run "install"
 check "the plugin's tool is offered on the next call" has fake/req-02.json '"name":"hello"'
+
+begin "plugin instructions"
+text_plugin fr <<<'instructions: "Answer in French."'
+text_plugin de <<<'instructions: ["Antworte auf Deutsch.", "Heute ist {{date}}."]'
+echo 'instructions: "Be brief."' >>agent.yaml
+for n in 1 2 3 4; do sse_text "done" | reply $n "200 OK"; done
+run "go" --set 'plugins=["fr"]'
+check "the text follows the spec's prompt after a blank line" [ "$(msg0 1)" = "$(printf 'Be brief.\n\nAnswer in French.')" ]
+de="Antworte auf Deutsch.\n\nHeute ist $(date +%Y-%m-%d)."
+run "go" --set 'plugins=["fr", "de"]'
+check "two plugins add text in list order, and {{date}} renders" [ "$(msg0 2)" = "$(printf "Be brief.\n\nAnswer in French.\n\n$de")" ]
+run "go" --set 'plugins=["de", "fr"]'
+check "the reversed list reverses the text" [ "$(msg0 3)" = "$(printf "Be brief.\n\n$de\n\nAnswer in French.")" ]
+run "go" --set 'plugins=["fr"]' --set 'instructions=Start. {{ plugin_instructions }} End.'
+check "{{plugin_instructions}} places the text, once" [ "$(msg0 4)" = "Start. Answer in French. End." ]
+sse_text "done" | reply 5 "200 OK"
+run "go" --set 'plugins=["fr", "de"]' --set 'instructions={{harness}}'
+check "{{harness}} names the plugins with text" has fake/req-05.json 'The plugins fr and de add text after your instructions'
+
+begin "plugin instructions from a file"
+text_plugin p <<<'instructions: {file: prompts/p.md}'
+mkdir -p plugins/p/prompts && echo "From the file." >plugins/p/prompts/p.md
+sse_text "done" | reply 1 "200 OK"
+run "go"
+check "{file:} resolves in the plugin folder" has fake/req-01.json 'From the file.'
+echo "Outside." >x.md
+text_plugin bad <<'EOF'
+instructions: [{file: ../../x.md}, "{{harness}}"]
+model_settings: {model: x, stream: false}
+EOF
+"$ARX" check --plugin plugins/bad >out.txt 2>err.txt
+code=$?
+check "a bad plugin text fails check --plugin" exited 2
+check "a file outside the plugin folder" has err.txt 'instructions: ../../x.md is outside the plugin folder'
+check "{{harness}} in plugin text" has err.txt "instructions: {{harness}} belongs in the spec's prompt, not a plugin's"
+check "model in model_settings" has err.txt 'model_settings.model: arx sets this field; a plugin cannot'
+check "stream in model_settings" has err.txt 'model_settings.stream: arx sets this field; a plugin cannot'
+
+begin "plugin model_settings"
+text_plugin cool <<<'model_settings: {temperature: 0.1, parallel_tool_calls: true}'
+script hooks/before_model <<'EOF'
+#!/bin/sh
+cat >before_model.json
+EOF
+for n in 1 2 3 4; do sse_text "done" | reply $n "200 OK"; done
+run "go"
+check "a plugin's setting is in the request" [ "$(field 1 temperature)" = 0.1 ]
+check "before_model gets it in settings" [ "$(jq -c .settings.parallel_tool_calls before_model.json)" = true ]
+echo 'model_settings: {temperature: 0.5}' >>agent.yaml
+run "go"
+check "agent.yaml wins over a plugin" [ "$(field 2 temperature)" = 0.5 ]
+check "field by field" [ "$(field 2 parallel_tool_calls)" = true ]
+run "go" --set model_settings.temperature=0.9
+check "--set wins over both" [ "$(field 3 temperature)" = 0.9 ]
+text_plugin a <<<'model_settings: {top_p: null}'
+text_plugin b <<<'model_settings: {top_p: 0.7}'
+run "go"
+check "the first plugin's null removes the field" [ "$(jq 'has("top_p")' fake/req-04.json)" = false ]
+
+begin "no plugin text: the prompt is the same as before"
+sse_text "done" | reply 1 "200 OK"
+run "go"
+id=$(jq -r .session .arx/sessions/last/events.jsonl | head -1)
+msg0 1 | sed -e "s#$(pwd -P)#@WS@#g" -e "s#$ARX#@ARX@#g" -e "s#$ROOT#@ROOT@#g" -e "s#$id#@ID@#g" >msg0.txt
+cat >want.txt <<'EOF'
+You are an autonomous agent working in @WS@. Use the tools to act, check the results, and keep going until the task is done. A reply without a tool call ends the task, so never say you will do something later: do it now. When everything is done, reply with a short summary and no tool calls.
+
+Your harness is yours to change; edits take effect on your next turn:
+- Spec: agent.yaml (YAML: model settings, tools, hooks, compaction, limits). Check edits with `@ARX@ check --spec agent.yaml`.
+- Tools: ./tools/<name>, any executable (chmod +x). `<name> --schema` prints {"description": ..., "parameters": <JSON Schema>}; a call gets its arguments as JSON on stdin; stdout and stderr are the result; a non-zero exit marks an error.
+- Hooks: ./hooks/<point> for session_start, before_model, after_model, before_tool, after_tool and stop: JSON on stdin; print the fields to change, or a decision, as JSON on stdout.
+- Skills: (set `skills:` in the spec) <name>/SKILL.md with name and description front matter.
+- Session files (full tool outputs, transcript): @WS@/.arx/sessions/@ID@
+- Plugins add tools, hooks and skills below yours: shell (@ROOT@/plugins/shell). A tool of yours with the same name wins; hooks all run by band (policy, normal, final) and then in this order, yours first.
+EOF
+check "message 0 is byte for byte the same" cmp -s msg0.txt want.txt
 
 begin "user folder and user plugins"
 clean_config
