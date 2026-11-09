@@ -14,6 +14,9 @@
 #   make uninstall  remove them again
 #   make dist       dist/arx-<os>-<arch>.tar.gz (+ .sha256), as releases ship
 #   make static     static Linux (musl) binary, built in Docker
+#   make wasm       arx.wasm, the core for browsers (wasm32-wasi), built with
+#                   $(WASI_CC) and, when installed, binaryen's wasm-opt; then
+#                   scripts/wasm-imports.sh checks its imports
 CC ?= cc
 UNAME := $(shell uname)
 PREFIX ?= $(HOME)/.local
@@ -34,7 +37,11 @@ else
   GC := -Wl,--gc-sections
 endif
 
-SRC := $(wildcard src/*.c src/*/*.c)
+# The platform has two sides (see src/base/base.h): proc.c and proc_posix.c
+# natively, proc_host.c in the browser build.
+NATIVE_SRC := src/base/proc.c src/base/proc_posix.c
+HOST_SRC := src/base/proc_host.c
+SRC := $(filter-out $(HOST_SRC),$(wildcard src/*.c src/*/*.c))
 HDR := $(wildcard src/*/*.h)
 VENDOR := vendor/cjson/cJSON.c $(wildcard vendor/libyaml/src/*.c)
 REL_OBJ := $(patsubst %.c,build/rel/%.o,$(SRC) $(VENDOR))
@@ -62,7 +69,7 @@ build/dbg/vendor/%.o: vendor/%.c
 	$(CC) $(CPPFLAGS) -w $(DBG) -c $< -o $@
 
 # Unit tests for src/base: the JSON-RPC peer and the process helpers.
-BASE_TEST_OBJ := $(patsubst %.c,build/dbg/%.o,$(wildcard src/base/*.c) \
+BASE_TEST_OBJ := $(patsubst %.c,build/dbg/%.o,$(filter src/base/%,$(SRC)) \
   vendor/cjson/cJSON.c)
 build/dbg/base_test: tests/base_test.c $(BASE_TEST_OBJ)
 	$(CC) $(CPPFLAGS) $(WARN) $(DBG) $^ -o $@
@@ -79,6 +86,37 @@ test: arx-debug build/dbg/base_test
 	ARX=./arx-debug tests/kits.sh
 	ARX=./arx-debug tests/credentials.sh
 	ARX=./arx-debug tests/state.sh
+
+# The browser build: the same sources with proc_host.c in place of the
+# native platform files. zig bundles wasi-libc; WASI_CC can name wasi-sdk's
+# clang instead (--target=wasm32-wasip1). CI pins both tools (ci.yml).
+WASI_CC ?= zig cc -target wasm32-wasi
+WASM_OPT ?= wasm-opt
+WASM_SRC := $(filter-out $(NATIVE_SRC),$(SRC)) $(HOST_SRC)
+WASM_OBJ := $(patsubst %.c,build/wasm/%.o,$(WASM_SRC) $(VENDOR))
+WASM_DEFS := -D_WASI_EMULATED_PROCESS_CLOCKS -D_WASI_EMULATED_GETPID \
+  -D_WASI_EMULATED_SIGNAL
+# The lime1 CPU (LLVM's, and zig's default) is what JSPI browsers run.
+# The module carries no target_features section, so wasm-opt is told.
+WASM := -Os -flto -ffunction-sections -fdata-sections -mcpu=lime1
+WASM_FEATURES := --enable-bulk-memory-opt --enable-call-indirect-overlong \
+  --enable-extended-const --enable-multivalue --enable-mutable-globals \
+  --enable-nontrapping-float-to-int --enable-sign-ext
+
+wasm: arx.wasm
+arx.wasm: $(WASM_OBJ)
+	$(WASI_CC) $(WASM) -mexec-model=reactor -Wl,--gc-sections -s $^ \
+	  -lwasi-emulated-getpid -lwasi-emulated-process-clocks -o $@
+	if command -v $(WASM_OPT) >/dev/null; then $(WASM_OPT) $(WASM_FEATURES) \
+	  -Oz --strip-debug --strip-producers $@ -o $@; fi
+	scripts/wasm-imports.sh $@
+
+build/wasm/src/%.o: src/%.c $(HDR)
+	@mkdir -p $(dir $@)
+	$(WASI_CC) $(CPPFLAGS) $(WASM_DEFS) $(WARN) -Werror $(WASM) -c $< -o $@
+build/wasm/vendor/%.o: vendor/%.c
+	@mkdir -p $(dir $@)
+	$(WASI_CC) $(CPPFLAGS) $(WASM_DEFS) -w $(WASM) -c $< -o $@
 
 install: arx
 	mkdir -p $(PREFIX)/bin $(PREFIX)/libexec/arx
@@ -109,7 +147,7 @@ lint:
 	scripts/lint.sh
 
 format:
-	clang-format -i $(SRC) $(HDR)
+	clang-format -i $(SRC) $(HOST_SRC) $(HDR)
 
 static:
 	docker run --rm -v "$(CURDIR)":/w -w /w alpine:3.20 sh -c \
@@ -117,6 +155,6 @@ static:
 	   mv arx arx-linux-$$(uname -m) && rm -rf build'
 
 clean:
-	rm -rf build dist arx arx-debug
+	rm -rf build dist arx arx-debug arx.wasm
 
-.PHONY: debug test bench lint format install uninstall dist static clean
+.PHONY: debug test bench lint format install uninstall dist static wasm clean

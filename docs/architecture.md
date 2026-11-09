@@ -19,7 +19,7 @@ it:
 | **One field table for the spec** | Validation, "did you mean" hints and `arx schema` all come from `kTopFields` in `fields.c`. Adding a key adds it to all three. |
 | **Errors go to the agent** | A rejected edit or a broken tool becomes a `[harness]` note with enough detail for the agent to fix it itself. |
 | **Observers can't block** | The event pipe is non-blocking. A slow observer loses events; the agent never waits. |
-| **One platform section** | Processes, signals, exec, observers, sleeping and HTTP sit behind the platform section of `src/base/base.h`. Natively `proc.c` and `proc_posix.c` implement it, and nothing else in `src/` makes a process call, so a browser build can swap in its own. |
+| **One platform section** | Processes, signals, exec, observers, sleeping and HTTP sit behind the platform section of `src/base/base.h`. Natively `proc.c` and `proc_posix.c` implement it, and `proc_host.c` in the browser build. Nothing else in `src/` makes a process call, and `make lint` and `make wasm` check it. |
 | **Every plugin in its own process group** | A timeout or Ctrl-C kills the whole group: SIGTERM, then SIGKILL 3 seconds later. No orphans. |
 | **Commands are plugins too** | `arx setup`, `init`, `doctor`, `models`, `sessions`, `update`, `plugin`, `kit`, `add` and `config` are small scripts named `arx-<name>`, run git-style. The binary stays small, and anyone can add a command. |
 | **Files are the interface** | Sessions, transcripts, events and the control inbox are plain files, so drivers and front-ends need no library. |
@@ -102,6 +102,7 @@ Every source file, by folder:
 | | `json.c` | small cJSON helpers |
 | | `proc.c` | the process runner: pipes, timeouts, process groups, and children kept for the session |
 | | `proc_posix.c` | the rest of the platform natively: signals, exec, the executable check, observers, sleeping, and `HttpStart` by curl |
+| | `proc_host.c` | the platform in the browser build, on the host interface that `arx.js` serves; `make wasm` uses it in place of `proc.c` and `proc_posix.c` |
 | | `http.c` | `HttpRun`: one HTTP request, start to end |
 | | `rpc.c` | JSON-RPC 2.0 over JSON lines, in either role, with no I/O of its own, for MCP servers and `arx acp` |
 
@@ -118,6 +119,7 @@ Every build, test and release step is a `make` target:
 | `make lint` | clang-format, cpplint, files of 400 lines or fewer, doc comments, and process calls only in `proc.c` and `proc_posix.c` |
 | `make format` | rewrites `src/` in Google style |
 | `make static` | a static Linux (musl) binary, built in Docker |
+| `make wasm` | `arx.wasm`, the core for browsers, with `zig cc -target wasm32-wasi` (or `WASI_CC`) and `wasm-opt -Oz` when it is installed; `scripts/wasm-imports.sh` then fails the build on an import the host interface doesn't have |
 | `make install` | `arx` into `$(PREFIX)/bin`, and its commands, plugins and kits into `$(PREFIX)/libexec/arx` (default `~/.local`) |
 | `make dist` | the release tarball and its sha256 for this platform, as CI builds them |
 
@@ -132,7 +134,9 @@ GitHub Actions builds, tests and publishes arx:
 - **CI** runs on every push to `main` and every pull request: lint, with
   clang-format 23.1.3 and cpplint 2.0.2 pinned, then the core, marketplace
   plugin, plugin loading and CLI suites and the four performance budgets
-  against a static Linux build.
+  against a static Linux build, and the browser build: `make wasm` with zig
+  0.17.1 (checked by SHA-256) and binaryen 132, its import check, and a
+  300 KB size budget.
 - **Releases** build `darwin-arm64`, `darwin-x86_64`, `linux-x86_64` and
   `linux-arm64`, and run the tests and budgets on macOS and Linux before
   publishing, so a slow or oversized build fails the release. Each tarball

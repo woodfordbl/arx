@@ -1,5 +1,6 @@
 /arx
 /arx-debug
+/arx.wasm
 /arx-linux-*
 /build/
 *.dSYM/
