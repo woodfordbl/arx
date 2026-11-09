@@ -15,9 +15,9 @@
 
 // plugin.yaml keys that describe the plugin, or that PluginsLoad handles
 // itself, so they are not merged into the spec.
-static const char* const kOwnKeys[] = {"name",      "version",  "description",
-                                       "arx",       "requires", "hooks",
-                                       "observers", "replaces", NULL};
+static const char* const kOwnKeys[] = {
+    "name",  "version",   "description", "arx",   "requires",
+    "hooks", "observers", "replaces",    "hosts", NULL};
 
 // qsort comparator for names.
 static int CompareNames(const void* a, const void* b) {
@@ -141,6 +141,22 @@ static void Absolute(cJSON* node, const char* dir) {
   free(path);
 }
 
+// Adds a plugin's hosts to the spec's `hosts`, each once.
+static void AppendHosts(Spec* spec, cJSON* hosts) {
+  cJSON* all = JsonGet(spec->root, "hosts");
+  if (cJSON_GetArraySize(hosts) && !all) {
+    all = cJSON_AddArrayToObject(spec->root, "hosts");
+  }
+  if (!cJSON_IsArray(all)) return;
+  cJSON* h;
+  cJSON_ArrayForEach(h, hosts) {
+    int have = 0;
+    cJSON* c;
+    cJSON_ArrayForEach(c, all) have |= cJSON_Compare(c, h, 1);
+    if (!have) cJSON_AddItemToArray(all, cJSON_Duplicate(h, 1));
+  }
+}
+
 // Merges a checked plugin.yaml under the spec and adds the plugin's layer.
 static void Adopt(Spec* spec, Spec* plugin, const char* dir, const char* name) {
   cJSON* root = plugin->root;
@@ -165,7 +181,11 @@ static void Adopt(Spec* spec, Spec* plugin, const char* dir, const char* name) {
   cJSON_ArrayForEach(c, JsonGet(root, "tools")) {
     Absolute(JsonGet(c, "agent"), dir);
   }
-  cJSON_ArrayForEach(c, JsonGet(root, "compactors")) Absolute(c, dir);
+  const char* programs[] = {"compactors", "credentials", "adapters"};
+  for (int i = 0; i < 3; i++) {
+    cJSON_ArrayForEach(c, JsonGet(root, programs[i])) Absolute(c, dir);
+  }
+  AppendHosts(spec, JsonGet(root, "hosts"));
   cJSON* mine = JsonGet(root, "observers");
   cJSON* all = JsonGet(spec->root, "observers");
   if (cJSON_GetArraySize(mine) && !all) {

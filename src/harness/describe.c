@@ -59,6 +59,20 @@ static void AppendNames(Buffer* out, const char* key, const char* dir,
   BufferFree(&list);
 }
 
+// Appends "key=" and the names of the map `key` in plugin.yaml, or the
+// items of the list `key`, space-separated.
+static void AppendKeys(Buffer* out, cJSON* root, const char* key) {
+  Buffer list = {0};
+  cJSON* c;
+  cJSON_ArrayForEach(c, JsonGet(root, key)) {
+    const char* name =
+        cJSON_IsString(c) && !c->string ? c->valuestring : c->string;
+    BufferPrintf(&list, "%s%s", list.len ? " " : "", name ? name : "");
+  }
+  AppendField(out, key, list.data);
+  BufferFree(&list);
+}
+
 // Describes a plugin; see harness.h.
 int PluginDescribe(const char* dir, Buffer* out, Buffer* err) {
   Spec plugin;
@@ -89,6 +103,8 @@ int PluginDescribe(const char* dir, Buffer* out, Buffer* err) {
       AppendNames(out, parts[i], sub, i == 2 ? "SKILL.md" : NULL);
       free(sub);
     }
+    const char* programs[] = {"credentials", "adapters", "hosts"};
+    for (int i = 0; i < 3; i++) AppendKeys(out, root, programs[i]);
     BufferFree(&requires);
     BufferFree(&missing);
     free(real);

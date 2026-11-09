@@ -68,19 +68,20 @@ static void Attempt(struct Agent* a, const char* body, double timeout,
   char* response = XAsprintf("%s/.response-headers", a->session.dir);
   char max_time[32];
   snprintf(max_time, sizeof(max_time), "%.0f", timeout);
-  char* argv[] = {(char*)CurlPath(root),
-                  "-sS",
-                  "-N",
-                  "--max-time",
-                  max_time,
-                  "-D",
-                  response,
-                  "-H",
-                  header_arg,
-                  "--data-binary",
-                  "@-",
-                  url,
-                  NULL};
+  // An adapter runs the curl command line it is given, translating the
+  // request on the way in and the reply on the way out.
+  char* adapter = EndpointProgram(root, a->spec.dir, "adapter");
+  char* argv[16];
+  int k = 0;
+  if (adapter) argv[k++] = adapter;
+  argv[k++] = (char*)CurlPath(root);
+  const char* const args[] = {
+      "-sS", "-N",       "--max-time",    max_time, "-D", response,
+      "-H",  header_arg, "--data-binary", "@-",     url};
+  for (size_t i = 0; i < sizeof(args) / sizeof(args[0]); i++) {
+    argv[k++] = (char*)args[i];
+  }
+  argv[k] = NULL;
   Proc p = {.argv = argv,
             .in = body,
             .in_len = strlen(body),
@@ -95,6 +96,7 @@ static void Attempt(struct Agent* a, const char* body, double timeout,
   ReadResponseHeaders(response, status, retry_after);
   unlink(headers);
   unlink(response);
+  free(adapter);
   free(url);
   free(headers);
   free(header_arg);
@@ -224,14 +226,30 @@ LlmStatus LlmChatWith(struct Agent* a, const char* model, cJSON* settings,
   char* body = RequestBody(model, settings, messages, tools);
   memset(reply, 0, sizeof(*reply));
   Outcome o;
+  // 1 once a 401 or 403 asks the credential program for a new value, and
+  // 2 once it gave one: a second rejection stops the call.
+  int rejected = 0;
   for (int attempt = 1;; attempt++) {
     Stream s = {.show = show};
-    ProcResult r;
+    ProcResult r = {0};
     Buffer curl_err = {0}, why = {0};
-    int status;
-    double retry_after;
-    Attempt(a, body, timeout, &s, &r, &curl_err, &status, &retry_after);
-    o = Classify(&r, &s, status, &curl_err, &why);
+    int status = 0, at_once = 0;
+    double retry_after = -1;
+    CredentialStatus c =
+        CredentialEnsure(root, a->spec.dir, rejected == 1, &why);
+    if (rejected == 1 && c == kCredentialOk) rejected = 2;
+    if (c == kCredentialOk) {
+      Attempt(a, body, timeout, &s, &r, &curl_err, &status, &retry_after);
+      o = Classify(&r, &s, status, &curl_err, &why);
+    } else {
+      o = c == kCredentialRetry ? kOutcomeRetry : kOutcomeAuth;
+    }
+    if (o == kOutcomeAuth && c == kCredentialOk && !rejected &&
+        JsonStr(root, "endpoint.credential", NULL)) {
+      rejected = 1;  // the value may have been revoked: ask once more
+      at_once = 1;
+      o = kOutcomeRetry;
+    }
     if (o == kOutcomeOk) {
       reply->message = StreamMessage(&s, a->session.turns);
       reply->tokens_in = s.tokens_in;
@@ -246,8 +264,8 @@ LlmStatus LlmChatWith(struct Agent* a, const char* model, cJSON* settings,
       BufferPrintf(err, "gave up after %d attempts: %s", attempt, why.data);
       o = kOutcomeFatal;
     } else if (o == kOutcomeRetry) {
-      AnnounceRetry(attempt, status, &r, RetryWait(root, attempt, retry_after),
-                    why.data);
+      double wait = at_once ? 0 : RetryWait(root, attempt, retry_after);
+      AnnounceRetry(attempt, status, &r, wait, why.data);
       if (g_interrupted) o = kOutcomeInterrupted;
     } else {
       BufferAppendStr(err, why.data ? why.data : "");

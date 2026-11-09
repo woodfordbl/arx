@@ -13,7 +13,7 @@ not built.
 
 | Term | Meaning |
 |---|---|
-| [Kind](#kind) | One of the nine contracts: tool, subagent, hook, scheduler, compactor, observer, driver, command, skill. |
+| [Kind](#kind) | One of the eleven contracts: tool, subagent, hook, scheduler, compactor, observer, driver, command, skill, credential, adapter. |
 | [Plugin](#plugin) | A folder with a `plugin.yaml` that holds parts of one or more kinds. |
 | [Layer](#layer) | A folder that arx reads `tools/`, `hooks/` and `skills/` from. Layers have a fixed order. |
 | [Hook point](#hook-point) | A fixed place in the turn loop where hooks run. |
@@ -35,7 +35,7 @@ Three words from [How arx works](../concepts.md) also appear here:
 ## Kind
 
 A kind is a contract between arx and an executable: what arx gives it, when,
-and what it must print. There are nine kinds:
+and what it must print. There are eleven kinds:
 
 | Kind | arx gives it | It prints |
 |---|---|---|
@@ -48,6 +48,8 @@ and what it must print. There are nine kinds:
 | [Driver](drivers.md) | nothing: it runs arx | anything |
 | [Command](commands.md) | its command-line arguments | anything |
 | [Skill](skills.md) | nothing: it is a Markdown file the agent reads | nothing: the agent reads it |
+| [Credential](credentials.md) | why it runs: `start`, `expired` or `rejected` | headers, a base URL and an expiry, as JSON |
+| [Adapter](adapters.md) | the `curl` command of a call, and the request on stdin | the reply, as a Chat Completions stream |
 
 A **part** is one file or entry of a kind, such as the tool `greet` or the
 hook `hooks/before_tool`.
@@ -118,6 +120,7 @@ Each kind uses the layer order in its own way:
 | Skills | `{{skills}}` lists the skills of every layer. When two layers have a skill folder with the same name, the first one wins. |
 | Observers | All of them run. |
 | Compactors | All names are available. When two places name the same compactor, the spec wins, then the first plugin. |
+| Credentials and adapters | The same as compactors. `endpoint.credential` and `endpoint.adapter` choose one by name. |
 | Commands | Only user plugins add commands, whether or not they are in the active list. See [Commands](commands.md). |
 
 So a tool that the agent writes in its spec folder always wins over a

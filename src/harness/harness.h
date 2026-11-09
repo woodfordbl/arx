@@ -69,10 +69,9 @@ typedef struct Spec {
 // over the defaults), then applies `sets` (from --set and --kit, which is
 // `kit=NAME`; may be NULL), then builds the active list (see ActiveBuild)
 // and adds the plugins (see PluginsLoad). A kit that is missing is an
-// error. With
-// `path` NULL the defaults are the whole spec, and tools/ and hooks/ come
-// from the config directory. On success returns 0 and fills `spec`. On
-// failure returns -1, appends one line per problem to `err`
+// error. With `path` NULL the defaults are the whole spec, and tools/ and
+// hooks/ come from the config directory. On success returns 0 and fills
+// `spec`. On failure returns -1, appends one line per problem to `err`
 // ("file:line: path: message"), and leaves `spec` empty.
 int SpecLoad(const char* path, cJSON* sets, Spec* spec, Buffer* err);
 
@@ -170,8 +169,8 @@ int ListNames(const char* dir, char*** names);
 // ---- describe.c ----
 
 // Checks the plugin in `dir` without loading it, for `arx check --plugin`,
-// and appends key=value lines to `out` (name, version, description, arx,
-// requires, missing, tools, hooks, skills, commands). Returns 0, or -1.
+// and appends key=value lines to `out`: its fields, parts and hosts.
+// Returns 0, or -1.
 int PluginDescribe(const char* dir, Buffer* out, Buffer* err);
 
 // ---- signature.c ----
@@ -230,13 +229,11 @@ extern const char kNameChars[];
 // appending problems to `err`. Called by SpecLoad.
 void SpecValidate(const Spec* spec, Buffer* err);
 
-// Validates a parsed plugin.yaml (name, version, description, arx,
-// requires, tools, hooks, replaces, observers, compactors), appending
-// problems to `err`.
+// Validates a parsed plugin.yaml against kPluginFields, and its programs
+// and hosts, appending problems to `err`.
 void PluginValidate(const Spec* plugin, Buffer* err);
 
-// Validates a parsed kit.yaml against kKitFields, appending problems to
-// `err`.
+// Validates a parsed kit.yaml against kKitFields, appending to `err`.
 void KitValidate(const Spec* kit, Buffer* err);
 
 // ---- schema.c ----
@@ -318,6 +315,9 @@ char** ToolEnv(struct Agent* a, const char* plugin_dir);
 void FreeEnv(char** env);
 
 // ---- keys.c ----
+
+// Appends the host of a URL or bare host name: no scheme, user, port, path.
+void AppendHost(Buffer* b, const char* url);
 
 // True when `keys` is an array of strings.
 int KeysValid(cJSON* keys);

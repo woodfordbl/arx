@@ -96,6 +96,9 @@ prices: {input: 3, output: 15}
 | `enable` | plugin list | | Plugins to add to the kit or the list. |
 | `disable` | string list | | Plugins to leave out. |
 | `compactors` | map | | Named compaction programs, `name: path`, for `compaction.strategy`. |
+| `credentials` | map | | Named credential programs, `name: path`, for `endpoint.credential`. See [Credentials](plugins/credentials.md). |
+| `adapters` | map | | Named adapters, `name: path`, for `endpoint.adapter`. See [Adapters](plugins/adapters.md). |
+| `hosts` | string list | | Network hosts the harness's programs reach, besides the endpoint, such as `[auth.openai.com]`. Plugins add theirs. `arx check --hosts` lists them all. |
 
 `kit`, `plugins`, `enable` and `disable` build the
 [active list](plugins/kits.md#the-active-list) of plugins.
@@ -104,8 +107,10 @@ prices: {input: 3, output: 15}
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `base_url` | string | **required** | OpenAI-compatible base URL, such as `https://openrouter.ai/api/v1`. |
+| `base_url` | string | **required**, unless `credential` gives it | OpenAI-compatible base URL, such as `https://openrouter.ai/api/v1`. |
 | `api_key_env` | string | `OPENAI_API_KEY` | Environment variable that holds the API key. |
+| `credential` | string | | A name from `credentials:`, or a program path. The program prints the headers, key and base URL, and replaces `api_key_env` and the saved key. See [Credentials](plugins/credentials.md). |
+| `adapter` | string | | A name from `adapters:`, or a program path. arx runs it in front of `curl` to translate each call. See [Adapters](plugins/adapters.md). |
 | `headers` | map | | Extra HTTP headers. |
 | `curl` | string | `$ARX_CURL` or `curl` | The curl executable. |
 | `retry_base` | duration | `2s` | First retry delay. |
@@ -114,7 +119,18 @@ prices: {input: 3, output: 15}
 
 arx retries on network errors, timeouts, and HTTP 408, 409, 425, 429 and
 5xx, with exponential backoff or the server's `Retry-After`. HTTP 401 and
-403 stop the run with exit code 4.
+403 stop the run with exit code 4. With a `credential`, arx first runs the
+program again and retries the call once.
+
+To use your ChatGPT plan instead of an API key, install the
+[`chatgpt`](../plugins/chatgpt) plugin, run `arx chatgpt login`, and set:
+
+```yaml
+endpoint:
+  base_url: https://api.openai.com/v1
+  credential: chatgpt
+  adapter: responses
+```
 
 ### `tools`
 

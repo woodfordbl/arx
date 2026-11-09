@@ -1,9 +1,9 @@
 # Plugins
 
 A plugin adds a capability to arx: a tool for the model, a hook in the turn
-loop, a compaction program, an event reader, a command, or a skill. Each part
-is its own executable in any language, except a skill, which is a Markdown
-file. arx starts the executable, gives it JSON, and reads what it prints.
+loop, a compaction program, an event reader, a command, a skill, or a way to
+reach a model endpoint. Each part is its own executable in any language,
+except a skill, which is a Markdown file. arx starts the executable, gives it JSON, and reads what it prints.
 Nothing is linked into the arx binary.
 
 You can write the parts yourself, install them as a plugin folder, or let the
@@ -41,6 +41,8 @@ you want to change:
 | [Driver](plugins/drivers.md) | run arx from a program | anywhere | when you run it | [`resume_on_cap.sh`](../examples/plugins/drivers/resume_on_cap.sh) |
 | [Command](plugins/commands.md) | add an `arx <name>` subcommand | `commands/arx-<name>` | when you type `arx <name>` | [`commands/`](../commands) |
 | [Skill](plugins/skills.md) | give the agent instructions it reads when it needs them | `skills/<name>/SKILL.md` | when the agent reads it | `plugin-authoring` |
+| [Credential](plugins/credentials.md) | get the key and base URL for model calls from a program | `credentials: {name: path}` | before model calls, when its value is missing or expires | `op-key`, `chatgpt` |
+| [Adapter](plugins/adapters.md) | translate model calls for an endpoint that does not speak Chat Completions | `adapters: {name: path}` | around each call to the endpoint | `chatgpt` (`responses`) |
 
 Paths are relative to a [layer](plugins/concepts.md#layer): the spec folder,
 a plugin folder, or your config folder.
@@ -52,12 +54,13 @@ one kind of agent. arx ships three in [`kits/`](../kits): `coding`,
 
 ## Check a plugin before you use it
 
-These four commands cover most plugin work:
+These commands cover most plugin work:
 
 ```sh
 arx check                    # the spec, tools, hooks and plugins, with any problems
 arx tools                    # the tools as the model sees them
 arx check --plugin DIR       # one plugin folder, before you install it
+arx check --hosts            # the network hosts a run needs, one per line
 arx plugin add --link DIR    # use a plugin from where it is, while you work on it
 ```
 

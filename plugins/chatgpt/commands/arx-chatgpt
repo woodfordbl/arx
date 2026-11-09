@@ -1,0 +1,115 @@
+#!/usr/bin/env python3
+"""arx-chatgpt: sign in with ChatGPT, so arx can use your ChatGPT plan.
+
+`arx chatgpt login` opens the browser, registers arx with your ChatGPT
+account (the first time) and saves the sign-in in the chatgpt state folder.
+The credential program then keeps the access token fresh. This command
+never prints a token.
+"""
+import os
+import shutil
+import subprocess
+import sys
+import time
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)),
+                                "..", "lib"))
+import chatgpt_auth as auth  # noqa: E402
+
+USAGE = """usage: arx chatgpt login [--no-browser] | status | logout [--forget]
+  login       sign in with ChatGPT and allow arx to use your plan
+              --no-browser prints the link instead of opening it
+  status      the signed-in account, and whether plan usage is on
+  logout      revoke the sign-in and drop its tokens
+              --forget also drops the account and arx's registration
+The sign-in is saved in %s (set ARX_CHATGPT_DIR to move it).
+Use it in agent.yaml:
+  endpoint: {base_url: https://api.openai.com/v1, credential: chatgpt,
+             adapter: responses}
+"""
+
+
+def opener(no_browser):
+    """Returns a function that opens or prints the sign-in URL."""
+    def show(url):
+        print("Continue with ChatGPT: sign in and allow arx to use your plan.")
+        browser = None if no_browser else (
+            shutil.which("open") or shutil.which("xdg-open"))
+        if browser and subprocess.call(
+                [browser, url], stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL) == 0:
+            print("Your browser opened the sign-in page. Waiting...")
+        else:
+            print("Open this link in a browser on this machine:\n\n  %s\n"
+                  % url)
+        sys.stdout.flush()
+    return show
+
+
+def login(args):
+    """`arx chatgpt login`."""
+    record, first = auth.login(opener("--no-browser" in args))
+    print("Signed in to ChatGPT as %s." % (record.get("email") or "you"))
+    if auth.PLAN_SCOPE not in record.get("scopes", []):
+        print("ChatGPT plan usage is not allowed, so arx cannot use your "
+              "plan.\nRun `arx chatgpt login` again and allow it, or use an "
+              "API key instead.")
+        return 1
+    if first:
+        print("\nYou're using your ChatGPT plan. Model calls that arx makes "
+              "with `credential: chatgpt` count toward your ChatGPT plan's "
+              "usage.\nManage usage: %s" % auth.USAGE_URL)
+    return 0
+
+
+def status():
+    """`arx chatgpt status`."""
+    record = auth.load()
+    print("state folder  %s" % auth.state_dir())
+    if not record.get("refresh_token"):
+        print("signed in     no (run `arx chatgpt login`)")
+        return 1
+    plan = auth.PLAN_SCOPE in record.get("scopes", [])
+    left = int(record.get("expires_at", 0) - time.time())
+    print("signed in     %s" % (record.get("email") or record.get("subject")))
+    print("plan usage    %s" % ("on: Using ChatGPT plan" if plan else "off"))
+    print("access token  %s" % ("valid for %d min" % (left // 60) if left > 0
+                                else "expired; the next call refreshes it"))
+    print("manage usage  %s" % auth.USAGE_URL)
+    return 0 if plan else 1
+
+
+def logout(args):
+    """`arx chatgpt logout`."""
+    confirmed = auth.logout(forget="--forget" in args)
+    print("Signed out of ChatGPT." if confirmed else
+          "Signed out here, but OpenAI did not confirm the revocation. You "
+          "can disconnect arx in ChatGPT settings.")
+    return 0
+
+
+def main(argv):
+    """Runs one subcommand; returns the exit code."""
+    command = argv[0] if argv else "--help"
+    try:
+        if command == "login":
+            return login(argv[1:])
+        if command == "status":
+            return status()
+        if command == "logout":
+            return logout(argv[1:])
+    except auth.TryLater as e:
+        print("arx chatgpt: %s; try again" % e, file=sys.stderr)
+        return 1
+    except auth.AuthError as e:
+        print("arx chatgpt: %s" % e, file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        return 130
+    print(USAGE % auth.state_dir(), end="")
+    return 0 if command in ("-h", "--help") else 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
