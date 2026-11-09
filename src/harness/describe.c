@@ -13,12 +13,12 @@
 // True when `program` is an executable on PATH, or at its path when it
 // has a '/'.
 static int OnPath(const char* program) {
-  if (strchr(program, '/')) return access(program, X_OK) == 0;
+  if (strchr(program, '/')) return IsRunnable(program);
   const char* path = getenv("PATH");
   for (const char* p = path ? path : ""; *p;) {
     size_t len = strcspn(p, ":");
     char* full = XAsprintf("%.*s/%s", (int)len, p, program);
-    int found = len && access(full, X_OK) == 0;
+    int found = len && IsRunnable(full);
     free(full);
     if (found) return 1;
     p += len + (p[len] == ':');

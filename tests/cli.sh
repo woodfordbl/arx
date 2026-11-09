@@ -79,6 +79,14 @@ reply 2 "401 Unauthorized" <<<'{"error":{"message":"bad key"}}'
 "$ARX" request /models >/dev/null 2>&1
 code=$?
 check "exits 4 on 401" exited 4
+mkdir tmp
+reply 3 "201 Created" <<<'{"id":"t1"}'
+TMPDIR="$PWD/tmp" "$ARX" request -X PUT --data '{"q":1}' /things >out.txt 2>&1
+code=$?
+check "sends --data as the body" [ "$(cat fake/req-03.json)" = '{"q":1}' ]
+check "to the path" has fake/url-03.txt 'http://fake.invalid/v1/things'
+check "exits 0 on 201" exited 0
+check "deletes its header files" [ -z "$(ls -A tmp)" ]
 
 begin "arx setup (non-interactive)"
 rm agent.yaml

@@ -14,11 +14,12 @@ it:
 |---|---|
 | **One C binary, two vendored libraries** | It starts in under a millisecond, uses a few MB over hundreds of turns, and runs anywhere without a runtime. cJSON and libyaml are vendored, unmodified. |
 | **Plugins are processes** | Any language works, a crash can't take the core down, and the agent can write plugins with the same tools it uses for the task. |
-| **Model calls through `curl`** | The binary has no TLS or HTTP code. curl handles proxies, certificates and HTTP/2. The API key goes in a 0600 header file, never on the command line. |
+| **Model calls through `curl`** | Every request goes through `HttpRun`, which runs curl natively. The binary has no TLS or HTTP code. curl handles proxies, certificates and HTTP/2. The API key goes in a 0600 header file, never on the command line. |
 | **Hot reload by `stat()`** | A fingerprint of the harness files costs microseconds, so arx checks before every model call instead of watching files. |
 | **One field table for the spec** | Validation, "did you mean" hints and `arx schema` all come from `kTopFields` in `fields.c`. Adding a key adds it to all three. |
 | **Errors go to the agent** | A rejected edit or a broken tool becomes a `[harness]` note with enough detail for the agent to fix it itself. |
 | **Observers can't block** | The event pipe is non-blocking. A slow observer loses events; the agent never waits. |
+| **One platform section** | Processes, signals, exec, observers, sleeping and HTTP sit behind the platform section of `src/base/base.h`. Natively `proc.c` and `proc_posix.c` implement it, and nothing else in `src/` makes a process call, so a browser build can swap in its own. |
 | **Every plugin in its own process group** | A timeout or Ctrl-C kills the whole group: SIGTERM, then SIGKILL 3 seconds later. No orphans. |
 | **Commands are plugins too** | `arx setup`, `init`, `doctor`, `models`, `sessions`, `update`, `plugin`, `kit`, `add` and `config` are small scripts named `arx-<name>`, run git-style. The binary stays small, and anyone can add a command. |
 | **Files are the interface** | Sessions, transcripts, events and the control inbox are plain files, so drivers and front-ends need no library. |
@@ -89,8 +90,8 @@ Every source file, by folder:
 | | `tool_exec.c` | runs one tool call; subagents run arx again |
 | | `hooks.c` | runs `hooks/<point>` |
 | | `compact.c` | the compaction strategies |
-| `model/` | `llm.c` | builds the request, runs curl, classifies errors, retries |
-| | `auth.c` | finds the API key (environment, Keychain or credentials file) and writes the 0600 header file |
+| `model/` | `llm.c` | builds the request, sends it with `HttpRun`, classifies errors, retries |
+| | `auth.c` | finds the API key (environment, Keychain or credentials file) and builds the request headers |
 | | `credential.c` | runs the credential program (`endpoint.credential`) and finds the adapter (`endpoint.adapter`) |
 | | `sse.c` | parses the streamed reply |
 | `io/` | `session.c` | session folders, transcript, meta, inbox |
@@ -99,6 +100,8 @@ Every source file, by folder:
 | `base/` | `util.c` | buffers, files, paths, durations and sizes |
 | | `json.c` | small cJSON helpers |
 | | `proc.c` | the process runner: pipes, timeouts, process groups |
+| | `proc_posix.c` | the rest of the platform natively: signals, exec, the executable check, observers, sleeping, and `HttpStart` by curl |
+| | `http.c` | `HttpRun`: one HTTP request, start to end |
 
 ## Building and testing
 
@@ -110,7 +113,7 @@ Every build, test and release step is a `make` target:
 | `make debug` | `./arx-debug` with AddressSanitizer and UBSan |
 | `make test` | 434 end-to-end checks in eight suites against `tests/fake-curl` (47 core, 32 marketplace plugins, 46 plugin loading, 57 CLI, 56 shell plugin, 70 hooks, 56 tool runtime, 70 kits). No network or API key needed. |
 | `make bench` | the [performance budgets](#performance-budgets) |
-| `make lint` | clang-format, cpplint, files of 400 lines or fewer, doc comments |
+| `make lint` | clang-format, cpplint, files of 400 lines or fewer, doc comments, and process calls only in `proc.c` and `proc_posix.c` |
 | `make format` | rewrites `src/` in Google style |
 | `make static` | a static Linux (musl) binary, built in Docker |
 | `make install` | `arx` into `$(PREFIX)/bin`, and its commands, plugins and kits into `$(PREFIX)/libexec/arx` (default `~/.local`) |

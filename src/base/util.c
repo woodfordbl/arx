@@ -326,17 +326,6 @@ void IsoTime(char out[32]) {
   snprintf(out + n, 32 - n, ".%03dZ", (int)(t.tv_nsec / 1000000));
 }
 
-// Sleeps in 100 ms steps so Ctrl-C is noticed quickly.
-void SleepSeconds(double s) {
-  while (s > 0 && !g_interrupted) {
-    double step = s > 0.1 ? 0.1 : s;
-    struct timespec ts = {(time_t)step,
-                          (int)((step - (double)(time_t)step) * 1e9)};
-    nanosleep(&ts, NULL);
-    s -= step;
-  }
-}
-
 // Parses a duration with an optional ms/s/m/h suffix.
 int ParseDuration(const char* s, double* out) {
   char* end;

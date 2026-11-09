@@ -9,6 +9,8 @@
 #   2. Google's linter (cpplint, see CPPLINT.cfg).
 #   3. No file over 400 lines.
 #   4. Doc comments (scripts/doc_check.awk).
+#   5. Process and signal calls only in the native platform files, so the
+#      browser build (proc_host.c) can replace them.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -53,6 +55,13 @@ done
 
 echo "== doc comments"
 awk -f scripts/doc_check.awk "${src[@]}" || fail=1
+
+echo "== platform calls (only in src/base/proc.c and proc_posix.c)"
+calls='(^|[^A-Za-z0-9_])(posix_spawnp?|exec[lv]p?e?|fork|pipe|dup2?|kill|waitpid|sigaction|signal)[[:space:]]*\('
+if grep -nE "$calls" "${src[@]}" | grep -vE '^src/base/proc(_posix)?\.c:'; then
+  echo "use the platform section of src/base/base.h instead"
+  fail=1
+fi
 
 if [ "$fail" -eq 0 ]; then echo "lint: ok"; else echo "lint: failed"; fi
 exit "$fail"

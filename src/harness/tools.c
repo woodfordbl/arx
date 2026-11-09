@@ -237,7 +237,7 @@ static void AddExecutable(struct Agent* a, const Layer* layer,
   snprintf(key, sizeof(key), "tools.%s.enabled", name);
   if (stat(path, &st) || !S_ISREG(st.st_mode)) {
     // Directories and broken links are not tools.
-  } else if (access(path, X_OK)) {
+  } else if (!IsRunnable(path)) {
     BufferPrintf(notes, "- %stools/%s is not executable (chmod +x it)\n", where,
                  name);
   } else if (strspn(name, kNameChars) != strlen(name)) {

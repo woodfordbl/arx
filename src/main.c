@@ -1,7 +1,6 @@
 // main.c: the entry point. Installs signal handlers, then runs a built-in
 // command, an external `arx-*` command, or the agent.
 
-#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,23 +9,6 @@
 #include "src/agent/agent.h"
 #include "src/base/base.h"
 #include "src/cli/cli.h"
-
-// The first Ctrl-C stops the current step; a second one exits at once.
-static void OnSignal(int sig) {
-  if (g_interrupted && sig == SIGINT) _exit(kExitInterrupted);
-  g_interrupted = 1;
-}
-
-// No SA_RESTART: blocking reads return so the loop can notice the signal.
-static void InstallSignals(void) {
-  struct sigaction sa;
-  memset(&sa, 0, sizeof(sa));
-  sa.sa_handler = OnSignal;
-  sigemptyset(&sa.sa_mask);
-  sigaction(SIGINT, &sa, NULL);
-  sigaction(SIGTERM, &sa, NULL);
-  signal(SIGPIPE, SIG_IGN);
-}
 
 // Runs the agent: headless with -p or piped stdin, else interactive.
 static int RunAgent(int argc, char** argv, Agent* a) {
@@ -50,7 +32,7 @@ static int RunAgent(int argc, char** argv, Agent* a) {
 // Entry point.
 int main(int argc, char** argv) {
   g_self = SelfPath(argv[0]);
-  InstallSignals();
+  ProcInit();
   Agent a;
   memset(&a, 0, sizeof(a));
   a.sets = cJSON_CreateObject();

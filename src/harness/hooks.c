@@ -139,7 +139,7 @@ static int RunOne(struct Agent* a, const Layer* layer, const char* point,
 // none.
 static char* HookPath(const Layer* layer, const char* point) {
   char* path = XAsprintf("%s/hooks/%s", layer->dir, point);
-  if (!access(path, X_OK)) return path;
+  if (IsRunnable(path)) return path;
   free(path);
   return NULL;
 }

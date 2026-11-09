@@ -6,7 +6,6 @@
 
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -71,8 +70,7 @@ static char* Find(Agent* a, const Layer** layer) {
     const char* dir = a->spec.layers[l].dir;
     char* path = strchr(dir, '/') ? PathJoin(dir, "scheduler")
                                   : XAsprintf("./%s/scheduler", dir);
-    struct stat st;
-    if (!stat(path, &st) && S_ISREG(st.st_mode) && !access(path, X_OK)) {
+    if (IsRunnable(path)) {
       *layer = &a->spec.layers[l];
       return path;
     }

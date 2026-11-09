@@ -9,7 +9,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 #include <unistd.h>
 
 #include "src/agent/agent.h"
@@ -74,19 +73,13 @@ static void FreeDirs(char** dirs) {
   free(dirs);
 }
 
-// True when `path` is an executable regular file.
-static int IsCommand(const char* path) {
-  struct stat st;
-  return stat(path, &st) == 0 && S_ISREG(st.st_mode) && !access(path, X_OK);
-}
-
 // Finds arx-<name>; see cli.h.
 char* FindCommand(const char* name) {
   char** dirs = SearchDirs();
   char* found = NULL;
   for (char** d = dirs; *d && !found; d++) {
     char* path = XAsprintf("%s/arx-%s", *d, name);
-    if (IsCommand(path))
+    if (IsRunnable(path))
       found = path;
     else
       free(path);
@@ -108,7 +101,7 @@ int RunExternal(const char* name, int argc, char** argv) {
   args[0] = path;
   for (int i = 2; i < argc; i++) args[i - 1] = argv[i];
   args[argc - 1] = NULL;
-  execv(path, args);
+  ProcExec(args, 0);
   fprintf(stderr, "arx: cannot run %s: %s\n", path, strerror(errno));
   free(args);
   free(dir);
@@ -152,7 +145,7 @@ static int ListExternal(char** names) {
       for (int i = 0; i < n && !seen; i++)
         seen = !strcmp(names[i], e->d_name + 4);
       char* path = XAsprintf("%s/%s", *d, e->d_name);
-      if (!seen && IsCommand(path)) names[n++] = XStrdup(e->d_name + 4);
+      if (!seen && IsRunnable(path)) names[n++] = XStrdup(e->d_name + 4);
       free(path);
     }
     if (dir) closedir(dir);

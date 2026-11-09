@@ -3,6 +3,11 @@
 //   json.c  dotted-path lookups and YAML-style scalars on top of cJSON
 //   proc.c  the process runner behind every tool, hook, curl call and
 //           subagent (own process group, timeout, streamed output)
+//   proc_posix.c  the rest of the platform natively: signals, exec, the
+//           executable check, observers, sleeping, and HttpStart by curl
+//   http.c  one HTTP request on top of the platform (HttpRun)
+// The browser build replaces proc.c and proc_posix.c with proc_host.c, so
+// the platform section below is all that differs between the two.
 
 #ifndef SRC_BASE_BASE_H_
 #define SRC_BASE_BASE_H_
@@ -135,9 +140,6 @@ double Now(void);
 // Writes the current UTC time as "2026-10-30T22:14:03.120Z" into `out`.
 void IsoTime(char out[32]);
 
-// Sleeps for `s` seconds, returning early if g_interrupted is set.
-void SleepSeconds(double s);
-
 // Parses "30", "10s", "250ms", "5m" or "1h" into seconds. Returns 0 or -1.
 int ParseDuration(const char* s, double* out);
 
@@ -210,6 +212,79 @@ void ProcFinish(ProcChild* c, ProcResult* r);
 // Returns a copy of the environment with `extra` ("KEY=value", NULL-terminated)
 // added or replaced. Free only the array; the strings are borrowed.
 char** EnvWith(char* const* extra);
+
+// ---- platform: proc_posix.c natively, proc_host.c in the browser ----
+
+// Installs the SIGINT and SIGTERM handlers and ignores SIGPIPE. The first
+// Ctrl-C sets g_interrupted; a second one exits at once.
+void ProcInit(void);
+
+// Replaces this process with `argv` (argv[0] is looked up in PATH). With
+// `null_stdin`, stdin becomes /dev/null and SIGPIPE its default. Returns
+// only on failure, with errno set (ENOSYS in the browser).
+int ProcExec(char* const* argv, int null_stdin);
+
+// True when `path` is a regular file this platform can run: natively, one
+// we may execute; in the browser, one the runtime has a runner for.
+int IsRunnable(const char* path);
+
+// Starts `sh -c command`, with `env` added (as in Proc), reading the event
+// stream on stdin. Returns the write end (non-blocking, close-on-exec) and
+// sets *pid, or returns -1.
+int ProcObserverStart(const char* command, char* const* env, int* pid);
+
+// Waits up to `secs` for observer `pid` to exit.
+void ProcObserverWait(int pid, double secs);
+
+// Returns a close-on-exec copy of fd 1 (for `--events -`), or -1.
+int ProcDupStdout(void);
+
+// Sleeps for `s` seconds, returning early if g_interrupted is set.
+void SleepSeconds(double s);
+
+// ---- http.c, on top of the platform ----
+
+// One HTTP request. Natively it runs curl (through the endpoint's adapter,
+// if any) with the headers in a 0600 file it deletes after; in the browser
+// it is a fetch.
+typedef struct HttpRequest {
+  const char* method;  // NULL: POST with a body, else GET
+  const char* url;
+  const char* headers;  // "Name: value\n" lines
+  const char* body;     // or NULL
+  size_t body_len;
+  double timeout;       // seconds for the whole call; 0 means none
+  int stream;           // the body streams in as it arrives (curl -N)
+  const char* adapter;  // endpoint.adapter program, or NULL
+  const char* curl;     // native: endpoint.curl, or NULL ($ARX_CURL, curl)
+  const char* tmp_dir;  // native: where the header files go
+  DataFn on_body;       // body bytes as they arrive
+  void* body_ctx;
+} HttpRequest;
+
+// How a request ended.
+typedef struct HttpResult {
+  int status;          // HTTP status of the last response, 0 if none
+  double retry_after;  // Retry-After in seconds, or -1
+  int net_error;       // 0, curl's exit code (6, 7, 28...), -1: no start
+  int interrupted;     // stopped by Ctrl-C
+  int spawn_failed;    // curl or the adapter did not start
+  Buffer err;          // curl's stderr, or why it failed; free it
+  double secs;
+} HttpResult;
+
+// Starts a request; ProcPoll runs it like any child. `req` and the strings
+// and context it names must stay valid until HttpFinish. Returns NULL if it
+// could not start (errno says why).
+ProcChild* HttpStart(const HttpRequest* req);
+
+// Ends a started request (stopping it if it still runs), fills `r` and
+// frees `c`.
+void HttpFinish(ProcChild* c, HttpResult* r);
+
+// HttpStart, ProcPoll until it is done, then HttpFinish. Returns 0, or -1
+// when it could not start (r->spawn_failed, with the reason in r->err).
+int HttpRun(const HttpRequest* req, HttpResult* r);
 
 // ---- json.c ----
 

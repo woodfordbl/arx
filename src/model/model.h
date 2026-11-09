@@ -1,7 +1,7 @@
 // model.h: the model client.
-//   llm.c  one OpenAI-compatible Chat Completions request per call, sent by
-//          running curl (so the binary carries no TLS code), retried on
-//          transient errors
+//   llm.c  one OpenAI-compatible Chat Completions request per call, sent
+//          with HttpRun (curl natively, so the binary carries no TLS code),
+//          retried on transient errors
 //   auth.c credentials (env var, then macOS Keychain or a 0600 file, as fx
 //          does) and the request plumbing every call shares
 //   credential.c  the programs an endpoint names: a credential program
@@ -41,20 +41,13 @@ const char* ApiKeySource(void);
 // credential program's base_url when it gave one, else endpoint.base_url.
 char* EndpointUrl(cJSON* root, const char* path);
 
-// Returns the curl to run: endpoint.curl, else $ARX_CURL, else "curl".
-const char* CurlPath(cJSON* root);
-
-// Writes request headers, including the key, to a new 0600 file in `dir`
-// for `curl -H @file`, and returns its path; delete it after the call.
-// `streaming` adds "Accept: text/event-stream". With endpoint.credential,
-// the key and headers come from the credential program's last value (see
+// Appends the request headers, including the key, to `out` as
+// "Name: value\n" lines for HttpRequest.headers. `streaming` adds
+// "Accept: text/event-stream". With endpoint.credential, the key and
+// headers come from the credential program's last value (see
 // CredentialEnsure), never from ApiKey(), and its headers replace
 // endpoint.headers of the same name.
-char* WriteRequestHeaders(cJSON* root, const char* dir, int streaming);
-
-// Reads the last HTTP status and any Retry-After (seconds, else -1) from a
-// headers file written by `curl -D`.
-void ReadResponseHeaders(const char* path, int* status, double* retry_after);
+void RequestHeaders(cJSON* root, int streaming, Buffer* out);
 
 // ---- credential.c ----
 
