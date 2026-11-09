@@ -150,6 +150,12 @@ exited() { [ "$code" -eq "$1" ]; }
 # Number of lines in FILE that contain PATTERN.
 count() { grep -cF -- "$2" "$1"; }
 
+# The system prompt (message 0) of model call N.
+msg0() { jq -r '.messages[0].content' "fake/req-0$1.json"; }
+
+# The JSON of field KEY in the body of model call N.
+field() { jq -c ".$2" "fake/req-0$1.json"; }
+
 # Prints the totals and returns non-zero if anything failed.
 summary() {
   echo

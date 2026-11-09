@@ -3,6 +3,7 @@
 // it from the message alone. agent.yaml, plugin.yaml and kit.yaml all go
 // through the same checks.
 
+#include <errno.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,8 +14,14 @@
 
 static const char* const kStrategies[] = {"mask", "summarize", "hybrid",
                                           "restart", NULL};
+// The template variables; a plugin's text cannot use the first kSpecOnlyVars.
 static const char* const kTemplateVars[] = {
-    "prompt", "harness", "skills", "date", "cwd", "session", "turn", NULL};
+    "prompt",  "harness", "skills", "plugin_instructions", "date", "cwd",
+    "session", "turn",    NULL};
+static const int kSpecOnlyVars = 4;
+// Request fields that arx builds, which a plugin's model_settings cannot set.
+static const char* const kBuiltFields[] = {"model",  "messages",       "tools",
+                                           "stream", "stream_options", NULL};
 static const char* const kBands[] = {"policy", "normal", "final", NULL};
 
 // Edit distance between two short strings, for "did you mean" hints.
@@ -51,90 +58,6 @@ static void Problem(const Spec* spec, Buffer* err, const char* path,
   BufferVprintf(err, fmt, ap);
   va_end(ap);
   BufferAppendStr(err, "\n");
-}
-
-// True for a string or {file: path}.
-static int IsText(const cJSON* v) {
-  return cJSON_IsString(v) ||
-         (cJSON_IsObject(v) && cJSON_GetArraySize(v) == 1 &&
-          cJSON_IsString(cJSON_GetObjectItemCaseSensitive(v, "file")));
-}
-
-// True when `v` is an array whose items all pass `check`.
-static int AllItems(const cJSON* v, int (*check)(const cJSON*)) {
-  if (!cJSON_IsArray(v)) return 0;
-  for (cJSON* c = v->child; c; c = c->next) {
-    if (!check(c)) return 0;
-  }
-  return 1;
-}
-
-// True for one entry of a plugin list: a name, or {name: {settings}}.
-static int IsPluginEntry(const cJSON* v) {
-  if (cJSON_IsString(v)) return *v->valuestring != 0;
-  return cJSON_IsObject(v) && cJSON_GetArraySize(v) == 1 &&
-         (cJSON_IsObject(v->child) || cJSON_IsNull(v->child));
-}
-
-// True when `v` has the shape that `type` needs.
-static int TypeOk(FieldType type, const cJSON* v) {
-  double secs;
-  size_t bytes;
-  switch (type) {
-    case kString:
-      return cJSON_IsString(v);
-    case kNumber:
-      return cJSON_IsNumber(v);
-    case kInteger:
-      return cJSON_IsNumber(v) &&
-             v->valuedouble == (double)(int64_t)v->valuedouble;
-    case kBoolean:
-      return cJSON_IsBool(v);
-    case kDuration:
-      return cJSON_IsNumber(v) ||
-             (cJSON_IsString(v) && ParseDuration(v->valuestring, &secs) == 0);
-    case kSize:
-      return cJSON_IsNumber(v) ||
-             (cJSON_IsString(v) && ParseSize(v->valuestring, &bytes) == 0);
-    case kText:
-      return IsText(v);
-    case kTextList:
-      return IsText(v) || AllItems(v, IsText);
-    case kStringList:
-      return AllItems(v, cJSON_IsString);
-    case kPluginList:
-      return AllItems(v, IsPluginEntry);
-    default:
-      return cJSON_IsObject(v);
-  }
-}
-
-// Describes a type for error messages.
-static const char* TypeName(FieldType type) {
-  switch (type) {
-    case kString:
-      return "a string";
-    case kNumber:
-      return "a number";
-    case kInteger:
-      return "a whole number";
-    case kBoolean:
-      return "true or false";
-    case kDuration:
-      return "a duration (30, 10s, 5m, 1h)";
-    case kSize:
-      return "a size (2048, 2kb, 1mb)";
-    case kText:
-      return "text or {file: path}";
-    case kTextList:
-      return "text, {file: path} or a list of them";
-    case kStringList:
-      return "a list of strings";
-    case kPluginList:
-      return "a list of plugin names or {name: {settings}}";
-    default:
-      return "a mapping";
-  }
 }
 
 // Reports an unknown key, suggesting the closest known one.
@@ -206,9 +129,11 @@ static int InList(const char* const* list, const char* s) {
   return 0;
 }
 
-// Reports {{names}} in `text` that are not template variables.
+// Reports {{names}} in `text` that are not template variables of the spec,
+// or with `plugin` set, of a plugin's text.
 static void CheckTemplate(const Spec* spec, const char* where, const char* text,
-                          Buffer* err) {
+                          int plugin, Buffer* err) {
+  const char* const* vars = kTemplateVars + (plugin ? kSpecOnlyVars : 0);
   for (const char* p = text; (p = strstr(p, "{{"));) {
     const char* close = strstr(p + 2, "}}");
     if (!close) break;
@@ -216,14 +141,90 @@ static void CheckTemplate(const Spec* spec, const char* where, const char* text,
     char* start = name + strspn(name, " ");
     char* end = start + strlen(start);
     while (end > start && end[-1] == ' ') *--end = 0;
-    if (!InList(kTemplateVars, start) && strncmp(start, "file:", 5)) {
+    int known = InList(vars, start) || !strncmp(start, "file:", 5);
+    if (!known && InList(kTemplateVars, start)) {
       Problem(spec, err, where,
-              "unknown template variable {{%s}} (known: prompt, harness, "
-              "skills, date, cwd, session, turn, file:PATH)",
-              start);
+              "{{%s}} belongs in the spec's prompt, not a plugin's", start);
+    } else if (!known) {
+      Problem(spec, err, where,
+              "unknown template variable {{%s}} (known: %sdate, cwd, "
+              "session, turn, file:PATH)",
+              start,
+              plugin ? "" : "prompt, harness, skills, plugin_instructions, ");
     }
     free(name);
     p = close + 2;
+  }
+}
+
+// Checks a plugin's text node at `where`: each {file:} path is relative to
+// the plugin folder `dir`, stays inside it and can be read, and the text
+// uses only the template variables of plugin text.
+static void ValidatePluginText(const Spec* spec, cJSON* node, const char* dir,
+                               const char* where, Buffer* err) {
+  if (cJSON_IsArray(node)) {
+    cJSON* c;
+    cJSON_ArrayForEach(c, node) ValidatePluginText(spec, c, dir, where, err);
+  }
+  const char* file = JsonStr(node, "file", NULL);
+  char* text = cJSON_IsString(node) ? XStrdup(node->valuestring) : NULL;
+  if (file) {
+    char* top = realpath(dir, NULL);
+    char* path = PathJoin(dir, file);
+    char* real = realpath(path, NULL);
+    int error = errno;
+    size_t n = top ? strlen(top) : 0;
+    if (*file == '/') {
+      Problem(spec, err, where, "%s: use a relative path", file);
+    } else if (!real) {
+      Problem(spec, err, where, "cannot read %s: %s", path, strerror(error));
+    } else if (!top || strncmp(real, top, n) || real[n] != '/') {
+      Problem(spec, err, where, "%s is outside the plugin folder", file);
+    } else if (!(text = ReadFile(real, NULL))) {
+      Problem(spec, err, where, "cannot read %s", path);
+    }
+    free(real);
+    free(path);
+    free(top);
+  }
+  if (text) CheckTemplate(spec, where, text, 1, err);
+  free(text);
+}
+
+// A plugin's model_settings, at `where`, cannot set the fields arx builds.
+static void ValidateBuiltFields(const Spec* spec, cJSON* settings,
+                                const char* where, Buffer* err) {
+  if (!cJSON_IsObject(settings)) return;
+  for (const char* const* f = kBuiltFields; *f; f++) {
+    if (!cJSON_GetObjectItemCaseSensitive(settings, *f)) continue;
+    char* path = XAsprintf("%s.%s", where, *f);
+    Problem(spec, err, path, "arx sets this field; a plugin cannot");
+    free(path);
+  }
+}
+
+// Checks the settings that change a plugin's instructions and
+// model_settings. You write them in the spec, config.yaml or a kit, so a
+// problem is a spec error, and not a reason to skip the plugin.
+static void ValidatePluginSettings(const Spec* spec, Buffer* err) {
+  for (int i = 0; i < spec->layer_count; i++) {
+    const Layer* layer = &spec->layers[i];
+    cJSON* text = JsonGet(layer->settings, "instructions");
+    cJSON* settings = JsonGet(layer->settings, "model_settings");
+    if (!layer->plugin) continue;
+    char* where = XAsprintf("plugins.%s.instructions", layer->plugin);
+    if (text && !cJSON_IsNull(text) && !TypeOk(kTextList, text)) {
+      Problem(spec, err, where, "must be %s, or null", TypeName(kTextList));
+    } else {
+      ValidatePluginText(spec, text, layer->dir, where, err);
+    }
+    free(where);
+    where = XAsprintf("plugins.%s.model_settings", layer->plugin);
+    if (settings && !cJSON_IsObject(settings)) {
+      Problem(spec, err, where, "must be a mapping");
+    }
+    ValidateBuiltFields(spec, settings, where, err);
+    free(where);
   }
 }
 
@@ -341,7 +342,7 @@ static void ValidateRules(const Spec* spec, Buffer* err) {
   const char* texts[] = {"instructions", "first_message", "compaction.prompt"};
   for (size_t i = 0; i < sizeof(texts) / sizeof(texts[0]); i++) {
     char* text = SpecText(spec, JsonGet(root, texts[i]), err);
-    if (text) CheckTemplate(spec, texts[i], text, err);
+    if (text) CheckTemplate(spec, texts[i], text, 0, err);
     free(text);
   }
 }
@@ -355,6 +356,7 @@ void SpecValidate(const Spec* spec, Buffer* err) {
   ValidateNode(spec, spec->root, kTopFields, "", err);
   ValidateNames(spec, err);
   ValidateRules(spec, err);
+  ValidatePluginSettings(spec, err);
 }
 
 // Checks that a plugin or kit names itself with letters, digits, _ and -.
@@ -376,6 +378,10 @@ void PluginValidate(const Spec* plugin, Buffer* err) {
   ValidateAllPrograms(plugin, err);
   ValidateHosts(plugin, err);
   ValidateOwnName(plugin, err);
+  ValidatePluginText(plugin, JsonGet(plugin->root, "instructions"), plugin->dir,
+                     "instructions", err);
+  ValidateBuiltFields(plugin, JsonGet(plugin->root, "model_settings"),
+                      "model_settings", err);
 }
 
 // Validates a kit.yaml; see harness.h.

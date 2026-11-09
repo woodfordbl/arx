@@ -31,7 +31,8 @@ and arx follows that guide:
   `store: false` and `stream: true`, and the models that
   `GET https://api.openai.com/v1/models` lists for your account. Settings
   such as `temperature` and `max_output_tokens` are not accepted. See
-  [Preview limitations](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations).
+  [Preview limitations](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations),
+  and [Model settings](#model-settings) for what the adapter sends.
 - **What it cannot see**: your ChatGPT conversations. You manage arx's
   access and limits in [ChatGPT settings](https://chatgpt.com/settings/usage).
 
@@ -67,6 +68,28 @@ arx models                  # the models your plan can use
 
 `arx chatgpt logout` revokes the sign-in. `--forget` also drops the saved
 account, so the next sign-in registers arx again.
+
+## Model settings
+
+The `responses` adapter turns `model_settings` into fields of the Responses
+API. The settings come merged from the spec, the kit, `config.yaml` and
+plugins, as Chat Completions fields. The adapter translates the fields it
+knows, passes the native fields that the ChatGPT route accepts, and drops
+the rest, so a setting never fails a call:
+
+| Setting | What `responses` sends |
+|---|---|
+| `reasoning_effort` | `reasoning.effort` |
+| `verbosity` | `text.verbosity`; a `text` that you set yourself wins |
+| `tool_choice` | the same choice in the Responses form |
+| `parallel_tool_calls`, `reasoning`, `text`, `include`, `prompt_cache_key`, `service_tier` | the field as it is |
+| `temperature`, `top_p` | nothing: the route rejects them |
+| `max_tokens`, `max_completion_tokens` | nothing |
+| any other field | nothing |
+
+A dropped setting has no effect on this route, and arx does not report it.
+The `model_settings:` line of `arx check` shows what a run sends to the
+adapter, and which plugin set each field.
 
 ## Run it in containers
 

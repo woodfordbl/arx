@@ -62,6 +62,7 @@ static Layer* AddLayer(Spec* spec, const char* dir, const char* plugin,
   layer->hooks = NULL;
   layer->settings = NULL;
   layer->replaces = NULL;
+  layer->instructions = NULL;
   return layer;
 }
 
@@ -163,9 +164,10 @@ static void Adopt(Spec* spec, Spec* plugin, const char* dir, const char* name) {
   cJSON* c;
   Layer* layer = AddLayer(spec, dir, name, PathJoin(dir, "skills"));
   cJSON* settings = cJSON_GetObjectItemCaseSensitive(spec->settings, name);
-  // Settings may set the plugin's own tool and hook options.
-  const char* own[] = {"tools", "hooks"};
-  for (int i = 0; i < 2; i++) {
+  // Settings may set the plugin's own tool and hook options and model
+  // settings; PluginKeysAdopt applies them to its instructions.
+  const char* own[] = {"tools", "hooks", "model_settings"};
+  for (int i = 0; i < 3; i++) {
     cJSON* over = JsonGet(settings, own[i]);
     if (!cJSON_IsObject(over)) continue;
     cJSON* base = JsonGet(root, own[i]);
@@ -178,6 +180,7 @@ static void Adopt(Spec* spec, Spec* plugin, const char* dir, const char* name) {
   layer->settings = settings ? cJSON_Duplicate(settings, 1) : NULL;
   layer->hooks = cJSON_DetachItemFromObjectCaseSensitive(root, "hooks");
   layer->replaces = cJSON_DetachItemFromObjectCaseSensitive(root, "replaces");
+  PluginKeysAdopt(spec, root, layer);
   cJSON_ArrayForEach(c, JsonGet(root, "tools")) {
     Absolute(JsonGet(c, "agent"), dir);
   }
@@ -340,6 +343,7 @@ void LayersFree(Spec* spec) {
     cJSON_Delete(layer->hooks);
     cJSON_Delete(layer->settings);
     cJSON_Delete(layer->replaces);
+    cJSON_Delete(layer->instructions);
   }
   free(spec->layers);
   spec->layers = NULL;

@@ -1,7 +1,7 @@
 // signature.c: the fingerprint for hot reload. It covers the spec, the
-// prompt files it names, kit.yaml files, and tools/, hooks/ and skills in
-// every layer, using stat() only, so arx can check it before every model
-// call.
+// prompt files that it and each plugin name, kit.yaml files, and tools/,
+// hooks/ and skills in every layer, using stat() only, so arx can check it
+// before every model call.
 
 #include <dirent.h>
 #include <stdlib.h>
@@ -46,7 +46,8 @@ static void HashDir(uint64_t* h, const char* dir, const char* inner) {
   closedir(d);
 }
 
-// Hashes the files that a text node points at.
+// Hashes the files that a text node points at. A plugin's paths are
+// absolute, so PathJoin keeps them.
 static void HashTextFiles(uint64_t* h, const Spec* spec, cJSON* node) {
   if (cJSON_IsArray(node)) {
     for (cJSON* c = node->child; c; c = c->next) HashTextFiles(h, spec, c);
@@ -76,6 +77,7 @@ uint64_t SpecSignature(const Spec* spec) {
     HashDir(&h, dir, NULL);
     free(dir);
     if (layer->skills) HashDir(&h, layer->skills, "SKILL.md");
+    HashTextFiles(&h, spec, layer->instructions);
   }
   // A plugin or kit that is added, removed, or changes its plugin.yaml or
   // kit.yaml.

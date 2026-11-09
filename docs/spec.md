@@ -79,9 +79,9 @@ prices: {input: 3, output: 15}
 | `name` | string | | Agent name, shown in events. |
 | `model` | string | **required**, here or in your defaults | Model id your endpoint accepts. |
 | `endpoint` | map | **required**, here or in your defaults | Where requests go. See [`endpoint`](#endpoint). |
-| `model_settings` | map | | Extra request fields, such as `temperature` or `max_tokens`, passed through as they are. `null` removes a field. |
+| `model_settings` | map | | Extra request fields, such as `temperature` or `max_tokens`, passed through as they are. `null` removes a field. Plugins can add fields that no other source sets. See [Prompt text and model settings](plugins/prompt.md). |
 | `context_window` | integer | `128000` | Context size in tokens. Compaction triggers are a fraction of it. |
-| `instructions` | text list | a short default | The system prompt. `{{vars}}` are expanded. |
+| `instructions` | text list | a short default | The system prompt. `{{vars}}` are expanded. Plugins add their text after it, or at `{{plugin_instructions}}`. |
 | `first_message` | text | the task | The first user message. `{{prompt}}` is the task. |
 | `tools` | map of maps | | Options per tool, and subagent tools. See [`tools`](#tools). |
 | `tool_output` | map | | How much tool output the model sees. See [`tool_output`](#tool_output). |
@@ -228,6 +228,7 @@ variables every time it builds the prompt:
 | `{{prompt}}` | the task (`-p`, stdin, or the first interactive message) |
 | `{{harness}}` | where the spec, tools, hooks, skills and session files are, and how to change them |
 | `{{skills}}` | one line per skill: name, description and path |
+| `{{plugin_instructions}}` | the text of the plugins' `instructions`, in layer order; without it, arx adds that text after the prompt |
 | `{{date}}` | today, as `YYYY-MM-DD` |
 | `{{cwd}}` | the working directory |
 | `{{session}}` | the session id |
@@ -243,7 +244,10 @@ agent has not written yet. An unknown variable is a validation error.
 ### When templates render
 
 - **The system prompt**: at the start, and again whenever the harness
-  reloads.
+  reloads. Each plugin's `instructions` renders on its own, with the same
+  variables except `{{prompt}}`, `{{harness}}`, `{{skills}}` and
+  `{{plugin_instructions}}`. An edit to a plugin's prompt file reloads the
+  harness, as an edit to the spec's does.
 - **The first message**: at the start, and again after every `restart`
   compaction. This is how a restarting agent gets its notes back: put
   `{{file:notes.md}}` in `first_message`.
