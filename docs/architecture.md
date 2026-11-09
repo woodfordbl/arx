@@ -21,6 +21,7 @@ it:
 | **Observers can't block** | The event pipe is non-blocking. A slow observer loses events; the agent never waits. |
 | **Every plugin in its own process group** | A timeout or Ctrl-C kills the whole group: SIGTERM, then SIGKILL 3 seconds later. No orphans. |
 | **Commands are plugins too** | `arx setup`, `init`, `doctor`, `models`, `sessions`, `update`, `plugin`, `kit`, `add` and `config` are small scripts named `arx-<name>`, run git-style. The binary stays small, and anyone can add a command. |
+| **Menus live outside the core** | **Planned:** install and settings menus are bash in `libexec/arx/`, drawn by `pick`, a separate C program of about 40 KB in `libexec/arx/lib/`. pick restores the terminal on every exit and tells Esc from an arrow key, which bash 3.2 can't, and plugin commands get the same menus through `ARX_LIB`. The agent path never loads any of it, so startup does not change. |
 | **Files are the interface** | Sessions, transcripts, events and the control inbox are plain files, so drivers and front-ends need no library. |
 
 ## Performance budgets
@@ -34,6 +35,9 @@ one:
 | Startup, above `true` | 1 ms | 0.6 ms | within noise |
 | Peak memory over 500 turns | 16 MB | 4 MB | 7 MB |
 | Harness edit to live | 10 ms | 0.10 ms | 0.05 ms |
+
+`make bench` also holds `commands/lib/pick`, the menu program, to 64 KB on
+macOS and 256 KB on Linux.
 
 A new tool is slower to go live than an edit. On macOS, a tool the agent has
 just created takes about 35 ms, because the OS checks every new executable
@@ -100,21 +104,32 @@ Every source file, by folder:
 | | `json.c` | small cJSON helpers |
 | | `proc.c` | the process runner: pipes, timeouts, process groups |
 
+`pick/` holds pick, the menu program that arx's commands call. It is a
+separate program: it links only libc, and none of it goes into `arx`.
+
+| File | What it does |
+|---|---|
+| `term.c` | raw mode and its restore on every exit, signals, keys, the redraw |
+| `draw.c` | strings, glyphs and colors, display width, the answered line |
+| `list.c` | `select` and `multi` |
+| `text.c` | `input`, `secret` and `confirm` |
+| `pick.c` | arguments, items on stdin, `spin`, exit codes |
+
 ## Building and testing
 
 Every build, test and release step is a `make` target:
 
 | Command | What it does |
 |---|---|
-| `make` | release build: `-Os`, LTO, dead code stripped |
+| `make` | release build: `-Os`, LTO, dead code stripped; also `commands/lib/pick` |
 | `make debug` | `./arx-debug` with AddressSanitizer and UBSan |
-| `make test` | 434 end-to-end checks in eight suites against `tests/fake-curl` (47 core, 32 marketplace plugins, 46 plugin loading, 57 CLI, 56 shell plugin, 70 hooks, 56 tool runtime, 70 kits). No network or API key needed. |
+| `make test` | 649 end-to-end checks in ten suites against `tests/fake-curl` (47 core, 34 marketplace plugins, 46 plugin loading, 79 CLI, 56 shell plugin, 70 hooks, 56 tool runtime, 70 kits, 81 credentials, 110 terminal UI). No network or API key needed. The terminal UI suite drives pick and `arx setup` on a pseudo-terminal with `tests/pty.py`, and skips itself without python3. |
 | `make bench` | the [performance budgets](#performance-budgets) |
-| `make lint` | clang-format, cpplint, files of 400 lines or fewer, doc comments |
-| `make format` | rewrites `src/` in Google style |
-| `make static` | a static Linux (musl) binary, built in Docker |
-| `make install` | `arx` into `$(PREFIX)/bin`, and its commands, plugins and kits into `$(PREFIX)/libexec/arx` (default `~/.local`) |
-| `make dist` | the release tarball and its sha256 for this platform, as CI builds them |
+| `make lint` | clang-format, cpplint, files of 400 lines or fewer, doc comments, for `src/` and `pick/` |
+| `make format` | rewrites `src/` and `pick/` in Google style |
+| `make static` | static Linux (musl) builds of `arx` and pick, in Docker |
+| `make install` | `arx` into `$(PREFIX)/bin`, and its commands, `lib/` (ui.sh and pick), plugins and kits into `$(PREFIX)/libexec/arx` (default `~/.local`) |
+| `make dist` | the release tarball and its sha256 for this platform, as CI builds them; fails if the tarball has no `libexec/arx/lib/pick` |
 
 The tests run the debug build, so every check also runs under the
 sanitizers. `tests/fake-curl` stands in for curl and replays scripted model
@@ -126,8 +141,8 @@ GitHub Actions builds, tests and publishes arx:
 
 - **CI** runs on every push to `main` and every pull request: lint, with
   clang-format 23.1.3 and cpplint 2.0.2 pinned, then the core, marketplace
-  plugin, plugin loading and CLI suites and the four performance budgets
-  against a static Linux build.
+  plugin, plugin loading, CLI and terminal UI suites and the performance
+  budgets against a static Linux build.
 - **Releases** build `darwin-arm64`, `darwin-x86_64`, `linux-x86_64` and
   `linux-arm64`, and run the tests and budgets on macOS and Linux before
   publishing, so a slow or oversized build fails the release. Each tarball
