@@ -1,131 +1,157 @@
 # Getting started
 
-This page takes you from nothing to a running agent in a few minutes. arx
-needs `curl` at run time; `arx setup`, `arx models` and `arx sessions` also
-need `jq`.
+Install arx, connect it to a model, and run your first agent. It takes about
+five minutes, and by the end you'll have an agent with a tool you wrote.
 
-## Install
+You need macOS or Linux and `curl`. `arx setup`, `arx models` and
+`arx sessions` also use `jq`.
 
-Install the latest release (macOS and Linux, x86_64 and arm64):
+## Install arx
+
+Run the installer:
 
 ```sh
 curl -fsSL https://arx-documentation.vercel.app/install.sh | sh
 ```
 
-The installer downloads the release for your OS and architecture from the
-arx site, which serves arx's GitHub releases, checks its sha256, and installs `arx` into `~/.local/bin` and its commands into
-`~/.local/libexec/arx`. Pass `--prefix DIR` to install somewhere else, or
-`--version vX.Y.Z` for a given release. If `~/.local/bin` is not on your
-`PATH`, the installer says how to add it.
+The installer picks the release for your OS and architecture (x86_64 or
+arm64), checks its sha256, and installs `arx` into `~/.local/bin` and its
+commands into `~/.local/libexec/arx`. If `~/.local/bin` is not on your
+`PATH`, it tells you how to add it.
 
-**From source** (needs a C compiler and `make`):
+To install somewhere else, pass `--prefix DIR`. To pin a release, pass
+`--version vX.Y.Z`. Later, `arx update` installs the newest release the same
+way, with the same checksum check.
+
+### Build from source
+
+You need a C compiler and `make`:
 
 ```sh
 git clone https://github.com/woodfordbl/arx.git && cd arx
-make install                 # arx into ~/.local/bin (PREFIX=... to change)
+make install                 # into ~/.local/bin; set PREFIX to change
 ```
 
 On Linux, `make static` builds a fully static binary (musl, in Docker) that
 runs on any x86_64 or arm64 machine.
 
-`arx update` installs the newest release later, from the same place and with
-the same checksum check.
+## Connect a model
 
-## Set up a provider
+Run `arx setup`:
 
 ```sh
 arx setup
 ```
 
-`arx setup` asks for a provider (Vercel AI Gateway, OpenRouter, OpenAI,
-Ollama, or any OpenAI-compatible URL), your API key, and a default model. It
-checks the key against the endpoint, then saves:
+It asks for a provider (Vercel AI Gateway, OpenRouter, OpenAI, Ollama, or
+any OpenAI-compatible URL), your API key, and a default model. It checks the
+key against the endpoint, then saves:
 
-- **the key** in the macOS Keychain (service `arx`), or elsewhere in
-  `~/.config/arx/credentials` with 0600 permissions;
-- **your defaults** in `~/.config/arx/config.yaml`.
+- **Your key**: in the macOS Keychain (service `arx`), or in
+  `~/.config/arx/credentials` with 0600 permissions elsewhere.
+- **Your defaults**: in `~/.config/arx/config.yaml`.
 
 An environment variable with the same name as the saved key always wins, so
-CI and containers can pass the key in the environment instead. Check
-everything with:
+CI jobs and containers can pass the key in the environment instead.
+
+Check that everything works:
 
 ```sh
-arx doctor            # the install, your spec, your key and your endpoint
-arx doctor --live     # also makes one small model call
-arx models haiku      # the endpoint's models, with prices
+arx doctor                   # checks the install, spec, key and endpoint
+arx doctor --live            # also makes one small model call
+arx models haiku             # lists matching models, with prices
 ```
 
-## Run it
+## Run your first agent
 
-arx works in any folder. With no `agent.yaml` there, it uses your defaults.
+arx works in any folder. With no `agent.yaml` in the folder, it uses the
+defaults you just saved.
 
-**Interactive.** Run `arx` on a terminal and type a message. The agent works
-until it replies without calling a tool, then waits for your next message.
+### Interactive
+
+Run `arx` and type a message:
 
 ```sh
 arx
 › Find the largest file in this directory and tell me what it is.
 ```
 
-- Ctrl-C stops the current turn. A second Ctrl-C exits at once.
-- `/exit`, `/quit` or Ctrl-D ends the session.
+The agent calls tools until it can answer, replies, then waits for your
+next message.
 
-**Headless.** Give a task with `-p` (or pipe it on stdin). The agent runs until
-it stops, then arx exits.
+- **Ctrl-C**: stops the current turn. A second Ctrl-C exits.
+- **`/exit`, `/quit` or Ctrl-D**: ends the session.
+
+### Headless
+
+Pass a task with `-p`, or pipe it on stdin. The agent runs until it stops,
+then arx exits:
 
 ```sh
 arx -p "Find the largest file here" --cap usd=1
 echo "Summarize README.md" | arx --quiet
 ```
 
-`--cap` sets a hard limit that the spec cannot raise: `turns`, `tokens`,
-`usd`, `wall` (for example `wall=2h`) or `depth`. Always set one for runs you
-do not watch.
+`--cap` sets a hard limit that nothing in the spec can raise: `turns`,
+`tokens`, `usd`, `wall` (for example `wall=2h`) or `depth`.
+
+> [!WARNING]
+> Set a `--cap` for every run you don't watch. Without one, the only stop is
+> the spec's `limits.max_turns` (200 by default), and the agent can edit
+> its own spec.
 
 ## Give a project its own harness
 
+A harness is the `agent.yaml` spec and everything next to it: prompts,
+tools, hooks and skills. Create one in the current folder:
+
 ```sh
-arx init                  # agent.yaml, prompts/system.md, tools/, hooks/, skills/
-arx init autoresearch     # the same, set up for a self-improving loop
-arx check                 # validate it; list its tools, hooks and plugins
+arx init                     # creates agent.yaml, prompts/, tools/, hooks/
+arx init autoresearch        # the same, for a self-improving loop
+arx check                    # validates it; lists tools, hooks, plugins
 ```
 
 The project's `agent.yaml` is merged over your defaults key by key, and the
-project wins, so it only needs what differs:
+project wins. So it only needs what differs:
 
 ```yaml
+# agent.yaml
 name: helper
 instructions: [{file: prompts/system.md}]
 limits: {max_turns: 50}
 ```
 
-Every key is described in the [agent.yaml reference](spec.md).
+The [agent.yaml reference](spec.md) lists every key.
 
 ## Watch and steer a run
 
-Every run writes its events to `.arx/sessions/<id>/`. From another terminal:
+Every run writes its events to `.arx/sessions/<id>/`. Open a second
+terminal in the same folder to follow it:
 
 ```sh
-arx watch                             # follow the newest session live
+arx watch                              # follows the newest session live
 arx ctl last note "try a smaller input first"
-arx ctl last stop                     # stop after the current turn
-arx sessions                          # the sessions in this folder
+arx ctl last stop                      # stops after the current turn
+arx sessions                           # lists the sessions in this folder
 ```
 
-The agent sees a note before its next model call. See
-[Command line](cli.md) for every command and option.
+The agent sees a note before its next model call. [Command line](cli.md)
+lists every command and option.
 
-## Continue a session
+To continue a session later, with its full history:
 
 ```sh
-arx --resume last                     # interactive, with the full history
+arx --resume last                      # interactive
 arx --resume last -p "Now write the tests"
 ```
 
 ## Give the agent a tool
 
-A tool is any executable in `tools/`, next to the spec. It describes itself
-when called with `--schema`, and gets its arguments as JSON on stdin:
+A tool is any executable in `tools/`, next to the spec. Called with
+`--schema`, it prints its description. Called without it, it reads its
+arguments as JSON on stdin and prints the result.
+
+Write one that tells the time:
 
 ```sh
 mkdir -p tools
@@ -138,26 +164,26 @@ fi
 date -u +%Y-%m-%dT%H:%M:%SZ
 EOF
 chmod +x tools/now
-arx tools          # prints the tools as the model sees them
+arx tools                              # prints the tools as the model sees them
 ```
 
-There is no restart and no registration. arx checks `tools/` before every
-model call, so the agent can also write tools for itself while it runs.
+There is no restart and no registration step. arx checks `tools/` before
+every model call, so the next turn sees the new tool. The agent can write
+tools for itself the same way while it runs.
 
-Or install one someone else wrote:
+To install a tool someone else wrote, add a plugin:
 
 ```sh
-arx plugin add clock       # plugins/clock from the arx marketplace
+arx plugin add clock                   # installs it from the arx marketplace
 arx plugin list
 ```
 
-The [plugin guide](plugins.md) covers every plugin kind and how plugin folders
-load.
-
 ## Next steps
 
-- [How arx works](concepts.md): the turn loop, hot reload and sessions.
-- [Self-improving runs](autoresearch.md): set up an agent that climbs a score
-  without supervision, and improves its own harness as it goes.
-- [`plugins/`](../plugins): the marketplace, one working plugin of each kind.
+- [How arx works](concepts.md): the turn loop, hot reload, caps and
+  sessions.
+- [Self-improving runs](autoresearch.md): set up an agent that climbs a
+  score without supervision and improves its own harness as it goes.
+- [Plugins](plugins.md): every way to extend arx, from tools and hooks to
+  kits.
 - [`examples/tsp`](../examples/tsp): a complete self-improving TSP solver.

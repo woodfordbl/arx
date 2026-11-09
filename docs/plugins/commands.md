@@ -1,40 +1,50 @@
 # Commands
 
-A command adds a subcommand to arx. `arx <name>` runs the executable
-`arx-<name>` with the remaining arguments, the way `git foo` runs `git-foo`.
-`arx setup`, `init`, `doctor`, `models`, `sessions`, `update` and `plugin` are
-commands like this, written as short scripts in [`commands/`](../../commands).
+A command is an executable named `arx-<name>` that adds the subcommand
+`arx <name>`. arx runs it with the remaining arguments, the way `git foo` runs
+`git-foo`.
+
+Write one to give arx a subcommand of your own, such as a report or a setup
+step. arx's own `setup`, `init`, `doctor`, `models`, `sessions`, `update` and
+`plugin` work the same way: they are short scripts in arx's `commands/`
+folder.
 
 **Status:** today. **Examples:** [`commands/`](../../commands).
 
 ## Contract
 
-- **The file:** an executable named `arx-<name>`.
-- **Arguments:** everything after `arx <name>`.
-- **Output and exit code:** the command's own. arx replaces itself with the
+### How a command runs
+
+- **The file**: an executable named `arx-<name>`.
+- **Arguments**: everything after `arx <name>`.
+- **Output and exit code**: the command's own. arx replaces itself with the
   command, so the command's exit code is the exit code of `arx <name>`.
-- **Environment:** `ARX_BIN` (the arx binary) and `ARX_LIBEXEC` (the folder
-  the command was found in). A command in a user plugin also gets
+- **Environment**: `ARX_BIN` (the arx binary) and `ARX_LIBEXEC` (the folder
+  arx found the command in). A command in a user plugin also gets
   `ARX_PLUGIN_DIR`. The session variables, such as `ARX_SESSION`, are not
   set, because no session runs.
-- **Help:** a line `# arx-<name>: one-line summary` in the first 512 bytes
+- **Help**: a line `# arx-<name>: one-line summary` in the first 512 bytes
   makes the command show up in `arx help`. `arx help <name>` runs
   `arx-<name> --help`.
 
-**Where arx looks,** in this order. The first match wins:
+### Where arx looks
+
+arx searches these places in order, and the first match wins:
 
 1. arx's built-in commands: `check`, `tools`, `schema`, `tool`, `watch`,
-   `ctl`, `request`, `version`, `help`;
-2. `../libexec/arx/` next to the binary (an installed arx);
-3. `commands/` next to the binary (a source checkout);
-4. `~/.config/arx/commands/` (yours; `arx update` never touches it);
-5. `~/.config/arx/plugins/<name>/commands/` (user plugins, in name order);
-6. your `PATH`.
+   `ctl`, `request`, `version`, `help`.
+2. `../libexec/arx/` next to the binary (an installed arx).
+3. `commands/` next to the binary (a source checkout).
+4. `~/.config/arx/commands/` (yours; `arx update` never touches it).
+5. `~/.config/arx/plugins/<name>/commands/` (user plugins, in name order).
+6. Your `PATH`.
 
 So a plugin can add a command, but it cannot replace one of arx's own.
 
-**Calling your endpoint:** `"$ARX_BIN" request PATH` calls your model
-endpoint with your API key, and the key never passes through your script:
+### Call your model endpoint
+
+`"$ARX_BIN" request PATH` calls your model endpoint with your API key. The
+key never passes through your script:
 
 ```sh
 "$ARX_BIN" request /models
@@ -42,13 +52,18 @@ endpoint with your API key, and the key never passes through your script:
 "$ARX_BIN" request --auth-source            # says where the key came from, without the key
 ```
 
-## Minimal example
+## Write a command
+
+This command says hello. Its second line is the summary that `arx help`
+shows:
 
 ```sh
 #!/bin/sh
 # arx-hello: says hello
 echo "hello $* from $("$ARX_BIN" version)"
 ```
+
+Install it in your commands folder and run it:
 
 ```sh
 mkdir -p ~/.config/arx/commands
@@ -57,8 +72,8 @@ arx hello world        # hello world from arx 0.1.0
 arx help               # lists hello with its summary
 ```
 
-In a plugin, put the file in `commands/arx-hello` and install the plugin with
-`arx plugin add`.
+To ship it in a plugin, put the file in `commands/arx-hello` and install the
+plugin for your user with `arx plugin add`. Only user plugins add commands.
 
 ## Common mistakes
 
@@ -72,5 +87,13 @@ In a plugin, put the file in `commands/arx-hello` and install the plugin with
 
 ## Planned
 
-A `setup:` command in `plugin.yaml` that runs once after an install. See
-[Planned changes](planned.md#more-of-arx-plugin).
+**Planned:** a `setup:` command in `plugin.yaml` that runs once after an
+install. See [Planned changes](planned.md#more-of-arx-plugin).
+
+## Related
+
+- [Command line](../cli.md): every built-in command and option.
+- [Plugin reference](reference.md#arx-plugin): `arx plugin add` and where it
+  installs plugins.
+- [Plugin concepts](concepts.md#layer): user plugins, project plugins and
+  the order arx loads them in.

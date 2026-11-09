@@ -1,26 +1,32 @@
 # Architecture
 
-This page is for people who work on arx itself. It covers the design
-decisions, the layout of the sources, and how to build, test and benchmark.
+arx is one small C binary that runs the turn loop, with every tool, hook,
+command and front-end around it running as a separate process. If you work
+on arx itself, start with the design decisions, then the source layout, then
+how to build, test and benchmark.
 
 ## Design decisions
 
+Each decision trades a feature in the core for a process or a file outside
+it:
+
 | Decision | Why |
 |---|---|
-| **One C binary, two vendored libraries** | Starts in under a millisecond, uses a few MB over hundreds of turns, and runs anywhere without a runtime. cJSON and libyaml are vendored, unmodified. |
-| **Plugins are processes** | Any language works, a crash cannot take the core down, and the agent can write plugins with the same tools it uses for the task. |
-| **Model calls through `curl`** | No TLS or HTTP code in the binary. curl handles proxies, certificates and HTTP/2. The API key goes in a 0600 header file, never on the command line. |
+| **One C binary, two vendored libraries** | It starts in under a millisecond, uses a few MB over hundreds of turns, and runs anywhere without a runtime. cJSON and libyaml are vendored, unmodified. |
+| **Plugins are processes** | Any language works, a crash can't take the core down, and the agent can write plugins with the same tools it uses for the task. |
+| **Model calls through `curl`** | The binary has no TLS or HTTP code. curl handles proxies, certificates and HTTP/2. The API key goes in a 0600 header file, never on the command line. |
 | **Hot reload by `stat()`** | A fingerprint of the harness files costs microseconds, so arx checks before every model call instead of watching files. |
-| **One field table for the spec** | Validation, "did you mean" hints and `arx schema` all come from `kTopFields` in `validate.c`. Adding a key adds it to all three. |
+| **One field table for the spec** | Validation, "did you mean" hints and `arx schema` all come from `kTopFields` in `fields.c`. Adding a key adds it to all three. |
 | **Errors go to the agent** | A rejected edit or a broken tool becomes a `[harness]` note with enough detail for the agent to fix it itself. |
-| **Observers cannot block** | The event pipe is non-blocking. A slow observer loses events; the agent never waits. |
+| **Observers can't block** | The event pipe is non-blocking. A slow observer loses events; the agent never waits. |
 | **Every plugin in its own process group** | A timeout or Ctrl-C kills the whole group: SIGTERM, then SIGKILL 3 seconds later. No orphans. |
-| **Commands are plugins too** | `arx setup`, `init`, `doctor`, `models`, `sessions`, `update` and `plugin` are small scripts named `arx-<name>`, run git-style. The binary stays small, and anyone can add a command. |
+| **Commands are plugins too** | `arx setup`, `init`, `doctor`, `models`, `sessions`, `update`, `plugin`, `kit`, `add` and `config` are small scripts named `arx-<name>`, run git-style. The binary stays small, and anyone can add a command. |
 | **Files are the interface** | Sessions, transcripts, events and the control inbox are plain files, so drivers and front-ends need no library. |
 
 ## Performance budgets
 
-`make bench` measures these and fails if one is missed:
+arx has four performance budgets, and `make bench` fails if a build misses
+one:
 
 | Budget | Limit | macOS (arm64) | Linux (static, musl) |
 |---|---|---|---|
@@ -29,9 +35,9 @@ decisions, the layout of the sources, and how to build, test and benchmark.
 | Peak memory over 500 turns | 16 MB | 4 MB | 7 MB |
 | Harness edit to live | 10 ms | 0.10 ms | 0.05 ms |
 
-On macOS, a tool the agent has just created takes about 35 ms to go live,
-because the OS checks every new executable the first time it runs. On Linux it
-takes 0.2 ms.
+A new tool is slower to go live than an edit. On macOS, a tool the agent has
+just created takes about 35 ms, because the OS checks every new executable
+the first time it runs. On Linux it takes 0.2 ms.
 
 ## Source layout
 
@@ -53,21 +59,33 @@ flowchart TD
   io --> base
 ```
 
+Every source file, by folder:
+
 | Folder | File | What it holds |
 |---|---|---|
 | | `main.c` | the entry point: signals, then the command line |
 | `cli/` | `options.c` | option parsing, spec lookup and usage errors |
-| | `commands.c` | built-in commands: `check`, `tools`, `schema`, `watch`, `ctl`, `request`, `version`, `help` |
+| | `commands.c` | built-in commands: `schema`, `tool`, `watch`, `ctl`, `request`, `version`, `help` |
+| | `check.c` | `arx check` and `arx tools` |
+| | `shell_tools.c` | the `bash` and `edit` tools behind `arx tool NAME` |
 | | `external.c` | `arx foo` runs `arx-foo`; `arx help` lists every command |
 | `agent/` | `loop.c` | the turn loop: caps, reload, inbox, notes, compaction, tool calls, stop hook |
+| | `model_call.c` | one model call through its hooks |
+| | `tool_calls.c` | the tool runtime for the calls of one reply |
+| | `scheduler.c` | the scheduler plugin, which decides when queued tool calls run |
 | | `run.c` | session lifecycle: load, open or resume, observers, headless or interactive, result |
 | | `agent.c` | caps parsing, notes, the system prompt and `{{templates}}` |
 | `harness/` | `spec.c` | YAML to JSON with line numbers, `--set`, merging over `config.yaml` |
 | | `plugins.c` | the layers: spec folder, project plugins, config folder, user plugins |
+| | `active.c` | the active list: the ordered plugins one run uses |
+| | `kits.c` | kits |
 | | `signature.c` | the hot-reload fingerprint, over every layer, by `stat()` |
-| | `validate.c` | the field tables (spec and `plugin.yaml`) and validation |
+| | `fields.c` | the field tables of `agent.yaml`, `plugin.yaml` and `kit.yaml` |
+| | `validate.c` | validation against the field tables |
 | | `schema.c` | the JSON Schema, from the same table |
+| | `describe.c` | `arx check --plugin DIR`: checks one plugin without loading it |
 | | `tools.c` | finds tools and caches their `--schema` |
+| | `keys.c` | the keys of a tool call |
 | | `tool_exec.c` | runs one tool call; subagents run arx again |
 | | `hooks.c` | runs `hooks/<point>` |
 | | `compact.c` | the compaction strategies |
@@ -83,38 +101,43 @@ flowchart TD
 
 ## Building and testing
 
+Every build, test and release step is a `make` target:
+
 | Command | What it does |
 |---|---|
 | `make` | release build: `-Os`, LTO, dead code stripped |
 | `make debug` | `./arx-debug` with AddressSanitizer and UBSan |
-| `make test` | 180 end-to-end checks against `tests/fake-curl` (47 core, 30 marketplace plugins, 46 plugin loading, 57 CLI). No network or API key needed. |
-| `make bench` | the performance budgets above |
+| `make test` | 434 end-to-end checks in eight suites against `tests/fake-curl` (47 core, 32 marketplace plugins, 46 plugin loading, 57 CLI, 56 shell plugin, 70 hooks, 56 tool runtime, 70 kits). No network or API key needed. |
+| `make bench` | the [performance budgets](#performance-budgets) |
 | `make lint` | clang-format, cpplint, files of 400 lines or fewer, doc comments |
 | `make format` | rewrites `src/` in Google style |
 | `make static` | a static Linux (musl) binary, built in Docker |
-| `make install` | `arx` into `$(PREFIX)/bin` and its commands into `$(PREFIX)/libexec/arx` (default `~/.local`) |
+| `make install` | `arx` into `$(PREFIX)/bin`, and its commands, plugins and kits into `$(PREFIX)/libexec/arx` (default `~/.local`) |
 | `make dist` | the release tarball and its sha256 for this platform, as CI builds them |
 
-The tests run the debug build, so every check also runs under the sanitizers.
-`tests/fake-curl` stands in for curl and replays scripted model replies, so the
-whole loop runs offline.
+The tests run the debug build, so every check also runs under the
+sanitizers. `tests/fake-curl` stands in for curl and replays scripted model
+replies, so the whole loop runs offline.
 
 ## CI and releases
 
-- **CI** (GitHub Actions) runs on every push to `main` and every pull request:
-  lint, with clang-format 23.1.3 and cpplint 2.0.2 pinned, then all the tests
-  and the four performance budgets against a static Linux build.
+GitHub Actions builds, tests and publishes arx:
+
+- **CI** runs on every push to `main` and every pull request: lint, with
+  clang-format 23.1.3 and cpplint 2.0.2 pinned, then the core, marketplace
+  plugin, plugin loading and CLI suites and the four performance budgets
+  against a static Linux build.
 - **Releases** build `darwin-arm64`, `darwin-x86_64`, `linux-x86_64` and
   `linux-arm64`, and run the tests and budgets on macOS and Linux before
   publishing, so a slow or oversized build fails the release. Each tarball
   ships with a `.sha256`, which `install.sh` and `arx update` check.
 - **Startup timing** is measured against `true` on the same machine, and
   measured again once before it fails, because shared CI machines are noisy.
-- **Docs**: `.github/workflows/docs.yml` calls the docs site's deploy hook when
-  `docs/` changes on `main`.
+- **Docs**: `.github/workflows/docs.yml` calls the docs site's deploy hook
+  when `docs/` changes on `main`.
 
 ## Code style
 
 The C sources follow Google style with a few rules of their own: files of at
 most 400 lines, a comment on every file and function, and comments that say
-why. See the [style guide](STYLE.md).
+why. The [style guide](STYLE.md) has the full rules.

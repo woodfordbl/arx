@@ -1,9 +1,12 @@
 # Tools
 
-A tool is an action the model can call. It is an executable file in a
-layer's `tools/` folder, and its file name is the tool name. Every tool comes
-from a layer: `bash` and `edit` too, from the [`shell`](#bash-and-edit)
-plugin.
+A tool is an executable in a layer's `tools/` folder that the model can
+call by name.
+
+Write a tool for an action you want the model to call with typed arguments,
+and with a description it reads before every call. The file name is the
+tool name. Every tool comes from a layer, `bash` and `edit` too: they come
+from the [`shell`](#bash-and-edit) plugin.
 
 **Status:** today. **Examples:** [`plugins/clock`](../../plugins/clock)
 (shell), [`plugins/word-count`](../../plugins/word-count) (Python) and
@@ -11,48 +14,56 @@ plugin.
 
 ## Contract
 
+arx runs a tool in two ways: once to read its schema, and once for each
+call.
+
 | Step | What arx does | What the tool does |
 |---|---|---|
 | Describe | reads `tools/<name>.json`; if there is none, runs `<tool> --schema` with stdin empty and no `ARX_*` variables | `--schema` prints one JSON object, within 2 seconds, and exits 0 |
 | Call | runs `<tool>` with no arguments, and the call's arguments as JSON on stdin | prints the result and exits |
 | Result | reads stdout and stderr together | exits 0 for success, non-zero for an error |
 
-**The schema** is the description the model sees:
+### The schema
+
+The schema is the description the model sees:
 
 ```json
 {"description": "What it does, for the model.",
  "parameters": {"type": "object", "properties": {...}, "required": [...]}}
 ```
 
-- **Where it comes from:** a file `tools/<name>.json` next to the tool, or
-  else the tool's `--schema` answer. With a schema file, arx starts no process
-  to load the tool. A file that ends in `.json` is never a tool itself.
-- **`parameters`** is a JSON Schema. If it is missing, arx uses an object with
+- **Where it comes from**: a file `tools/<name>.json` next to the tool, or
+  else the tool's `--schema` answer. With a schema file, arx starts no
+  process to load the tool. A file that ends in `.json` is never a tool
+  itself.
+- **`parameters`**: a JSON Schema. If it is missing, arx uses an object with
   no properties.
-- **Placeholders:** `{{timeout}}`, `{{tool_output.head}}` and
-  `{{tool_output.tail}}` in the description become the spec's values for this
-  tool, in seconds and bytes.
-- **Cache:** arx keeps the schema until the tool or its schema file changes
-  (modification time or size), so it is read once per change, not once per
-  turn.
+- **Placeholders**: `{{timeout}}`, `{{tool_output.head}}` and
+  `{{tool_output.tail}}` in the description become the spec's values for
+  this tool, in seconds and bytes.
+- **Cache**: arx keeps the schema until the tool or its schema file changes
+  (modification time or size). So it reads the schema once per change, not
+  once per turn.
 
-**A call:**
+### A call
 
-- **Working directory:** the folder `arx` runs in, not the tool's folder.
-- **Environment:** the [`ARX_*` variables](reference.md#environment). A tool
-  in a plugin also gets `ARX_PLUGIN_DIR`, the plugin's folder.
-- **Errors:** a non-zero exit marks the result as an error, and the model
+- **Working directory**: the folder `arx` runs in, not the tool's folder.
+- **Environment**: the [`ARX_*` variables](reference.md#environment). A
+  tool in a plugin also gets `ARX_PLUGIN_DIR`, the plugin's folder.
+- **Errors**: a non-zero exit marks the result as an error, and the model
   sees `[exit code N]` after the output. An exit 0 with no output gives
   `(no output)`.
-- **Timeout:** 120 seconds by default. At the timeout, arx stops the tool's
+- **Timeout**: 120 seconds by default. At the timeout, arx stops the tool's
   whole process group (SIGTERM, then SIGKILL 3 seconds later), and the
   result says so.
-- **Long output:** the model sees the first 2 KB and the last 6 KB, with a
+- **Long output**: the model sees the first 2 KB and the last 6 KB, with a
   line that gives the path of the full output. arx saves all of it in
   `.arx/sessions/<id>/tool-NNNN.out`. `tool_output.head` and
   `tool_output.tail` in the spec change these sizes.
 
-**Options** in the spec, or in the plugin's `plugin.yaml`:
+### Options
+
+Set a tool's options in the spec, or in the plugin's `plugin.yaml`:
 
 ```yaml
 tools:
@@ -62,7 +73,9 @@ tools:
 
 A plugin's options are defaults: the spec wins when both set a value.
 
-## Minimal example
+## Write a tool
+
+This tool takes no arguments and prints the time. Save it as `tools/now`:
 
 ```sh
 #!/bin/sh
@@ -74,13 +87,20 @@ fi
 date -u +%Y-%m-%dT%H:%M:%SZ
 ```
 
+Make it executable, check that arx finds it, and try a call by hand:
+
 ```sh
 chmod +x tools/now
 arx check                 # tools: now (and bash edit, with the shell plugin)
 echo '{}' | tools/now     # try a call by hand
 ```
 
-A tool that takes arguments reads them from stdin. In Python:
+`arx check` lists `now` under `tools:`, and the call prints the time.
+
+### Take arguments
+
+A tool that takes arguments reads them as JSON from stdin. This Python tool
+counts the words in a file, and exits 1 when it can't read it:
 
 ```python
 #!/usr/bin/env python3
@@ -109,30 +129,30 @@ except OSError as e:
 
 ## Keys
 
-The calls of one reply can run at the same time. Each call has a list of
-**keys**, and a key works as a lock:
+Keys decide which calls of one reply can run at the same time. Each call
+has a list of **keys**, and a key works as a lock:
 
-| Keys | Effect |
-|---|---|
-| `["*"]` | the call runs alone; this is the default for a tool that declares no keys |
-| `[]` | the call runs with any other call; this is the default for a subagent |
-| `["file:{path}"]` | calls with the same key run one at a time; calls with different keys run together |
+| Keys | Effect | Use it when |
+|---|---|---|
+| `["*"]` | the call runs alone; this is the default for a tool that declares no keys | the tool can change anything, as a shell can |
+| `[]` | the call runs with any other call; this is the default for a subagent | the tool only reads, such as a search |
+| `["file:{path}"]` | calls with the same key run one at a time; calls with different keys run together | the tool writes one thing that an argument names |
 
-- **Declare them** in the schema (the schema file or `--schema`):
+Declare them in the schema (the schema file or `--schema`):
 
-  ```json
-  {"description": "...", "parameters": {...}, "keys": ["file:{path}"]}
-  ```
+```json
+{"description": "...", "parameters": {...}, "keys": ["file:{path}"]}
+```
 
-- **`{arg}`** puts in the value of the top-level argument `arg`: a string as
-  it is, any other value as JSON, and nothing when it is missing.
-- **`host:`** at the start of a key keeps only the host of each value: no
+- **`{arg}`**: puts in the value of the top-level argument `arg`. A string
+  goes in as it is, any other value as JSON, and nothing when it is missing.
+- **`host:`**: at the start of a key, keeps only the host of each value: no
   scheme, user, port or path, in lower case. `["host:{url}"]` gives one
   request to each host at a time.
-- **A key list must be a list of strings.** If not, the tool is skipped.
-- **Examples:** `edit` declares `["file:{path}"]`, so edits to different
-  files run together. `bash` declares none, so it runs alone, because a shell
-  can change anything. A read-only search tool can declare `[]`.
+- **A key list must be a list of strings.** If not, arx skips the tool.
+- **Examples**: `edit` declares `["file:{path}"]`, so edits to different
+  files run together. `bash` declares none, so it runs alone, because a
+  shell can change anything. A read-only search tool can declare `[]`.
 - **A `before_tool` hook** sees the keys in the call and can print new ones,
   for example `[]` for `git status`, or one key for `./a.py` and `a.py`. If
   a hook changes the name or the arguments but not the keys, arx computes
@@ -149,7 +169,7 @@ scheduler plugin can replace it.
 code is in the arx binary, so they are fast and need no other programs. The
 plugin only connects them:
 
-```
+```text
 plugins/shell/
   plugin.yaml
   tools/bash         # exec "$ARX_BIN" tool bash "$@"
@@ -158,34 +178,36 @@ plugins/shell/
   tools/edit.json
 ```
 
-- **`arx tool bash|edit`** runs a tool with the arguments as JSON on stdin,
-  and `arx tool NAME --schema` prints its schema. `bash` runs `command` with
-  `sh -c` and exits with its code. `edit` replaces one exact, unique string in
-  a file, or creates a file when `old` is empty.
-- **Direct start:** when a tool file only runs
-  `exec "$ARX_BIN" tool NAME` (with an optional `"$@"`, a `#!` line and
-  comments, in 512 bytes or less), arx starts `arx tool NAME` itself, without
-  the shell. The result is the same.
-- **Install:** `make install` and the release put a copy of the plugin in
+- **What they do**: `bash` runs `command` with `sh -c` and exits with its
+  code. `edit` replaces one exact, unique string in a file, or creates a
+  file when `old` is empty.
+- **`arx tool bash|edit`**: runs a tool with the arguments as JSON on
+  stdin. `arx tool NAME --schema` prints its schema.
+- **Direct start**: when a tool file only runs `exec "$ARX_BIN" tool NAME`
+  (with an optional `"$@"`, a `#!` line and comments, in 512 bytes or less),
+  arx starts `arx tool NAME` itself, without the shell. The result is the
+  same.
+- **Install**: `make install` and the release put a copy of the plugin in
   `libexec/arx/plugins/shell`, next to the commands. `arx setup` links that
   copy into your user plugins when you have no `shell` plugin yet, so it
   stays at the version of your arx after `arx update`. In a source checkout,
   it links the repo's `plugins/shell`.
-- **No tools:** without the plugin, the agent has no tools and can only chat.
+- **Without the plugin**: the agent has no tools and can only chat.
   `arx doctor` warns about this. A `plugins:` list that leaves out `shell`
   also leaves out `bash` and `edit`.
-- **Settings:** `tools.bash.timeout`, `tools.edit.timeout` and
+- **Settings**: `tools.bash.timeout`, `tools.edit.timeout` and
   `enabled: false` work as for any tool.
-- **Replacing them:** put your own `bash` or `edit` in a higher layer, such
-  as the spec folder or a plugin before `shell` in the active list. The first
-  tool with a name wins. When a plugin hides another plugin's tool,
-  `arx check` warns, unless the plugin says so with `replaces: [bash]` in its
-  `plugin.yaml`. Use this to run the tools somewhere else, such as in a
-  sandbox.
 
-## Names
+To run the tools somewhere else, such as in a sandbox, replace them. Put
+your own `bash` or `edit` in a higher layer, such as the spec folder or a
+plugin before `shell` in the active list. The first tool with a name wins.
+When a plugin hides another plugin's tool, `arx check` warns, unless the
+plugin says so with `replaces: [bash]` in its `plugin.yaml`.
 
-- Letters, digits, `_` and `-` only. A file with any other name is skipped.
+## Tool names
+
+- A name uses letters, digits, `_` and `-` only. arx skips a file with any
+  other name.
 - When two layers have a tool with the same name, the first layer wins. See
   [Layers](concepts.md#layer).
 
@@ -206,11 +228,24 @@ plugins/shell/
 | A tool that writes files declares `[]` | two calls can write the same file at the same time | declare a key per file, such as `["file:{path}"]`, or none |
 
 arx tells the agent about each skipped tool in a "Tool problems" note, once.
-`arx check` lists the same problems under `problems:`. It still exits 0, so
-read that list.
+`arx check` lists the same problems under `problems:`.
+
+> [!NOTE]
+> `arx check` still exits 0 when it lists problems, so read the
+> `problems:` list rather than trusting the exit code.
 
 ## Planned
 
-A `sandbox:` value in the spec, which arx gives to each tool as
+**Planned:** a `sandbox:` value in the spec, which arx gives to each tool as
 `ARX_SANDBOX`, so that a sandbox plugin's `bash` and `edit` know where to
 run. See [Planned changes](planned.md).
+
+## Related
+
+- [Hooks](hooks.md): guard, change or log each call with `before_tool` and
+  `after_tool`.
+- [Schedulers](schedulers.md): decide when calls run, beyond their keys.
+- [Subagents](subagents.md): a tool that runs a whole agent with its own
+  spec.
+- [Plugin reference](reference.md#environment): every `ARX_*` variable a
+  tool gets.

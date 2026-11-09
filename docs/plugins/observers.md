@@ -1,40 +1,56 @@
 # Observers
 
-An observer is a command that reads the event stream of a session while it
-runs. Use it for notifications, logs, dashboards and metrics. It cannot
-change the run.
+An observer is a shell command that reads a session's event stream while the
+session runs.
+
+Use one for notifications, logs, dashboards and metrics. An observer sees
+every event but cannot change the run: to change what the agent does, write a
+[hook](hooks.md).
 
 **Status:** today. **Example:** [`plugins/notify`](../../plugins/notify).
 
 ## Contract
 
+### Add an observer
+
 `observers:` in the spec, or in a plugin's `plugin.yaml`, is a list of shell
 commands:
 
 ```yaml
+# agent.yaml
 observers: ["$ARX_SPEC_DIR/observers/notify.sh", "cat >> all-events.jsonl"]
 ```
 
-- **How it runs:** each entry runs with `sh -c`, once for the whole session,
+A plugin's observers are added to the spec's list. They do not replace it.
+
+### How observers run
+
+- **Start**: arx runs each entry with `sh -c`, once for the whole session,
   from the folder `arx` runs in.
-- **Input (stdin):** the [event stream](reference.md#events), one JSON
-  object per line.
-- **Output:** arx does not read it. The observer shares arx's own stdout and
+- **Input (stdin)**: the [event stream](reference.md#events), one JSON object
+  per line.
+- **Output**: arx does not read it. The observer shares arx's own stdout and
   stderr.
-- **Limit:** at most 8 observers per session. arx does not start the rest.
-- **It cannot slow the run:** the pipe never blocks arx. An observer that
-  falls behind loses events.
-- **At the end:** the observer gets end of file when the session ends. arx
-  waits up to one second for it to exit.
-- **Environment:** the [`ARX_*` variables](reference.md#environment). An
+- **Limit**: at most 8 observers per session. arx does not start the rest.
+- **Speed**: the pipe never blocks arx, so an observer cannot slow the run.
+  An observer that falls behind loses events.
+- **End**: the observer gets end of file when the session ends. arx waits up
+  to one second for it to exit.
+- **Environment**: the [`ARX_*` variables](reference.md#environment). An
   observer from a plugin also gets `ARX_PLUGIN_DIR`.
-- **Plugins:** a plugin's observers are added to the spec's list. They do
-  not replace it.
 
-To read events without `observers:`, read `.arx/sessions/<id>/events.jsonl`,
-or run `arx watch --json` from another terminal.
+> [!NOTE]
+> Observers start once, when the session starts. A reload does not restart
+> them, so an edit to an observer takes effect in the next session.
 
-## Minimal example
+You don't need `observers:` to read events. Read
+`.arx/sessions/<id>/events.jsonl`, or run `arx watch --json` from another
+terminal.
+
+## Write an observer
+
+This plugin reports when the top-level session ends. Its `plugin.yaml` names
+the script by `$ARX_PLUGIN_DIR`, because observers run from the work folder:
 
 ```yaml
 # plugin.yaml
@@ -43,6 +59,9 @@ version: 0.1.0
 description: Reports when a session ends.
 observers: ['"$ARX_PLUGIN_DIR/observers/notify.sh"']
 ```
+
+The script reads one event per line and acts only on `session.end` at depth
+0:
 
 ```sh
 #!/bin/sh
@@ -69,3 +88,9 @@ done
 ## Planned
 
 No change is planned for observers.
+
+## Related
+
+- [Plugin reference](reference.md#events): every event type and its fields.
+- [Hooks](hooks.md): change the run at a fixed point in the turn loop.
+- [Drivers](drivers.md): run arx from another program and read its result.
