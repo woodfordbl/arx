@@ -117,5 +117,7 @@ OpenAI answers. Nothing in the tests reaches OpenAI.
   `ARX_CHATGPT_DIR`.
 - **No reasoning carried between turns.** With `store: false`, arx does not
   send the model's earlier reasoning back.
-- **Not checked against the live service yet.** The tests use fake answers
-  shaped like OpenAI's documented ones.
+- **The tests use fake answers.** The flow was checked by hand against the
+  live service on 2026-11-09: first sign-in, `arx models`, text and tool
+  calls through the `responses` adapter, and a refresh that rotated the
+  token.
