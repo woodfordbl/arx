@@ -84,6 +84,7 @@ begin "arx setup (non-interactive)"
 rm agent.yaml
 models_json | reply 1 "200 OK"
 models_json | reply 2 "200 OK"
+models_json | reply 3 "200 OK"
 printf 'sk-test' | "$ARX" setup --provider custom --base-url http://fake.invalid/v1 \
   --key-env TEST_KEY --model test-model --key-stdin --no-test >setup.txt 2>&1
 check "writes the model" has "$ARX_CONFIG_DIR/config.yaml" 'model: "test-model"'
@@ -94,6 +95,29 @@ check "saves the key" has "$ARX_CONFIG_DIR/credentials" 'TEST_KEY=sk-test'
 check "key file is private" test "$(stat -c %a "$ARX_CONFIG_DIR/credentials" 2>/dev/null ||
   stat -f %Lp "$ARX_CONFIG_DIR/credentials")" = 600
 check "validated the key with the endpoint" has fake/hdr-01.txt 'Bearer sk-test'
+
+"$ARX" setup model --model other-model </dev/null >model.txt 2>&1
+check "setup model --model sets only the model" has "$ARX_CONFIG_DIR/config.yaml" 'model: "other-model"'
+check "and keeps the endpoint" has "$ARX_CONFIG_DIR/config.yaml" 'api_key_env: TEST_KEY'
+check "and drops the old model's prices" lacks "$ARX_CONFIG_DIR/config.yaml" 'prices:'
+"$ARX" setup model </dev/null >model.txt 2>&1
+code=$?
+check "setup model without a terminal asks for --model" has model.txt 'no terminal to ask on; pass --model'
+check "and exits 2" exited 2
+"$ARX" setup --if-needed </dev/null >needed.txt 2>&1
+check "--if-needed once set up prints one line" has needed.txt 'arx is already set up (model other-model)'
+rm "$ARX_CONFIG_DIR/config.yaml" "$ARX_CONFIG_DIR/credentials"
+"$ARX" setup </dev/null >nokey.txt 2>&1
+code=$?
+check "no flags and no key: no key given" has nokey.txt 'arx setup: no key given'
+check "exits 2" exited 2
+check "and writes nothing" test ! -e "$ARX_CONFIG_DIR/config.yaml"
+"$ARX" kit add </dev/null >/dev/null 2>&1
+code=$?
+check "kit add with no REF is a usage error" exited 2
+"$ARX" plugin enable </dev/null >/dev/null 2>&1
+code=$?
+check "plugin enable with no NAME is a usage error" exited 2
 
 begin "arx init"
 defaults

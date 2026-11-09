@@ -166,11 +166,11 @@ ui_multi() {
   return 0
 }
 
-# ui_input TITLE DEFAULT: a line of text.
+# ui_input TITLE DEFAULT [--quiet]: a line of text.
 ui_input() {
   local code
   if [ "$UI_MODE" = menu ]; then
-    "$UI_PICK" input --title "$1" ${2:+--default "$2"}
+    "$UI_PICK" input --title "$1" ${2:+--default "$2"} "${@:3}"
     code=$?
     [ "$code" -eq 3 ] || return "$code"
     UI_MODE=plain
@@ -180,11 +180,11 @@ ui_input() {
   printf '%s\n' "${ui__line:-$2}"
 }
 
-# ui_secret TITLE: a line of text that is never shown.
+# ui_secret TITLE [--quiet]: a line of text that is never shown.
 ui_secret() {
   local code
   if [ "$UI_MODE" = menu ]; then
-    "$UI_PICK" secret --title "$1"
+    "$UI_PICK" secret --title "$1" "${@:2}"
     code=$?
     [ "$code" -eq 3 ] || return "$code"
     UI_MODE=plain
@@ -196,12 +196,12 @@ ui_secret() {
   printf '%s\n' "$ui__line"
 }
 
-# ui_confirm TITLE yes|no: succeeds for yes. Without a terminal it says no;
-# check for --yes first.
+# ui_confirm TITLE yes|no [--quiet]: succeeds for yes. Without a terminal
+# it says no; check for --yes first.
 ui_confirm() {
   local code
   if [ "$UI_MODE" = menu ]; then
-    "$UI_PICK" confirm --title "$1" --default "${2:-no}"
+    "$UI_PICK" confirm --title "$1" --default "${2:-no}" "${@:3}"
     code=$?
     [ "$code" -eq 3 ] || return "$code"
     UI_MODE=plain

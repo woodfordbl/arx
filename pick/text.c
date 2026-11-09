@@ -33,7 +33,8 @@ static void Cut(Buf* t, size_t from, size_t to) {
 // at the start so the cursor stays in view.
 static void DrawText(const Opts* o, const Buf* text, size_t pos, int secret) {
   Buf b = {0}, view = {0};
-  int col = PutTitle(&b, o->title), room = TermCols() - 1 - col;
+  int col = PutTitle(&b, o->title, (TermCols() - 1) / 2);
+  int room = TermCols() - 1 - col;
   size_t at = pos;
   if (secret) {
     for (size_t i = 0; i < text->len; i = NextChar(text, i)) {
@@ -146,7 +147,7 @@ int RunConfirm(const Opts* o) {
   TermRaw(0);
   while (code < 0) {
     Buf b = {0};
-    int col = PutTitle(&b, o->title);
+    int col = PutTitle(&b, o->title, TermCols() - 1 - 6);
     BufFmt(&b, "%s%s%s", g_style.dim, hint, g_style.reset);
     TermDraw(&b, 1, 0, col + 6);
     free(b.s);

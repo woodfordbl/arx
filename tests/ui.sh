@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# ui.sh: tests pick (the menu program in commands/lib) and ui.sh (the shell
-# side) on a pseudo-terminal, driven by tests/pty.py. Run with `make test`.
+# ui.sh: tests pick (the menu program in commands/lib), ui.sh (the shell
+# side) and arx setup's wizard and menu on a pseudo-terminal, driven by
+# tests/pty.py. Run with `make test`.
 # Without python3 the terminal cases are skipped.
 set -u
 . "$(dirname "$0")/lib.sh"
@@ -188,5 +189,129 @@ check "Ctrl-C: Cancelled. Nothing changed." has err.txt 'Cancelled. Nothing chan
 pty --env ARX_UI=plain --err err.txt --stty stty.txt --keys '<wait:Choose><c-c>' -- ./ask.sh
 check "Ctrl-C in plain mode exits 130" exited 130
 check "and leaves the terminal as it was" has stty.txt same
+
+# A models list, as /models returns it.
+models_json() {
+  echo '{"data":[{"id":"test-model","context_window":64000,"pricing":{"input":"0.0000001","output":"0.0000005"}},{"id":"other-model"}]}'
+}
+
+# Replies to calls N... with the models list.
+models_for() { for n in "$@"; do models_json | reply "$n" "200 OK"; done; }
+
+# A fresh config folder with the shell plugin, as after setup.
+fresh_config() {
+  export ARX_CONFIG_DIR=$WS/$1
+  mkdir -p "$ARX_CONFIG_DIR/plugins"
+  ln -s "$ROOT/plugins/shell" "$ARX_CONFIG_DIR/plugins/shell"
+}
+
+# Comments aside, true when config.yaml in folders $1 and $2 match.
+same_config() { diff <(grep -v '^#' "$WS/$1/config.yaml") <(grep -v '^#' "$WS/$2/config.yaml"); }
+
+# Runs arx setup on a pty with arx's folder on PATH, so the PATH step is
+# not asked. Extra pty.py options come first, then -- and setup's.
+setup_pty() { pty --env PATH="$(dirname "$ARX"):$PATH" "$@"; }
+
+# The keys that answer the wizard: Other, the fake URL, a pasted key, the
+# second model, no kit.
+WIZARD='<wait:Provider><end><enter><wait:Base URL><c-u>http://fake.invalid/v1<enter>'
+WIZARD="$WIZARD<wait:API key><sleep:0.2>sk-test<enter><wait:Model><down><enter><wait:Kit><enter>"
+
+begin "arx setup: the wizard"
+rm agent.yaml
+models_for 1 2 3 4
+fresh_config flags
+printf sk-test | "$ARX" setup --provider custom --base-url http://fake.invalid/v1 \
+  --key-env ARX_API_KEY --model other-model --key-stdin --no-test >flags.txt 2>&1
+fresh_config wizard
+setup_pty --keys "$WIZARD" -- "$ARX" setup --no-test
+check "it finishes" exited 0
+check "it says how to go back and quit" has screen.txt 'Esc goes back, Ctrl-C quits'
+check "it writes the same config.yaml as the flags" same_config flags wizard
+check "it saves the pasted key" has "$WS/wizard/credentials" 'ARX_API_KEY=sk-test'
+check "the key never reaches the screen" lacks screen.txt 'sk-test'
+check "it checked the key" has fake/hdr-03.txt 'Bearer sk-test'
+
+begin "arx setup: Ctrl-C and Esc"
+rm agent.yaml
+models_for 1 2 3 4 5 6
+fresh_config cfg
+printf sk-old | "$ARX" setup --provider custom --base-url http://fake.invalid/v1 \
+  --key-env ARX_API_KEY --model other-model --key-stdin --no-test >/dev/null 2>&1
+cp "$ARX_CONFIG_DIR/config.yaml" before.yaml
+cp "$ARX_CONFIG_DIR/credentials" before.cred
+setup_pty --stty stty.txt --keys '<wait:Provider><enter><wait:Base URL><enter><wait:API key><down><enter><wait:API key><sleep:0.2>sk-new<enter><wait:Model><c-c>' \
+  -- "$ARX" setup --wizard --no-test
+check "Ctrl-C at the model step exits 130" exited 130
+check "and says nothing changed" has screen.txt 'Cancelled. Nothing changed.'
+check "config.yaml is as it was" cmp before.yaml "$ARX_CONFIG_DIR/config.yaml"
+check "the saved key is as it was" cmp before.cred "$ARX_CONFIG_DIR/credentials"
+check "the terminal is as it was" has stty.txt same
+setup_pty --keys '<wait:Provider><enter><wait:Base URL><enter><wait:API key><enter><wait:Model><esc><wait:Keep the saved key><c-c>' \
+  -- "$ARX" setup --wizard --no-test
+check "Esc at the model step goes back to the key" exited 130
+
+begin "arx setup: the settings menu"
+rm agent.yaml
+models_for 1 2 3
+fresh_config cfg
+printf sk-old | "$ARX" setup --provider custom --base-url http://fake.invalid/v1 \
+  --key-env ARX_API_KEY --model other-model --key-stdin --no-test >/dev/null 2>&1
+cp "$ARX_CONFIG_DIR/config.yaml" before.yaml
+setup_pty --keys '<wait:Settings><esc>' -- "$ARX" setup
+check "a set-up arx opens the menu" has screen.txt 'Provider and key'
+check "Esc quits it" exited 0
+check "opening it makes no network call" test "$(cat fake/count)" -eq 2
+setup_pty --keys '<wait:Settings><down><enter><wait:Model>test<enter><wait:Settings>q' -- "$ARX" setup
+check "Model, pick another, Quit" exited 0
+check "the model changed" has "$ARX_CONFIG_DIR/config.yaml" 'model: "test-model"'
+check "nothing else did" test "$(diff before.yaml "$ARX_CONFIG_DIR/config.yaml" | grep '^[<>]' |
+  grep -vcE '^[<>] (model|context_window|prices):')" -eq 0
+setup_pty --keys '<wait:Settings><down><down><down><enter><wait:? Plugins><down><enter><wait:? Add plugins><down><space><enter><wait:Add 1?><enter><wait:Added><wait:Settings><esc>' \
+  -- "$ARX" setup
+check "Plugins, Add plugins adds a shipped one" test -L "$ARX_CONFIG_DIR/plugins/clock"
+setup_pty --keys '<wait:Settings><down><down><down><enter><wait:? Plugins><enter><wait:? Plugins on><space><enter><wait:Settings><esc>' \
+  -- "$ARX" setup
+check "Plugins, Turn plugins on or off writes disable:" has "$ARX_CONFIG_DIR/config.yaml" 'disable: [clock]'
+setup_pty --keys '<wait:Settings><down><down><enter><wait:? Kit><down><down><enter><wait:[y/N]>y<enter><wait:Settings><esc>' \
+  -- "$ARX" setup
+check "Kit adds a kit and makes it the default" has "$ARX_CONFIG_DIR/config.yaml" 'kit: explorer'
+mkdir release && echo v9.9.9 >release/latest
+setup_pty --env ARX_UPDATE_DIR="$WS/release" \
+  --keys '<wait:Settings><end><up><up><enter><wait:Install arx>n<wait:Settings><esc>' -- "$ARX" setup
+check "Update checks for a release and asks first" has screen.txt 'Install arx 9.9.9?'
+check "and no changes nothing" exited 0
+"$ARX" setup --if-needed </dev/null >needed.txt 2>&1
+code=$?
+check "--if-needed with a model set says so" has needed.txt 'arx is already set up (model test-model)'
+check "and exits 0" exited 0
+check "in one line" test "$(wc -l <needed.txt)" -eq 1
+
+begin "arx setup: PATH"
+mkdir home
+fresh_config cfg
+pty --env HOME="$WS/home" --env SHELL=/bin/zsh --keys '<wait:PATH><enter>' -- "$ARX" setup path
+check "the PATH step adds a block to ~/.zshrc" has home/.zshrc '# Added by arx setup'
+check "naming arx's folder" has home/.zshrc "export PATH=\"$(dirname "$ARX"):\$PATH\""
+pty --env HOME="$WS/home" --env SHELL=/bin/zsh --keys '<wait:PATH><enter>' -- "$ARX" setup path
+check "a second run adds nothing" test "$(grep -c 'Added by arx setup' home/.zshrc)" -eq 1
+HOME=$WS/home SHELL=/bin/bash "$ARX" setup path --add-to-path </dev/null >path.txt 2>&1
+check "--add-to-path works without a terminal" has home/.bashrc '# Added by arx setup'
+"$ARX" setup path </dev/null >path.txt 2>&1
+code=$?
+check "without a terminal or the flag, it asks for the flag" has path.txt 'pass --add-to-path'
+
+begin "arx setup: no questions"
+rm agent.yaml
+models_for 1 2 3 4
+fresh_config off
+pty --env ARX_UI=off --keys 'sk-test<enter><c-d>' -- "$ARX" setup --provider custom \
+  --base-url http://fake.invalid/v1 --key-env ARX_API_KEY --model test-model --key-stdin --no-test
+check "ARX_UI=off on a terminal asks nothing" lacks screen.txt '? '
+check "and sets up" has "$ARX_CONFIG_DIR/config.yaml" 'model: "test-model"'
+fresh_config ci
+pty --env CI=1 --env AI_GATEWAY_API_KEY=sk-ci -- "$ARX" setup --no-test
+check "CI=1 on a terminal asks nothing" lacks screen.txt '? '
+check "and takes the defaults" has "$ARX_CONFIG_DIR/config.yaml" 'ai-gateway.vercel.sh'
 
 summary

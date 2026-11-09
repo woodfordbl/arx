@@ -145,8 +145,9 @@ void PutFit(Buf* b, const char* s, int width);
 // Like PutFit, then pads with spaces to `width` columns.
 void PutPad(Buf* b, const char* s, int width);
 
-// Appends the title line's start, "? TITLE  ", and returns its width.
-int PutTitle(Buf* b, const char* title);
+// Appends the title line's start, "? TITLE  ", at most `max` columns wide
+// (the title is cut to fit), and returns its width.
+int PutTitle(Buf* b, const char* title, int max);
 
 // Writes the answered line, "✓ TITLE  TEXT", in place of the block.
 void TermDone(const char* title, const char* text);

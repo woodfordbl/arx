@@ -112,7 +112,7 @@ static void Draw(List* l) {
   Buf b = {0};
   if (l->cur < l->top) l->top = l->cur;
   if (l->cur >= l->top + vis) l->top = l->cur - vis + 1;
-  col = PutTitle(&b, l->o->title);
+  col = PutTitle(&b, l->o->title, cols / 2);
   if (l->o->filter && l->filter.len) {
     PutFit(&b, l->filter.s, cols - col);
     col +=

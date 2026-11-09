@@ -151,13 +151,13 @@ void PutPad(Buf* b, const char* s, int width) {
 }
 
 // Appends "? TITLE  "; see pick.h.
-int PutTitle(Buf* b, const char* title) {
+int PutTitle(Buf* b, const char* title, int max) {
   int width = 2;
   BufFmt(b, "%s%s%s ", g_style.accent, g_style.ask, g_style.reset);
   if (*title) {
     BufFmt(b, "%s%s", g_style.accent, g_style.bold);
     size_t start = b->len;
-    PutFit(b, title, (TermCols() - 1) / 2 - width);
+    PutFit(b, title, max - width - 2);
     width += TextWidth(b->s + start, b->len - start) + 2;
     BufFmt(b, "%s  ", g_style.reset);
   }

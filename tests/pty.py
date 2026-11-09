@@ -24,8 +24,8 @@ SPEC is text with <key> tokens: up down left right home end pgup pgdn
 enter esc space tab bs del c-c c-d c-u c-w, <paste:TEXT> (bracketed),
 <sleep:SECS>, <signal:NAME>, and <wait:TEXT>, which waits until TEXT
 shows on the screen after the previous wait. Typing starts once the
-command has drawn something. The exit code is the command's (128 + N for
-signal N).
+command has drawn something, or after a second. The exit code is the
+command's (128 + N for signal N).
 """
 import fcntl
 import os
@@ -134,6 +134,7 @@ def main():
         return bool(ready)
 
     tokens = parse_keys(opts["keys"])
+    first_wait = time.time() + 1.0  # the implicit first wait gives up here
     seen = 0  # where the next <wait:> looks from, in the stripped screen
     next_at = 0.0
     deadline = time.time() + opts["timeout"]
@@ -150,7 +151,8 @@ def main():
             if kind == "wait":
                 text = ESCAPES.sub(b"", bytes(bufs[master])).decode("utf-8",
                                                                    "replace")
-                at = text.find(value, seen) if value else (0 if text else -1)
+                at = text.find(value, seen) if value else (
+                    0 if text or now > first_wait else -1)
                 if at < 0:
                     pump(0.01)
                     continue
