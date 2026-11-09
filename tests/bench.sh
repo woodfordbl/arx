@@ -2,7 +2,8 @@
 # bench.sh: checks the performance budgets from the plan against ./arx and
 # fails if any is exceeded (like fx's CI). Timing uses python3, which is
 # only a dev dependency.
-#   size     binary <= 400 KB on macOS, <= 1 MB on Linux
+#   size     binary <= 400 KB on macOS, <= 1 MB on Linux; commands/lib/pick
+#            (the menu program) <= 64 KB on macOS, <= 256 KB on Linux
 #   startup  median `arx version` within 1 ms of `true` (the OS floor)
 #   memory   peak RSS <= 16 MB over a 500-turn session
 #   reload   a harness edit is live in <= 10 ms (plus the tool's --schema)
@@ -26,6 +27,8 @@ budget() {
 size_kb=$(($(wc -c <"$ARX") / 1024))
 limit_kb=$([ "$(uname)" = Darwin ] && echo 400 || echo 1024)
 budget size "$size_kb" "$limit_kb" KB
+pick_kb=$(($(wc -c <"$ROOT/commands/lib/pick") / 1024))
+budget pick "$pick_kb" "$([ "$(uname)" = Darwin ] && echo 64 || echo 256)" KB
 
 # Startup: median of 60 launches each, measured the same way, as the
 # difference from `true` on the same machine.
