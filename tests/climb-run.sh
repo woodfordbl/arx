@@ -142,6 +142,17 @@ check "writes the summary" test "$(jq -r '"\(.status) \(.stop)"' .arx/climb/t/su
 project "TERM" <<<'budget: {usd: 5}'
 start_slow TERM climb
 check "TERM to climb alone stops the agent too" test "$code $(cat work/value)" = "130 10"
+project "TERM during an evaluation" <<<'budget: {usd: 5}'
+echo slow >work/value && git commit -qam slow
+ARX_BIN=$ROOT/tests/climb-agent "$CLIMB" --name t >out.txt 2>err.txt </dev/null &
+pid=$!
+sleep 1
+start=$SECONDS
+kill -TERM "$pid"
+wait "$pid"
+code=$?
+check "stops the scorer and exits 130 at once" test "$code $((SECONDS - start < 4))" = "130 1"
+check "  with the summary" test "$(jq -r .stop .arx/climb/t/summary.json)" = interrupted
 
 project "resume" <<<'budget: {usd: 5, rounds: 2}'
 round 1 'echo 8 >work/value'

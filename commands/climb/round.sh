@@ -1,20 +1,34 @@
 # round.sh: the round loop of arx climb, its stop conditions, and the
 # status, stop and rm commands. Sourced by arx-climb.
 
-# INT and TERM: stop the agent and the evaluation; the loop then restores
-# the change paths, writes the summary and exits 130. arx gets TERM, not a
-# second INT, which would make it exit at once.
+# INT and TERM, in the shell that waits for the worker: flag them, and stop
+# the agent and the evaluation, whose pids the worker writes to $tmp. The
+# worker then restores the change paths, writes the summary and exits 130.
+# arx gets TERM, not a second INT, which would make it exit at once.
 on_signal() {
-  interrupted=1
-  [ -z "$agent_pid" ] || kill -TERM "$agent_pid" 2>/dev/null
-  [ -z "$eval_pid" ] || kill -TERM -- "-$eval_pid" 2>/dev/null
+  local pid
+  : >"$tmp/interrupted"
+  if { read -r pid <"$tmp/agent.pid"; } 2>/dev/null; then kill -TERM "$pid" 2>/dev/null; fi
+  if { read -r pid <"$tmp/eval.pid"; } 2>/dev/null; then kill -TERM -- "-$pid" 2>/dev/null; fi
 }
 
+# True once INT or TERM has reached arx climb.
+interrupted() { [ -f "$tmp/interrupted" ]; }
+
+# Writes the pid of a child the signal handler may stop, to $tmp/NAME.pid,
+# and stops it at once if a signal came first.
+child_started() {
+  echo "$2" >"$tmp/$1.pid"
+  if interrupted; then
+    if [ "$1" = eval ]; then kill -TERM -- "-$2"; else kill -TERM "$2"; fi 2>/dev/null
+  fi
+}
+
+# The worker's EXIT trap: stops what still runs, and releases the lock.
 cleanup() {
   [ -z "$eval_pid" ] || kill -KILL -- "-$eval_pid" 2>/dev/null
   [ -z "$watch_pid" ] || kill -KILL -- "-$watch_pid" 2>/dev/null
   [ -z "$agent_pid" ] || kill -TERM "$agent_pid" 2>/dev/null
-  [ -z "$tmp" ] || rm -rf "$tmp"
   [ "$locked" -eq 0 ] || rm -rf "$lock"
 }
 
@@ -48,8 +62,9 @@ $msg"); else args+=(--resume "$session" -p "$msg"); fi
   args+=(${c_caps[@]+"${c_caps[@]}"})
   ls .arx/sessions 2>/dev/null | sort >"$tmp/sessions.before"
   last=$(readlink .arx/sessions/last 2>/dev/null)
-  "$arx" "${args[@]}" >"$tmp/result.json" 2>"$tmp/agent.err" </dev/null &
+  (trap - INT TERM; exec "$arx" "${args[@]}") >"$tmp/result.json" 2>"$tmp/agent.err" </dev/null &
   agent_pid=$!
+  child_started agent "$agent_pid"
   while [ -z "$session" ] && [ "$i" -lt 100 ] && kill -0 "$agent_pid" 2>/dev/null; do
     now=$(readlink .arx/sessions/last 2>/dev/null)
     if [ -n "$now" ] && [ "$now" != "$last" ]; then session=$now; note_session; fi
@@ -59,6 +74,7 @@ $msg"); else args+=(--resume "$session" -p "$msg"); fi
   wait_child "$agent_pid"
   code=$?
   agent_pid=""
+  rm -f "$tmp/agent.pid"
   [ ! -s "$tmp/agent.err" ] || cp "$tmp/agent.err" "$dir/logs/$round-agent.log"
 }
 
@@ -103,7 +119,7 @@ at_target() {
 
 # Checks the stop conditions before a round. Returns 1 to stop.
 before_round() {
-  [ "$interrupted" -eq 0 ] || halt 130 interrupted
+  ! interrupted || halt 130 interrupted
   [ ! -f "$dir/stop" ] || halt 0 stopped
   [ "$over" != usd ] || halt 3 cap:usd
   [ "$over" != tokens ] || halt 3 cap:tokens
@@ -130,7 +146,7 @@ after_round() {
   git_fold || { halt 1 error; warn "a git step failed at the end of round $round"; return 1; }
   tamper=$(git_repair_eval) || { halt 1 error; warn "cannot restore eval.files"; return 1; }
   outside=$(git_outside)
-  [ "$interrupted" -eq 0 ] || code=130
+  ! interrupted || code=130
   case "$code" in
     2) sed 's/^/  /' "$tmp/agent.err" >&2
        abort_round "arx exited 2" 2 usage
@@ -151,7 +167,7 @@ after_round() {
   fi
   vs="" runs="[]" secs_list=""
   if [ -z "$target" ]; then status=empty; else evaluate; vs=$cur_b; fi
-  if [ "$interrupted" -eq 1 ]; then
+  if interrupted; then
     abort_round "interrupted" 130 interrupted
     return 1
   fi
@@ -180,7 +196,7 @@ climb() {
   [ "$quiet" -eq 1 ] || echo "climb $name · branch $branch · isolation none" >&2
   isolation_warning
   if ! baseline; then
-    if [ "$interrupted" -eq 1 ]; then halt 130 interrupted; else halt 1 error; fi
+    if interrupted; then halt 130 interrupted; else halt 1 error; fi
     finish
   fi
   reserve=$(jq -nr --arg s "$secs_list" --argjson n "$e_repeats" \

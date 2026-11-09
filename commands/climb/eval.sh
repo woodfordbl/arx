@@ -5,13 +5,18 @@
 # group, which a watcher stops at eval.timeout (macOS has no `timeout`).
 
 # Waits for background child $1 and returns its exit code. A trapped signal
-# interrupts `wait`; the child is still running then, so wait again.
+# interrupts `wait` while the child still runs, so wait again; when the
+# child ended at that moment, a second wait gives its own code.
 wait_child() {
-  local rc
+  local rc again
   while :; do
     wait "$1"
     rc=$?
-    if [ "$rc" -gt 128 ] && kill -0 "$1" 2>/dev/null; then continue; fi
+    [ "$rc" -gt 128 ] || return "$rc"
+    ! kill -0 "$1" 2>/dev/null || continue
+    wait "$1" 2>/dev/null
+    again=$?
+    [ "$again" -eq 127 ] || rc=$again
     return "$rc"
   done
 }
@@ -41,6 +46,7 @@ eval_run() {
   t0=$(jq -n now)
   set -m
   (
+    trap - INT TERM
     cd "$ex" || exit 1
     for v in $(env | sed -n 's/^\(ARX_SESSION[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
     export ARX_CLIMB_RUN=$name ARX_CLIMB_ROUND=$3 ARX_CLIMB_KIND=$2 \
@@ -48,6 +54,7 @@ eval_run() {
     exec sh -c "$5"
   ) >"$tmp/out" 2>"$tmp/err" </dev/null &
   eval_pid=$!
+  child_started eval "$eval_pid"
   (sleep "$e_timeout"; : >"$tmp/timed_out"; kill -TERM -- "-$eval_pid"
    sleep 5; kill -KILL -- "-$eval_pid") >/dev/null 2>&1 &
   watch_pid=$!
@@ -58,6 +65,7 @@ eval_run() {
   kill -KILL -- "-$eval_pid" "-$watch_pid" 2>/dev/null
   wait "$watch_pid" 2>/dev/null
   eval_pid="" watch_pid=""
+  rm -f "$tmp/eval.pid"
   { cat "$tmp/out"; [ -s "$tmp/err" ] && printf -- '--- stderr\n' && cat "$tmp/err"; } |
     tail -c 1048576 >"$log"
   rm -rf "$ex"
@@ -68,7 +76,7 @@ eval_run() {
     (try ($s | tonumber | select(isinfinite or isnan | not)) catch empty)')
   run_secs=${out%%$'\n'*}
   case "$out" in *$'\n'*) run_score=${out#*$'\n'} ;; esac
-  if [ "$interrupted" -eq 1 ]; then run_why="interrupted"
+  if interrupted; then run_why="interrupted"
   elif [ -f "$tmp/timed_out" ]; then
     run_why="it ran past eval.timeout ($(jq -nr --argjson t "$e_timeout" "$climb_jq"'$t | dur'))"
   elif [ "$rc" -ne 0 ]; then run_why="exit $rc"
@@ -157,7 +165,7 @@ baseline() {
   [ "$n" -ge 3 ] || n=3
   runs="[]" next_k=1 secs_list=""
   if ! more_runs "$best" baseline "$n"; then
-    [ "$interrupted" -eq 0 ] || return 1
+    ! interrupted || return 1
     warn "the baseline crashed: $run_why. Fix eval.command first; its output is in $dir/logs/."
     tail -n "$e_show" "$run_log" 2>/dev/null | sed 's/^/  /' >&2
     record crash "$runs" "$run_why" "" "" false "" "" "" "$secs_list"

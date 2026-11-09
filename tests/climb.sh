@@ -182,6 +182,7 @@ check "a dry run exits 0" exited 0
 check "scores the baseline" test "$(jl '.[0].status')" = baseline
 check "starts no round" test ! -e fake/argv-01
 check "and leaves no branch" test -z "$(git branch --list 'climb/*')"
+check "  nor names one" test "$(jq -r .branch .arx/climb/t/summary.json)" = null
 noisy 10 11 10
 climb --dry-run --name t2
 check "a noisy scorer gets a warning" has err.txt 'the score varies by 1.0000 between runs of the same commit; set eval.repeats, eval.confirm or eval.min_delta'

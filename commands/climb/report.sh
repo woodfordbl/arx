@@ -148,7 +148,8 @@ write_summary() {
     --arg run "$name" --arg status "$1" --arg stop "${2:-}" \
     --argjson exit "${3:-null}" --argjson best "$(jq -nc --argjson B "$B" "$climb_jq"'$B | median')" \
     --arg best_commit "${best:0:7}" --argjson best_round "$best_round" \
-    --arg branch "$branch" --arg session "$session" --argjson secs "$secs" '
+    --arg branch "$([ "$dry" -eq 1 ] || echo "$branch")" --arg session "$session" \
+    --argjson secs "$secs" '
     def count($s): map(select(.status == $s)) | length;
     ($r | map(select(.status as $s
       | ["keep", "revert", "crash", "empty", "abort"] | any(. == $s)))) as $rounds
@@ -160,7 +161,8 @@ write_summary() {
        $best, $best_commit, $best_round,
        holdout: {baseline: ([$h[] | select(.for == "baseline")][0].score),
                  best: ([$h[] | select(.commit == $best_commit)] | last | .score)},
-       $branch, session: (if $session == "" then null else $session end),
+       branch: (if $branch == "" then null else $branch end),
+       session: (if $session == "" then null else $session end),
        cost: ([$rounds[].agent.cost // 0] | add // 0),
        tokens: ([$rounds[].agent.tokens // 0] | add // 0),
        $secs, isolation: "none"}' >"$dir/summary.json.new" &&
@@ -177,7 +179,7 @@ print_status() {
     "  best \(.best | num) (round \(.best_round), commit \(.best_commit)), baseline \(.baseline | num)",
     (select(.holdout.baseline != null)
      | "  holdout: baseline \(.holdout.baseline | num), best \(.holdout.best | num)"),
-    "  spent \(.cost | money), \(.tokens) tokens, \(.secs | dur); branch \(.branch), session \(.session // "-"), isolation \(.isolation)"' \
+    "  spent \(.cost | money), \(.tokens) tokens, \(.secs | dur); branch \(.branch // "-"), session \(.session // "-"), isolation \(.isolation)"' \
     "$d/summary.json"
   echo
   tail -n 6 "$d/results.tsv" | awk -F'\t' '{ printf "  %-6s %-9s %-10s %-10s %-10s %-8s %s\n", $1, $2, $3, $4, $5, $6, $9 }'

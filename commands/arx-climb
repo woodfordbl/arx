@@ -282,16 +282,25 @@ main() {
   config=climb.yaml name="" resume="" new_session=0 json=0 quiet=0 dry=0 nonbudget=0
   ov_prog="." ov_args=(--arg _ _) ov_n=0
   parse_args "$@"
-  interrupted=0 agent_pid="" eval_pid="" watch_pid="" locked=0 tmp=""
+  agent_pid="" eval_pid="" watch_pid="" locked=0
   lock=$PWD/.arx/climb/lock session="" round=0 started=0 no_keep=0 errors=0
   spent_usd=0 spent_tokens=0 s_turns=0 s_cost=0 s_tokens=0 secs_before=0
   best_round=0 B="[]" vs="" agent_json="" note="" msg="" over="" reserve=0 round_base=0
   stop_code="" stop_reason="" start_epoch=$(date +%s)
-  trap on_signal INT TERM
-  trap cleanup EXIT
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/arx-climb.XXXXXX") || die 1 "cannot make a temp folder"
-  if [ -n "$resume" ]; then setup_resume; else setup_start; fi
-  climb
+  # The climb runs in a worker that ignores INT and TERM; this shell only
+  # waits, and answers a signal with a flag file the worker checks. A trap
+  # that fires while bash is busy can break it (bash 5.2 can fail inside a
+  # $(...)), so the worker never takes one.
+  trap 'rm -rf "$tmp"' EXIT
+  trap on_signal INT TERM
+  (
+    trap '' INT TERM
+    trap cleanup EXIT
+    if [ -n "$resume" ]; then setup_resume; else setup_start; fi
+    climb
+  ) &
+  wait_child $!
 }
 
 main "$@"
