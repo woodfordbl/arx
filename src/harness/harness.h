@@ -15,6 +15,7 @@
 //   tool_exec.c  runs one tool call; subagents run arx again
 //   keys.c       the keys of a tool call, which say what may run together
 //   hooks.c      runs hooks/<point>, by band and then in layer order
+//   chain.c      the hook chain over one raw object around model and tools
 //   compact.c    keeps the conversation inside the context window
 
 #ifndef SRC_HARNESS_HARNESS_H_
@@ -336,39 +337,26 @@ int KeysConflict(cJSON* a, cJSON* b);
 // ---- hooks.c ----
 
 // Runs hooks/<point> for session_start or stop in every layer that has one,
-// by band and then in layer order, with `input` (consumed) plus point,
-// session and turn on stdin. Sets `*output` to the combined JSON or NULL:
+// by band, then in layer order, with `input` (consumed) plus point, session
+// and turn on stdin. Sets `*output` to the combined JSON or NULL:
 // session_start joins every {"context"}; stop takes the first {"decision":
 // "continue" | "restart", "message"}. Returns 0 when there is no hook, 1
-// when hooks ran. A failed hook (non-zero exit, timeout, output that is not
-// a JSON object) is reported and ignored, unless it is `fail: closed`: then
-// HookRun stops and returns -1.
+// when hooks ran. A failed hook (non-zero exit, timeout, stdout that is not
+// a JSON object) is ignored, unless `fail: closed`: then it returns -1.
 int HookRun(struct Agent* a, const char* point, cJSON* input, cJSON** output);
-
-// Runs hooks/<point> for a raw-object point as a chain: the `policy` band
-// first, then `normal`, then `final`, each in layer order. Each hook gets
-// `object` (kept by the caller) plus point, session and turn, and prints the
-// fields it changes; they replace the fields of `object` before the next:
-//   before_model  {messages, tools, model, settings, reason}
-//                 prints any of messages, tools, model, settings
-//   after_model   {reply, usage, finish}; prints reply
-//   before_tool   {id, name, args}; prints name or args, or result to skip
-//                 the tool, which ends the chain. {"decision": "deny",
-//                 "reason"} becomes the result "denied: <reason>" and adds
-//                 "is_error": true to `object`.
-//   after_tool    {call, result, is_error}; prints result. {"note"} is
-//                 appended to the result.
-// A `result` that a policy hook sets is final: later hooks cannot change it,
-// and their events say "ignored". Plugin hooks get their settings as
-// ARX_PLUGIN_SETTINGS (JSON). A field of the wrong type is a failure. Each
-// hook event lists the changed fields under "changed", and they are added
-// to `changed` (an array; may be NULL). Returns 0 when there is no hook, 1
-// when hooks ran, and -1 when a `fail: closed` hook failed (the chain stops).
-int HookChain(struct Agent* a, const char* point, cJSON* object,
-              cJSON* changed);
 
 // True when any layer has an executable hooks/<point>.
 int HookExists(struct Agent* a, const char* point);
+
+// The path of `layer`'s runnable hooks/<point> (malloc'd), or NULL.
+char* HookPath(const Layer* layer, const char* point);
+
+// Runs `layer`'s hook at `path` with `text` on stdin. Sets `*output` to the
+// JSON object it printed, or NULL, and `*event` to its hook event, not yet
+// sent. Returns 1 when it ran and -1 when it failed.
+int HookRunOne(struct Agent* a, const Layer* layer, const char* point,
+               const char* path, const char* text, cJSON** output,
+               cJSON** event);
 
 // The options of `layer`'s hook at `point`: a plugin's come from its
 // plugin.yaml, the others from the spec's hooks.<point>. May be NULL.
@@ -377,6 +365,18 @@ cJSON* HookOptions(const Spec* spec, const Layer* layer, const char* point);
 // The band of `layer`'s hook at `point`: 0 policy, 1 normal (the
 // default), 2 final.
 int HookBand(const Spec* spec, const Layer* layer, const char* point);
+
+// ---- chain.c ----
+
+// Runs hooks/<point> for a raw-object point (before_model, after_model,
+// before_tool, after_tool) as a chain, by band, then in layer order: each
+// hook gets `object` (kept by the caller), and the fields it prints replace
+// those of `object` (chain.c lists them). A before_tool `result` ends the
+// chain. Changed fields are added to `changed` (an array; may be NULL).
+// Returns 0 when no hook ran, 1 when hooks ran, and -1 when a
+// `fail: closed` hook failed (the chain stops).
+int HookChain(struct Agent* a, const char* point, cJSON* object,
+              cJSON* changed);
 
 // ---- compact.c ----
 

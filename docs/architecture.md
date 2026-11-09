@@ -88,7 +88,8 @@ Every source file, by folder:
 | | `tools.c` | finds tools and caches their `--schema` |
 | | `keys.c` | the keys of a tool call |
 | | `tool_exec.c` | runs one tool call; subagents run arx again |
-| | `hooks.c` | runs `hooks/<point>` |
+| | `hooks.c` | runs `hooks/<point>`: one hook, its options and band, and the `session_start` and `stop` points |
+| | `chain.c` | the hook chain over one raw object, around the model and tool calls |
 | | `compact.c` | the compaction strategies |
 | `model/` | `llm.c` | builds the request, sends it with `HttpRun`, classifies errors, retries |
 | | `auth.c` | finds the API key (environment, Keychain or credentials file) and builds the request headers |
