@@ -273,7 +273,7 @@ check "Plugins, Add plugins adds a shipped one" test -L "$ARX_CONFIG_DIR/plugins
 setup_pty --keys '<wait:Settings><down><down><down><enter><wait:? Plugins><enter><wait:? Plugins on><space><enter><wait:Settings><esc>' \
   -- "$ARX" setup
 check "Plugins, Turn plugins on or off writes disable:" has "$ARX_CONFIG_DIR/config.yaml" 'disable: [clock]'
-setup_pty --keys '<wait:Settings><down><down><enter><wait:? Kit><down><down><enter><wait:[y/N]>y<enter><wait:Settings><esc>' \
+setup_pty --keys '<wait:Settings><down><down><enter><wait:? Kit><down><down><down><enter><wait:[y/N]>y<enter><wait:Settings><esc>' \
   -- "$ARX" setup
 check "Kit adds a kit and makes it the default" has "$ARX_CONFIG_DIR/config.yaml" 'kit: explorer'
 mkdir release && echo v9.9.9 >release/latest
