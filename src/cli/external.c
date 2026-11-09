@@ -9,7 +9,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 #include <unistd.h>
 
 #include "src/agent/agent.h"
@@ -54,14 +53,28 @@ static char** SearchDirs(void) {
   return dirs;
 }
 
-// Sets ARX_PLUGIN_DIR when the command in `dir` belongs to a user plugin
-// (~/.config/arx/plugins/<name>/commands).
-static void SetPluginDir(const char* dir) {
+// Sets ARX_PLUGIN_DIR and ARX_DATA_DIR when the command in `dir` belongs to
+// a user plugin (~/.config/arx/plugins/<name>/commands), and clears any
+// plugin variables it inherited. A command runs outside a session, so it
+// gets no ARX_STATE_DIR. The folder is not resolved, so its basename is the
+// plugin's name.
+static void SetPluginEnv(const char* dir) {
+  const char* inherited[] = {"ARX_PLUGIN_DIR", "ARX_PLUGIN_SETTINGS",
+                             "ARX_STATE_DIR", "ARX_DATA_DIR"};
+  for (int i = 0; i < 4; i++) unsetenv(inherited[i]);
   char* plugin = DirName(dir);
   char* parent = DirName(plugin);
   char* config = ConfigDir();
   char* plugins = XAsprintf("%s/plugins", config);
-  if (!strcmp(parent, plugins)) setenv("ARX_PLUGIN_DIR", plugin, 1);
+  char cwd[4096];
+  if (!strcmp(parent, plugins)) {
+    setenv("ARX_PLUGIN_DIR", plugin, 1);
+    char* data =
+        XAsprintf("%s/.arx/data/%s", getcwd(cwd, sizeof(cwd)) ? cwd : ".",
+                  plugin + strlen(parent) + 1);
+    setenv("ARX_DATA_DIR", data, 1);
+    free(data);
+  }
   free(plugins);
   free(config);
   free(parent);
@@ -74,19 +87,13 @@ static void FreeDirs(char** dirs) {
   free(dirs);
 }
 
-// True when `path` is an executable regular file.
-static int IsCommand(const char* path) {
-  struct stat st;
-  return stat(path, &st) == 0 && S_ISREG(st.st_mode) && !access(path, X_OK);
-}
-
 // Finds arx-<name>; see cli.h.
 char* FindCommand(const char* name) {
   char** dirs = SearchDirs();
   char* found = NULL;
   for (char** d = dirs; *d && !found; d++) {
     char* path = XAsprintf("%s/arx-%s", *d, name);
-    if (IsCommand(path))
+    if (IsRunnable(path))
       found = path;
     else
       free(path);
@@ -120,12 +127,12 @@ int RunExternal(const char* name, int argc, char** argv) {
   setenv("ARX_LIBEXEC", dir, 1);
   char* lib = LibDir();  // so plugin commands can source $ARX_LIB/ui.sh
   setenv("ARX_LIB", lib, 1);
-  SetPluginDir(dir);
+  SetPluginEnv(dir);
   char** args = XMalloc((size_t)argc * sizeof(*args));
   args[0] = path;
   for (int i = 2; i < argc; i++) args[i - 1] = argv[i];
   args[argc - 1] = NULL;
-  execv(path, args);
+  ProcExec(args, 0);
   fprintf(stderr, "arx: cannot run %s: %s\n", path, strerror(errno));
   free(args);
   free(lib);
@@ -170,7 +177,7 @@ static int ListExternal(char** names) {
       for (int i = 0; i < n && !seen; i++)
         seen = !strcmp(names[i], e->d_name + 4);
       char* path = XAsprintf("%s/%s", *d, e->d_name);
-      if (!seen && IsCommand(path)) names[n++] = XStrdup(e->d_name + 4);
+      if (!seen && IsRunnable(path)) names[n++] = XStrdup(e->d_name + 4);
       free(path);
     }
     if (dir) closedir(dir);

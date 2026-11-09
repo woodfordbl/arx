@@ -1,8 +1,10 @@
 /arx
 /arx-debug
+/arx.wasm
 /arx-linux-*
 /build/
 *.dSYM/
 .arx/
 .claude/
+*.o
 /commands/lib/pick

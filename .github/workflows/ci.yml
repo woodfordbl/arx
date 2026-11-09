@@ -2,6 +2,8 @@
 #   lint  Google style (clang-format 23, cpplint), 400-line files, doc comments
 #   test  a static Linux build (Alpine, musl), all tests, then the
 #         performance budgets: size, startup, memory and reload time
+#   wasm  the browser build (make wasm) with pinned zig and binaryen: no
+#         warnings, only host-interface and WASI imports, and its size
 # Releases also test and benchmark on macOS (see release.yml).
 name: ci
 
@@ -36,3 +38,24 @@ jobs:
             ARX=./arx tests/climb.sh && ARX=./arx tests/climb-run.sh &&
             ARX=./arx tests/ui.sh &&
             tests/bench.sh'
+
+  wasm:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned zig and binaryen
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/zig.tar.xz" \
+            https://ziglang.org/download/0.17.1/zig-x86_64-linux-0.17.1.tar.xz
+          echo "3581863e3cbcfd0fce0efc682ce7e9e93da96668a977791d356a26d2a7e9b17a  $RUNNER_TEMP/zig.tar.xz" |
+            sha256sum -c -
+          tar -xf "$RUNNER_TEMP/zig.tar.xz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/zig-x86_64-linux-0.17.1" >>"$GITHUB_PATH"
+          npm install -g binaryen@132.0.0
+      - name: Build arx.wasm and check its imports
+        run: make wasm VERSION=ci
+      - name: Check its size (budget 300 KB raw)
+        run: |
+          size=$(wc -c <arx.wasm)
+          echo "arx.wasm: $size bytes, $(gzip -9 -c arx.wasm | wc -c) gzipped"
+          [ "$size" -le 307200 ]

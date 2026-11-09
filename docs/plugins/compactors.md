@@ -66,8 +66,10 @@ empty, and every message must have a `role`.
 - **No change**: to say "nothing to compact", print the messages unchanged.
 - **Failure**: a non-zero exit, a run longer than 120 seconds, or output that
   is not valid makes arx use `mask` instead and tell the agent why.
-- **Environment**: the [`ARX_*` variables](reference.md#environment), but not
-  `ARX_PLUGIN_DIR`. The working directory is the folder `arx` runs in.
+- **Environment**: the [`ARX_*` variables](reference.md#environment). A
+  plugin's compactor also gets `ARX_PLUGIN_DIR` and its
+  [state folders](concepts.md#plugin-state), `ARX_STATE_DIR` and
+  `ARX_DATA_DIR`. The working directory is the folder `arx` runs in.
 
 After a compaction, arx writes a `{"_reset":true}` line and then the new
 history to `transcript.jsonl`, and sends a `compact` event.
@@ -119,7 +121,7 @@ Each `compact` event names the `strategy` and gives `tokens_before` and
 | The cut separates a `tool` message from the assistant message that called it | the provider rejects the next request | cut only in front of an assistant message |
 | The compactor drops message 0 | the agent loses its system prompt | keep the first message |
 | The compactor writes to stderr | arx reads stderr with stdout, so the JSON is not valid, and arx uses `mask` | write nothing to stderr |
-| The compactor reads `$ARX_PLUGIN_DIR` | it is not set for compactors | find your files from the script's own path, such as `os.path.dirname(__file__)` |
+| A compactor in the spec folder reads `$ARX_PLUGIN_DIR` | only a plugin's compactor gets it | use `$ARX_SPEC_DIR`, or the script's own path, such as `os.path.dirname(__file__)` |
 | The compactor removes `_out` fields | the agent loses the paths of full tool outputs | copy messages as they are, and change only what you must |
 | `compaction.strategy` names a compactor from a plugin that is off | the spec is not valid: `not a built-in strategy, and ... is not executable` | turn the plugin on, or use a path |
 

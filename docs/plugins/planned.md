@@ -20,7 +20,6 @@ are not built:
 |---|---|---|
 | Trust | a policy folder that the spec cannot remove, and a `harness_edit` hook point | [Trust](#trust) |
 | Sandboxes | a `sandbox:` value that sandbox plugins read | [Sandboxes](#sandboxes) |
-| Plugin state | `ARX_STATE_DIR` and `ARX_DATA_DIR` | [Plugin state](#plugin-state) |
 | Calls that do not block | a result now, the real result later | [Calls that do not block](#calls-that-do-not-block) |
 | Long-lived and concurrent hooks | hooks that keep state, and `before_tool` hooks that run at the same time | [Long-lived and concurrent hooks](#long-lived-and-concurrent-hooks) |
 | Front-ends | an ACP server and a terminal UI | [Front-ends](#front-ends) |
@@ -50,15 +49,6 @@ in a layer above the `shell` plugin, with `replaces: [bash, edit]`. The rule
 "the first tool with a name wins" would do the rest.
 
 Only a sandbox that cannot reach the harness files would make a policy safe.
-
-## Plugin state
-
-Two folders would hold a plugin's own files:
-
-| Variable | Folder | For |
-|---|---|---|
-| `ARX_STATE_DIR` | `$ARX_SESSION_DIR/plugins/<name>/` | state for one session, such as a plan or a scheduler's counters |
-| `ARX_DATA_DIR` | `.arx/state/<name>/` | data across sessions, such as a search index |
 
 ## Calls that do not block
 

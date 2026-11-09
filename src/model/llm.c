@@ -1,12 +1,11 @@
-// llm.c: builds the request, runs curl, classifies the outcome and retries.
-// Credentials and request headers come from auth.c.
+// llm.c: builds the request, sends it with HttpRun (curl natively),
+// classifies the outcome and retries. Credentials and request headers come
+// from auth.c.
 
-#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
-#include <unistd.h>
 
 #include "src/agent/agent.h"
 #include "src/base/base.h"
@@ -57,50 +56,32 @@ static char* RequestBody(const char* model, cJSON* settings, cJSON* messages,
   return text;
 }
 
-// One request: runs curl and parses the streamed reply into `s`.
+// One request: sends it and parses the streamed reply into `s`.
 static void Attempt(struct Agent* a, const char* body, double timeout,
-                    Stream* s, ProcResult* r, Buffer* curl_err, int* status,
-                    double* retry_after) {
+                    Stream* s, HttpResult* r) {
   cJSON* root = a->spec.root;
   char* url = EndpointUrl(root, "/chat/completions");
-  char* headers = WriteRequestHeaders(root, a->session.dir, 1);
-  char* header_arg = XAsprintf("@%s", headers);
-  char* response = XAsprintf("%s/.response-headers", a->session.dir);
-  char max_time[32];
-  snprintf(max_time, sizeof(max_time), "%.0f", timeout);
+  Buffer headers = {0};
+  RequestHeaders(root, 1, &headers);
   // An adapter runs the curl command line it is given, translating the
   // request on the way in and the reply on the way out.
   char* adapter = EndpointProgram(root, a->spec.dir, "adapter");
-  char* argv[16];
-  int k = 0;
-  if (adapter) argv[k++] = adapter;
-  argv[k++] = (char*)CurlPath(root);
-  const char* const args[] = {
-      "-sS", "-N",       "--max-time",    max_time, "-D", response,
-      "-H",  header_arg, "--data-binary", "@-",     url};
-  for (size_t i = 0; i < sizeof(args) / sizeof(args[0]); i++) {
-    argv[k++] = (char*)args[i];
-  }
-  argv[k] = NULL;
-  Proc p = {.argv = argv,
-            .in = body,
-            .in_len = strlen(body),
-            .timeout = timeout + 30,
-            .on_out = StreamFeed,
-            .out_ctx = s,
-            .on_err = BufferSink,
-            .err_ctx = curl_err};
-  unlink(response);
-  ProcRun(&p, r);
+  HttpRequest req = {.url = url,
+                     .headers = headers.data,
+                     .body = body,
+                     .body_len = strlen(body),
+                     .timeout = timeout,
+                     .stream = 1,
+                     .adapter = adapter,
+                     .curl = JsonStr(root, "endpoint.curl", NULL),
+                     .tmp_dir = a->session.dir,
+                     .on_body = StreamFeed,
+                     .body_ctx = s};
+  HttpRun(&req, r);
   StreamFinish(s);
-  ReadResponseHeaders(response, status, retry_after);
-  unlink(headers);
-  unlink(response);
+  BufferFree(&headers);
   free(adapter);
   free(url);
-  free(headers);
-  free(header_arg);
-  free(response);
 }
 
 // curl exit codes worth retrying: DNS, connect, timeouts, dropped
@@ -120,17 +101,17 @@ static int LooksLikeContext(const char* message) {
 }
 
 // Decides what to do with an attempt; writes the reason to `why`.
-static Outcome Classify(const ProcResult* r, const Stream* s, int status,
-                        const Buffer* curl_err, Buffer* why) {
+static Outcome Classify(const HttpResult* r, const Stream* s, Buffer* why) {
+  const char* err = r->err.data ? r->err.data : "";
+  int status = r->status;
   if (r->interrupted) return kOutcomeInterrupted;
   if (r->spawn_failed) {
-    BufferPrintf(why, "cannot run curl: %s", strerror(errno));
+    BufferPrintf(why, "cannot run curl: %s", err);
     return kOutcomeFatal;
   }
-  if (r->code) {
-    BufferPrintf(why, "curl exit %d: %s", r->code,
-                 curl_err->data ? curl_err->data : "");
-    return RetryableCurl(r->code) ? kOutcomeRetry : kOutcomeFatal;
+  if (r->net_error) {
+    BufferPrintf(why, "curl exit %d: %s", r->net_error, err);
+    return RetryableCurl(r->net_error) ? kOutcomeRetry : kOutcomeFatal;
   }
   if (status == 200 || (status == 0 && s->chunks)) {
     if (s->error) {
@@ -176,12 +157,12 @@ static double RetryWait(cJSON* root, int attempt, double retry_after) {
 }
 
 // Emits model.retry and waits.
-static void AnnounceRetry(int attempt, int status, const ProcResult* r,
-                          double wait, const char* why) {
+static void AnnounceRetry(int attempt, const HttpResult* r, double wait,
+                          const char* why) {
   cJSON* e = EventNew("model.retry");
   cJSON_AddNumberToObject(e, "attempt", attempt);
-  cJSON_AddNumberToObject(e, "status", status);
-  cJSON_AddNumberToObject(e, "curl_exit", r->code);
+  cJSON_AddNumberToObject(e, "status", r->status);
+  cJSON_AddNumberToObject(e, "curl_exit", r->net_error);
   cJSON_AddNumberToObject(e, "wait_s", wait);
   JsonAddTruncated(e, "error", why, 300);
   EventSend(e);
@@ -231,16 +212,15 @@ LlmStatus LlmChatWith(struct Agent* a, const char* model, cJSON* settings,
   int rejected = 0;
   for (int attempt = 1;; attempt++) {
     Stream s = {.show = show};
-    ProcResult r = {0};
-    Buffer curl_err = {0}, why = {0};
-    int status = 0, at_once = 0;
-    double retry_after = -1;
+    HttpResult r = {.retry_after = -1};
+    Buffer why = {0};
+    int at_once = 0;
     CredentialStatus c =
         CredentialEnsure(root, a->spec.dir, rejected == 1, &why);
     if (rejected == 1 && c == kCredentialOk) rejected = 2;
     if (c == kCredentialOk) {
-      Attempt(a, body, timeout, &s, &r, &curl_err, &status, &retry_after);
-      o = Classify(&r, &s, status, &curl_err, &why);
+      Attempt(a, body, timeout, &s, &r);
+      o = Classify(&r, &s, &why);
     } else {
       o = c == kCredentialRetry ? kOutcomeRetry : kOutcomeAuth;
     }
@@ -264,14 +244,14 @@ LlmStatus LlmChatWith(struct Agent* a, const char* model, cJSON* settings,
       BufferPrintf(err, "gave up after %d attempts: %s", attempt, why.data);
       o = kOutcomeFatal;
     } else if (o == kOutcomeRetry) {
-      double wait = at_once ? 0 : RetryWait(root, attempt, retry_after);
-      AnnounceRetry(attempt, status, &r, wait, why.data);
+      double wait = at_once ? 0 : RetryWait(root, attempt, r.retry_after);
+      AnnounceRetry(attempt, &r, wait, why.data);
       if (g_interrupted) o = kOutcomeInterrupted;
     } else {
       BufferAppendStr(err, why.data ? why.data : "");
     }
     StreamFree(&s);
-    BufferFree(&curl_err);
+    BufferFree(&r.err);
     BufferFree(&why);
     if (o != kOutcomeRetry) break;
   }

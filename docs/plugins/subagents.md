@@ -41,7 +41,9 @@ tools:
   starts with `[the subagent failed with exit N]` and includes its error
   output.
 - **Session**: the subagent gets its own session folder. Its events also go
-  into the parent's event stream, with `depth` one higher.
+  into the parent's event stream, with `depth` one higher. Its plugins get
+  their own `ARX_STATE_DIR` in that folder, and share `ARX_DATA_DIR` with
+  the parent (see [Plugin state](concepts.md#plugin-state)).
 
 ### Its harness
 

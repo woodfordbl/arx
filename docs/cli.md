@@ -43,7 +43,7 @@ arx check | tools | schema | tool | request PATH | watch | ctl | version | help
 | `--kit NAME` | Uses an installed kit: its plugins, in order, and its prompt. The agent cannot change it. |
 | `--set KEY=VALUE` | Overrides a spec value for this run, such as `limits.max_turns=10`. Repeatable. See [Overrides](spec.md#overrides). |
 | `--cap KEY=VALUE` | Sets a hard limit the spec cannot raise. Repeatable. See [Caps](#caps). |
-| `--resume ID\|last` | Continues a session with its full history. |
+| `--resume ID\|last` | Continues a session with its full history and its plugins' state. |
 | `--json` | Prints the result as JSON on stdout. See [JSON result](#json-result). |
 | `--events PATH\|-\|fd:N` | Also writes the event stream to a file, stdout or a file descriptor. |
 | `-q`, `--quiet` | Turns off the terminal view. |

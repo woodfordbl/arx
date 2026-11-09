@@ -37,7 +37,9 @@ A plugin's observers are added to the spec's list. They do not replace it.
 - **End**: the observer gets end of file when the session ends. arx waits up
   to one second for it to exit.
 - **Environment**: the [`ARX_*` variables](reference.md#environment). An
-  observer from a plugin also gets `ARX_PLUGIN_DIR`.
+  observer from a plugin also gets `ARX_PLUGIN_DIR`, and its
+  [state folders](concepts.md#plugin-state) `ARX_STATE_DIR` and
+  `ARX_DATA_DIR`.
 
 > [!NOTE]
 > Observers start once, when the session starts. A reload does not restart

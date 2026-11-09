@@ -281,6 +281,9 @@ cmd_remove() {
   fi
   file=$(scope_file 2>/dev/null) && "$arx" config remove enable "$name" --file "$file"
   echo "Removed $name."
+  if [ -d ".arx/data/$name" ]; then
+    echo "Kept its data in .arx/data/$name/ in this folder (delete it with rm -rf)."
+  fi
 }
 
 # describe, without stopping when the plugin is broken.
