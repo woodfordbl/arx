@@ -112,23 +112,38 @@ static void StdoutSink(void* ctx, const char* data, size_t n) {
   fwrite(data, 1, n, stdout);
 }
 
-// One authenticated call to the endpoint; prints the body.
-static int Request(cJSON* root, const char* method, char* body,
+// Runs the credential program, if the spec names one, before a request.
+// Returns 0, or kExitAuth after printing why it failed.
+static int Credential(const Spec* spec) {
+  Buffer err = {0};
+  CredentialStatus c = CredentialEnsure(spec->root, spec->dir, 0, &err);
+  if (c != kCredentialOk) fprintf(stderr, "arx: %s\n", err.data);
+  BufferFree(&err);
+  return c == kCredentialOk ? 0 : kExitAuth;
+}
+
+// One authenticated call to the endpoint, through its adapter if it has
+// one; prints the body.
+static int Request(const Spec* spec, const char* method, char* body,
                    const char* path) {
+  cJSON* root = spec->root;
+  int code = Credential(spec);
+  if (code) return code;
   const char* tmp = getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp";
   char* headers = WriteRequestHeaders(root, tmp, 0);
   char* header_arg = XAsprintf("@%s", headers);
   char* response = XAsprintf("%s/.arx-response-%d", tmp, (int)getpid());
   char* url = EndpointUrl(root, path);
-  char* argv[16] = {(char*)CurlPath(root),
-                    "-sS",
-                    "--max-time",
-                    "60",
-                    "-D",
-                    response,
-                    "-H",
-                    header_arg};
-  int k = 8;
+  char* adapter = EndpointProgram(root, spec->dir, "adapter");
+  char* argv[16];
+  int k = 0;
+  if (adapter) argv[k++] = adapter;
+  argv[k++] = (char*)CurlPath(root);
+  const char* const args[] = {"-sS",    "--max-time", "60",      "-D",
+                              response, "-H",         header_arg};
+  for (size_t i = 0; i < sizeof(args) / sizeof(args[0]); i++) {
+    argv[k++] = (char*)args[i];
+  }
   if (method) {
     argv[k++] = "-X";
     argv[k++] = (char*)method;
@@ -138,6 +153,7 @@ static int Request(cJSON* root, const char* method, char* body,
     argv[k++] = "4597";
   }
   argv[k++] = url;
+  argv[k] = NULL;
   Proc p = {.argv = argv,
             .in = body,
             .in_len = body ? strlen(body) : 0,
@@ -151,6 +167,7 @@ static int Request(cJSON* root, const char* method, char* body,
   ReadResponseHeaders(response, &status, &retry_after);
   unlink(headers);
   unlink(response);
+  free(adapter);
   free(headers);
   free(header_arg);
   free(response);
@@ -186,7 +203,11 @@ static int RequestCommand(int argc, char** argv, Agent* a) {
   }
   int code = LoadSpec(a);
   if (code) return code;
-  if (auth_source) {
+  const char* program = JsonStr(a->spec.root, "endpoint.credential", NULL);
+  if (auth_source && program) {
+    code = Credential(&a->spec);
+    if (!code) printf("the credential program %s\n", program);
+  } else if (auth_source) {
     const char* key = ApiKey(a->spec.root);
     puts(key ? ApiKeySource() : "no key found");
     code = key ? kExitDone : kExitAuth;
@@ -196,7 +217,7 @@ static int RequestCommand(int argc, char** argv, Agent* a) {
     char* body = !data                ? NULL
                  : !strcmp(data, "-") ? ReadStdin()
                                       : XStrdup(data);
-    code = Request(a->spec.root, method, body, path);
+    code = Request(&a->spec, method, body, path);
     free(body);
   }
   SpecFree(&a->spec);
@@ -204,8 +225,10 @@ static int RequestCommand(int argc, char** argv, Agent* a) {
 }
 
 const Command kCommands[] = {
-    {"check", "[--spec P] [--kit K] [--list] | --plugin DIR | --kit-dir DIR",
-     "validate the harness (or list its plugins), one plugin or one kit",
+    {"check",
+     "[--spec P] [--kit K] [--list | --hosts] | --plugin DIR | --kit-dir DIR",
+     "validate the harness (or list its plugins or network hosts), one "
+     "plugin or one kit",
      CheckOrTools},
     {"tools", "[--spec P]", "print the tools as the model sees them",
      CheckOrTools},

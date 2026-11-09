@@ -119,6 +119,7 @@ plugin can add a command but not replace one. See
 |---|---|
 | `arx check [--spec PATH] [--kit NAME]` | Validates the harness without starting a session, and lists its kit, tools, hooks, plugins in order, problems and warnings. |
 | `arx check --list` | Prints the active list as tab-separated rows, for scripts. |
+| `arx check --hosts` | Prints the network hosts the run needs, one per line, for an egress allowlist. See [Hosts](plugins/reference.md#hosts). |
 | `arx check --plugin DIR` | Checks one plugin folder without loading it. |
 | `arx check --kit-dir DIR` | Checks one kit folder. |
 | `arx tools [--spec PATH]` | Prints the tools JSON as the model sees it. |
@@ -177,6 +178,10 @@ arx looks for the API key in this order: the environment variable named by
 `endpoint.api_key_env`, then the key `arx setup` saved under that name, in
 the macOS Keychain (service `arx`) or in `~/.config/arx/credentials`. The
 key reaches `curl` in a 0600 file, never on a command line.
+
+With `endpoint.credential`, a [credential program](plugins/credentials.md)
+gives the key instead, and arx does not look in those places.
+`arx request --auth-source` then runs the program and names it.
 
 Plugins get more `ARX_*` variables. See
 [What every plugin gets](plugins/reference.md#environment).

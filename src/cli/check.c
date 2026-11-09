@@ -173,6 +173,35 @@ static void PrintList(const Spec* spec) {
   }
 }
 
+// The network hosts a run needs, each once: the endpoint's, then `hosts`
+// from the spec and its plugins. A credential program may send calls
+// elsewhere; its plugin lists those hosts.
+static cJSON* Hosts(const Spec* spec) {
+  cJSON* list = cJSON_CreateArray();
+  Buffer endpoint = {0};
+  AppendHost(&endpoint, JsonStr(spec->root, "endpoint.base_url", ""));
+  if (endpoint.len) {
+    cJSON_AddItemToArray(list, cJSON_CreateString(endpoint.data));
+  }
+  BufferFree(&endpoint);
+  cJSON* h;
+  cJSON_ArrayForEach(h, JsonGet(spec->root, "hosts")) {
+    int have = !cJSON_IsString(h);
+    cJSON* c;
+    cJSON_ArrayForEach(c, list) have |= cJSON_Compare(c, h, 1);
+    if (!have) cJSON_AddItemToArray(list, cJSON_Duplicate(h, 1));
+  }
+  return list;
+}
+
+// Prints the hosts, `separator` after each.
+static void PrintHosts(const Spec* spec, const char* separator) {
+  cJSON* hosts = Hosts(spec);
+  cJSON* h;
+  cJSON_ArrayForEach(h, hosts) printf("%s%s", h->valuestring, separator);
+  cJSON_Delete(hosts);
+}
+
 // Prints the whole check report.
 static void PrintCheck(Agent* a) {
   const Spec* spec = &a->spec;
@@ -181,7 +210,16 @@ static void PrintCheck(Agent* a) {
          merged ? spec->config : "", JsonStr(spec->root, "model", ""),
          JsonStr(spec->root, "endpoint.base_url", ""));
   if (spec->kit) printf("kit: %s (from %s)\n", spec->kit, spec->kit_from);
-  printf("tools:");
+  const char* programs[] = {"credential", "adapter"};
+  for (int i = 0; i < 2; i++) {
+    char* key = XAsprintf("endpoint.%s", programs[i]);
+    const char* name = JsonStr(spec->root, key, NULL);
+    if (name) printf("%s: %s\n", programs[i], name);
+    free(key);
+  }
+  printf("hosts: ");
+  PrintHosts(spec, " ");
+  printf("\ntools:");
   for (int i = 0; i < a->tools.count; i++) {
     printf(" %s", a->tools.items[i].name);
   }
@@ -209,13 +247,16 @@ static int CheckFolder(const char* flag, const char* dir) {
 
 // Checks or lists the harness; see cli.h.
 int CheckOrTools(int argc, char** argv, Agent* a) {
-  int check = argv[1][0] == 'c', list = 0;
+  int check = argv[1][0] == 'c', list = 0, hosts = 0;
   if (check && argc == 4 &&
       (!strcmp(argv[2], "--plugin") || !strcmp(argv[2], "--kit-dir"))) {
     return CheckFolder(argv[2], argv[3]);
   }
   if (check && argc > 2 && !strcmp(argv[argc - 1], "--list")) {
     list = 1;
+    argc--;
+  } else if (check && argc > 2 && !strcmp(argv[argc - 1], "--hosts")) {
+    hosts = 1;
     argc--;
   }
   int code = ParseOptions(argc, argv, 2, a);
@@ -229,6 +270,8 @@ int CheckOrTools(int argc, char** argv, Agent* a) {
     cJSON_Delete(tools);
   } else if (list) {
     PrintList(&a->spec);
+  } else if (hosts) {
+    PrintHosts(&a->spec, "\n");
   } else {
     PrintCheck(a);
   }

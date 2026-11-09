@@ -28,7 +28,11 @@ fi
 current=$("$arx" check 2>/dev/null | sed -n 's/.*(model \(.*\) at .*/\1/p')
 printf '%s' "$body" | jq -r --arg f "$filter" --arg cur "$current" '
   def per_million: if . == null then "-" else (tonumber * 1e9 | round / 1000 | tostring) end;
-  .data[] | select(.id | ascii_downcase | contains($f | ascii_downcase)) |
+  # OpenAI-compatible endpoints list .data[]; the ChatGPT plan route lists
+  # .models[] by slug, with visibility "list" for the ones to show.
+  (.data // [.models[]? | select((.visibility // "list") == "list") |
+             {id: .slug, context_window}])[] |
+  select(.id | ascii_downcase | contains($f | ascii_downcase)) |
   [ (if .id == $cur then "*" else " " end), .id,
     (.pricing.input | per_million), (.pricing.output | per_million),
     ((.context_window // "-") | tostring) ] | @tsv' |

@@ -9,6 +9,7 @@ program, not more code in the core loop.
 | 1 | Plugin guide and example plugins | **done**: [plugin guide](plugins.md) |
 | 2 | External commands | **done**: `arx foo` runs `arx-foo`; `setup`, `init`, `doctor`, `models`, `sessions` and `update` are built this way |
 | 3 | Plugin folders and the marketplace | **done**: `plugin.yaml`, layers, `arx plugin`, [`plugins/`](../plugins). More of `arx plugin` is next. |
+| 3a | Credential and adapter plugins | **done**: [credentials](plugins/credentials.md), [adapters](plugins/adapters.md), `hosts:` and `arx check --hosts`, and the [`chatgpt`](../plugins/chatgpt) plugin for ChatGPT plan usage |
 | 4 | `arx acp`: an Agent Client Protocol server | planned |
 | 5 | A TUI plugin | planned |
 | 6 | MCP client | planned |

@@ -1,0 +1,10 @@
+name: op-key
+version: 0.1.0
+description: A credential program that reads the API key from 1Password with the op CLI.
+arx: ">=0.2"
+requires: [op]
+# Use it with `endpoint: {credential: op-key}`, and set ARX_OP_REF to a
+# secret reference, such as op://Private/OpenRouter/credential. With the
+# 1Password desktop app, op reaches the network through the app, so this
+# plugin adds no hosts.
+credentials: {op-key: credentials/op-key}

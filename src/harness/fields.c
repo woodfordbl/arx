@@ -20,6 +20,10 @@ static const Field kEndpoint[] = {
     {"retry_base", kDuration, NULL, "First retry delay (default 2s)"},
     {"retry_max", kDuration, NULL, "Longest retry delay (default 5m)"},
     {"retry_attempts", kInteger, NULL, "Give up after this many (0 = never)"},
+    {"credential", kString, NULL,
+     "A credentials name or a program path: prints headers and base_url"},
+    {"adapter", kString, NULL,
+     "An adapters name or a program path: wraps curl to translate calls"},
     {NULL, 0, NULL, NULL}};
 
 static const Field kTool[] = {
@@ -84,6 +88,10 @@ const Field kTopFields[] = {
     {"enable", kPluginList, NULL, "Plugins to add to the kit or the list"},
     {"disable", kStringList, NULL, "Plugins to leave out"},
     {"compactors", kAnyMap, NULL, "Named compaction programs: name -> path"},
+    {"credentials", kAnyMap, NULL, "Named credential programs: name -> path"},
+    {"adapters", kAnyMap, NULL, "Named request adapters: name -> path"},
+    {"hosts", kStringList, NULL,
+     "Network hosts the harness's programs reach, besides the endpoint"},
     {NULL, 0, NULL, NULL}};
 
 const Field kPluginFields[] = {
@@ -97,6 +105,9 @@ const Field kPluginFields[] = {
     {"replaces", kStringList, NULL, "Tools it hides on purpose"},
     {"observers", kStringList, NULL, "Commands fed the event stream"},
     {"compactors", kAnyMap, NULL, "Named compaction programs: name -> path"},
+    {"credentials", kAnyMap, NULL, "Named credential programs: name -> path"},
+    {"adapters", kAnyMap, NULL, "Named request adapters: name -> path"},
+    {"hosts", kStringList, NULL, "Network hosts its programs reach"},
     {NULL, 0, NULL, NULL}};
 
 const Field kKitFields[] = {

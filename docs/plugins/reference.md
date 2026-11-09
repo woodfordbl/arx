@@ -22,6 +22,9 @@ a line number. Only these keys are allowed:
 | `replaces` | string list | Tools it hides on purpose, such as `[bash]`, so `arx check` does not warn about them. |
 | `observers` | string list | Shell commands that arx feeds the event stream. See [Observers](observers.md). |
 | `compactors` | map | Named compaction programs: `{name: path}`. See [Compactors](compactors.md). |
+| `credentials` | map | Named credential programs: `{name: path}`. See [Credentials](credentials.md). |
+| `adapters` | map | Named adapters: `{name: path}`. See [Adapters](adapters.md). |
+| `hosts` | string list | The network hosts its programs connect to, such as `[api.openai.com]`. See [Hosts](#hosts). |
 
 A `plugin.yaml` that uses every key:
 
@@ -41,10 +44,11 @@ replaces: [bash]
 
 arx uses the keys this way:
 
-- **Paths** (`tools.<name>.agent`, `compactors`): relative to the plugin
-  folder.
-- **`tools` and `compactors`**: merged under the spec, key by key. Where the
-  spec sets the same value, the spec wins.
+- **Paths** (`tools.<name>.agent`, `compactors`, `credentials`,
+  `adapters`): relative to the plugin folder.
+- **`tools`, `compactors`, `credentials` and `adapters`**: merged under the
+  spec, key by key. Where the spec sets the same value, the spec wins.
+- **`hosts`**: added to the spec's `hosts`, each host once.
 - **`observers`**: added to the spec's list, and run with `ARX_PLUGIN_DIR`
   set.
 - **`hooks`**: apply only to the plugin's own hooks. The spec's `hooks:`
@@ -135,15 +139,34 @@ commands=
 - **The folder name**: not checked here. Loading checks that `name` matches
   it.
 
+It ends with `credentials=`, `adapters=` and `hosts=`, the names from
+`plugin.yaml`. `arx plugin add` shows the hosts as `network`.
+
 `arx check --kit-dir DIR` does the same for a kit folder, with the keys
 `name`, `version`, `description`, `extends`, `plugins`, `enable` and
 `disable`.
 
 `arx check` with no option reports the whole harness: a `kit:` line when
-there is a kit, then `tools:`, `hooks:`, `plugins:` (in order), `problems:`
+there is a kit, `credential:` and `adapter:` lines when the endpoint names
+them, then `hosts:`, `tools:`, `hooks:`, `plugins:` (in order), `problems:`
 and `warnings:`. `arx check --list` prints the active list as tab-separated
 rows (position, name, state, why, folder) for scripts. `arx plugin list`
 shows the same list as a table.
+
+### Hosts
+
+`arx check --hosts` prints the network hosts a run needs, one per line, each
+once: the host of `endpoint.base_url`, then the spec's `hosts:`, then the
+`hosts:` of each plugin in the active list, in list order. Feed it to an
+egress allowlist:
+
+```sh
+ALLOW_HOSTS=$(arx check --hosts | tr '\n' ' ')   # e.g. for a proxy config
+```
+
+The list covers what the spec and plugins declare. A tool that reaches a
+host it does not declare is not on it, so check a new plugin's `hosts:`
+before you trust the list.
 
 ## Environment
 
@@ -217,6 +240,7 @@ new `v`.
 | `model.delta` | `text`: streamed model text, batched about every 50 ms |
 | `model.message` | `tokens_in`, `tokens_out`, `cost`, `tool_calls` (a count) |
 | `model.retry` | `attempt`, `status` (HTTP), `curl_exit`, `wait_s`, `error` |
+| `model.credential` | `program`, `reason` (`start`, `expired` or `rejected`), `secs`, and `expires_in` or `error`; never the value |
 | `tool.start` | `id`, `name`, `preview` |
 | `tool.end` | `id`, `name`, `error`, `preview`; process tools add `exit`, `secs`, `bytes` and `path` |
 | `hook` | `point`, `secs`, `plugin` (for a plugin's hook), `band` (outside `normal`); `changed` (the fields the hook changed), `decision`, `ignored` (a change dropped after a policy result), or `error` |

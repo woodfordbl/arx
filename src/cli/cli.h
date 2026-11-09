@@ -55,9 +55,10 @@ int RunBuiltin(const char* name, int argc, char** argv, Agent* a);
 
 // `arx check` and `arx tools`: load the harness without starting a
 // session, and print it (check: the spec, kit, tools, hooks, plugins,
-// problems and warnings; --list: the active list; tools: the tools as the
-// model sees them). `arx check --plugin DIR` and `--kit-dir DIR` check one
-// plugin or kit folder and print key=value lines. Returns an ExitCode.
+// problems and warnings; --list: the active list; --hosts: the network
+// hosts, one per line; tools: the tools as the model sees them). `arx check
+// --plugin DIR` and `--kit-dir DIR` check one plugin or kit folder and print
+// key=value lines. Returns an ExitCode.
 int CheckOrTools(int argc, char** argv, Agent* a);
 
 // ---- external.c ----

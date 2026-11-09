@@ -20,9 +20,8 @@ int KeysValid(cJSON* keys) {
   return 1;
 }
 
-// Appends the host of a URL (or of a bare host name): no scheme, user,
-// port or path, in lower case.
-static void AppendHost(Buffer* b, const char* url) {
+// Appends the host of a URL, in lower case; see harness.h.
+void AppendHost(Buffer* b, const char* url) {
   const char* p = strstr(url, "://");
   p = p ? p + 3 : url;
   size_t end = strcspn(p, "/?#");

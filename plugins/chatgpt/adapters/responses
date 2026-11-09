@@ -1,0 +1,287 @@
+#!/usr/bin/env python3
+"""responses: an arx adapter from Chat Completions to the Responses API.
+
+arx runs `responses CURL ARGS... URL` in place of `CURL ARGS... URL` (see
+docs/plugins/adapters.md). For a model call (a URL that ends in
+/chat/completions) this program:
+
+- sends the request to /responses instead, as a Responses request with
+  `store: false` and `stream: true`, and the tools in one namespace, as
+  ChatGPT plan usage requires (developers.openai.com/siwc, "Preview
+  limitations"). Settings that route does not accept, such as temperature
+  and max_tokens, are left out;
+- turns the Responses event stream back into Chat Completions chunks;
+- turns a failure inside the stream into an HTTP status in curl's -D file,
+  so arx retries, compacts or stops as it would for that status.
+
+Any other call, such as `arx request /models`, runs unchanged.
+"""
+import json
+import subprocess
+import sys
+
+NAMESPACE = "arx"
+# Request fields the Responses API takes as they are.
+PASSED = ("reasoning", "text", "parallel_tool_calls", "include",
+          "prompt_cache_key", "service_tier")
+# Error codes in the stream, and the HTTP status arx should act on.
+STATUS = {
+    "subscription_sharing_usage_limit_exceeded": 429,
+    "rate_limit_exceeded": 429,
+    "subscription_sharing_usage_unavailable": 503,
+    "subscription_sharing_user_unavailable": 503,
+    "server_error": 500,
+    "subscription_sharing_invalid_user": 401,
+    "subscription_sharing_user_not_eligible": 403,
+    "subscription_sharing_route_not_supported": 403,
+    "chatpass_v2_scope_not_authorized": 403,
+    "chatpass_v2_invalid_authorization_context": 403,
+    "subscription_sharing_unsupported_capability": 400,
+    "context_length_exceeded": 400,
+    "invalid_prompt": 400,
+}
+
+
+def text_of(content):
+    """The text of a Chat Completions content: a string or a list of parts."""
+    if isinstance(content, str):
+        return content
+    return "".join(p.get("text", "") for p in content or []
+                   if isinstance(p, dict) and p.get("type") == "text")
+
+
+def input_content(content):
+    """A user or developer message's content as Responses input."""
+    if not isinstance(content, list):
+        return content or ""
+    parts = []
+    for p in content:
+        if p.get("type") == "text":
+            parts.append({"type": "input_text", "text": p.get("text", "")})
+        elif p.get("type") == "image_url":
+            image = p.get("image_url")
+            url = image.get("url") if isinstance(image, dict) else image
+            parts.append({"type": "input_image", "image_url": url})
+    return parts
+
+
+def to_input(messages):
+    """Chat messages as (instructions, Responses input items)."""
+    instructions, items = [], []
+    for m in messages:
+        role = m.get("role")
+        if role == "system":
+            instructions.append(text_of(m.get("content")))
+        elif role == "tool":
+            items.append({"type": "function_call_output",
+                          "call_id": m.get("tool_call_id", ""),
+                          "output": text_of(m.get("content"))})
+        elif role == "assistant":
+            text = text_of(m.get("content"))
+            if text:
+                items.append({"role": "assistant", "content": text})
+            for call in m.get("tool_calls") or []:
+                f = call.get("function", {})
+                items.append({"type": "function_call",
+                              "call_id": call.get("id", ""),
+                              "name": f.get("name", ""),
+                              "arguments": f.get("arguments") or "{}",
+                              "namespace": NAMESPACE})
+        else:
+            items.append({"role": role or "user",
+                          "content": input_content(m.get("content"))})
+    return "\n\n".join(t for t in instructions if t), items
+
+
+def to_tools(tools):
+    """Chat Completions function tools as one Responses namespace."""
+    functions = []
+    for t in tools or []:
+        f = t.get("function") if t.get("type") == "function" else None
+        if not f:
+            continue
+        tool = {"type": "function", "name": f["name"],
+                "description": f.get("description", ""),
+                "parameters": f.get("parameters") or
+                {"type": "object", "properties": {}}}
+        if "strict" in f:
+            tool["strict"] = f["strict"]
+        functions.append(tool)
+    if not functions:
+        return []
+    return [{"type": "namespace", "name": NAMESPACE,
+             "description": "The tools of this agent.", "tools": functions}]
+
+
+def to_responses(request):
+    """A Chat Completions request as a Responses request."""
+    instructions, items = to_input(request.get("messages", []))
+    out = {"model": request.get("model"), "input": items, "store": False,
+           "stream": True}
+    if instructions:
+        out["instructions"] = instructions
+    tools = to_tools(request.get("tools"))
+    if tools:
+        out["tools"] = tools
+    choice = request.get("tool_choice")
+    if isinstance(choice, str):
+        out["tool_choice"] = choice
+    elif isinstance(choice, dict) and choice.get("function"):
+        out["tool_choice"] = {"type": "function",
+                              "name": choice["function"].get("name")}
+    if request.get("reasoning_effort"):
+        out["reasoning"] = {"effort": request["reasoning_effort"]}
+    for key in PASSED:
+        if key in request:
+            out[key] = request[key]
+    return out
+
+
+class Translator:
+    """Turns Responses stream events into Chat Completions chunks."""
+
+    def __init__(self, out, headers_file):
+        self.out = out
+        self.headers_file = headers_file
+        self.calls = {}      # output item id -> tool call index
+        self.streamed = set()  # items whose arguments came in deltas
+        self.failure = None  # (HTTP status, error body) of a failed reply
+
+    def emit(self, obj):
+        """Writes one SSE data line."""
+        self.out.write("data: %s\n\n" % json.dumps(obj))
+        self.out.flush()
+
+    def delta(self, delta, finish=None):
+        """Writes one chunk."""
+        choice = {"index": 0, "delta": delta}
+        if finish:
+            choice["finish_reason"] = finish
+        self.emit({"choices": [choice]})
+
+    def call(self, item):
+        """The index of a function call item, announcing a new one."""
+        if item.get("id") not in self.calls:
+            index = len(self.calls)
+            self.calls[item.get("id")] = index
+            self.delta({"tool_calls": [{
+                "index": index, "id": item.get("call_id"), "type": "function",
+                "function": {"name": item.get("name", ""), "arguments": ""}}]})
+        return self.calls[item.get("id")]
+
+    def arguments(self, index, text):
+        """Writes a piece of a tool call's arguments."""
+        self.delta({"tool_calls": [{"index": index,
+                                    "function": {"arguments": text}}]})
+
+    def finish(self, response, incomplete):
+        """Writes the finish reason, the usage and [DONE]."""
+        finish = "tool_calls" if self.calls else "stop"
+        reason = (response.get("incomplete_details") or {}).get("reason")
+        if incomplete and reason == "max_output_tokens":
+            finish = "length"
+        self.delta({}, finish)
+        usage = response.get("usage") or {}
+        self.emit({"choices": [], "usage": {
+            "prompt_tokens": usage.get("input_tokens", 0),
+            "completion_tokens": usage.get("output_tokens", 0)}})
+        self.out.write("data: [DONE]\n\n")
+        self.out.flush()
+
+    def fail(self, error):
+        """Keeps a failure in the stream, for report()."""
+        code = str(error.get("code") or "")
+        message = str(error.get("message") or code or "the response failed")
+        self.failure = (STATUS.get(code, 500),
+                        {"error": {"code": code, "message": message}})
+
+    def report(self):
+        """Reports a failure as the HTTP status it means, once curl has
+        exited, so that curl cannot write its -D file after this does."""
+        if not self.failure:
+            return
+        status, body = self.failure
+        if not self.headers_file:
+            self.emit(body)  # an error in the stream: arx retries
+            return
+        with open(self.headers_file, "w") as f:
+            f.write("HTTP/1.1 %d %s\r\n\r\n" % (status,
+                                                  body["error"]["code"]))
+        self.out.write(json.dumps(body) + "\n")
+        self.out.flush()
+
+    def handle(self, event):
+        """Translates one event."""
+        kind = event.get("type", "")
+        item = event.get("item") or {}
+        if kind in ("response.output_text.delta", "response.refusal.delta"):
+            self.delta({"content": event.get("delta", "")})
+        elif kind == "response.output_item.added" and \
+                item.get("type") == "function_call":
+            self.call(item)
+        elif kind == "response.function_call_arguments.delta":
+            if event.get("item_id") in self.calls:
+                self.streamed.add(event.get("item_id"))
+                self.arguments(self.calls[event["item_id"]],
+                               event.get("delta", ""))
+        elif kind == "response.output_item.done" and \
+                item.get("type") == "function_call" and \
+                item.get("id") not in self.streamed:
+            self.arguments(self.call(item), item.get("arguments", ""))
+        elif kind in ("response.completed", "response.incomplete"):
+            self.finish(event.get("response") or {},
+                        kind == "response.incomplete")
+        elif kind == "response.failed":
+            self.fail((event.get("response") or {}).get("error") or {})
+        elif kind == "error":
+            self.fail(event.get("error") or event)
+
+    def feed(self, line):
+        """Handles one line of curl's output."""
+        line = line.decode("utf-8", "replace").rstrip("\r\n")
+        if line.startswith("data:"):
+            data = line[5:].strip()
+            try:
+                event = json.loads(data)
+            except ValueError:
+                return
+            if isinstance(event, dict):
+                self.handle(event)
+        elif line and not line.startswith(("event:", ":", "id:", "retry:")):
+            self.out.write(line + "\n")  # an error body: arx reads it
+
+
+def option(args, name):
+    """The value after `name` in curl's arguments, or None."""
+    for i, arg in enumerate(args[:-1]):
+        if arg == name:
+            return args[i + 1]
+    return None
+
+
+def main(args):
+    """Runs the curl command in `args`, translating a model call."""
+    if not args:
+        print("usage: responses CURL [ARGS...] URL (arx runs this)",
+              file=sys.stderr)
+        return 2
+    body = sys.stdin.buffer.read()
+    suffix = "/chat/completions"
+    if not args[-1].endswith(suffix):
+        return subprocess.run(args, input=body).returncode
+    args = args[:-1] + [args[-1][:-len(suffix)] + "/responses"]
+    request = to_responses(json.loads(body))
+    proc = subprocess.Popen(args, stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE)
+    proc.stdin.write(json.dumps(request).encode())
+    proc.stdin.close()
+    translator = Translator(sys.stdout, option(args, "-D"))
+    for line in proc.stdout:
+        translator.feed(line)
+    code = proc.wait()
+    translator.report()
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

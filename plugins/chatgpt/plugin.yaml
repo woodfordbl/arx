@@ -1,0 +1,13 @@
+name: chatgpt
+version: 0.1.0
+description: Sign in with ChatGPT, so model calls use your ChatGPT plan instead of an API key.
+arx: ">=0.2"
+requires: [python3, curl]
+# `arx chatgpt login` signs in. Then use both parts in agent.yaml:
+#   endpoint: {base_url: https://api.openai.com/v1, credential: chatgpt,
+#              adapter: responses}
+credentials: {chatgpt: credentials/chatgpt}
+adapters: {responses: adapters/responses}
+# Sign-in and token refresh go to auth.openai.com; model calls go to
+# api.openai.com.
+hosts: [auth.openai.com, api.openai.com]

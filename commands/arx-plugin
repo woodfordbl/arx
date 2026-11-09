@@ -81,9 +81,11 @@ describe() {
   info=$("$arx" check --plugin "$1") || exit 1
   p_name="" p_version="" p_description="" p_requires="" p_missing=""
   p_tools="" p_hooks="" p_skills="" p_commands=""
+  p_credentials="" p_adapters="" p_hosts=""
   while IFS='=' read -r key value; do
     case "$key" in
-      name | version | description | requires | missing | tools | hooks | skills | commands)
+      name | version | description | requires | missing | tools | hooks | skills | commands | \
+        credentials | adapters | hosts)
         eval "p_$key=\$value" ;;
     esac
   done <<<"$info"
@@ -188,6 +190,9 @@ cmd_add() {
   [ -z "$p_hooks" ] || echo "  hooks     $p_hooks"
   [ -z "$p_skills" ] || echo "  skills    $p_skills"
   [ -z "$p_commands" ] || echo "  commands  $p_commands"
+  [ -z "$p_credentials" ] || echo "  credentials $p_credentials"
+  [ -z "$p_adapters" ] || echo "  adapters  $p_adapters"
+  [ -z "$p_hosts" ] || echo "  network   $p_hosts"
   [ -z "$p_requires" ] || echo "  needs     $p_requires${p_missing:+ (not found: $p_missing)}"
   confirm "Plugins run with your permissions. Install it?"
   mkdir -p "$parent" || die "cannot create $parent"

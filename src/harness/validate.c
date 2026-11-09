@@ -254,11 +254,12 @@ static void ValidateNames(const Spec* spec, Buffer* err) {
   }
 }
 
-// Each compactors entry names an executable, relative to the spec.
-static void ValidateCompactors(const Spec* spec, Buffer* err) {
+// Each entry of the map `key` (compactors, credentials, adapters) names an
+// executable, relative to the spec.
+static void ValidatePrograms(const Spec* spec, const char* key, Buffer* err) {
   cJSON* c;
-  cJSON_ArrayForEach(c, JsonGet(spec->root, "compactors")) {
-    char* where = XAsprintf("compactors.%s", c->string);
+  cJSON_ArrayForEach(c, JsonGet(spec->root, key)) {
+    char* where = XAsprintf("%s.%s", key, c->string);
     char* path = cJSON_IsString(c) ? PathJoin(spec->dir, c->valuestring) : NULL;
     if (!path) {
       Problem(spec, err, where, "must be the path of an executable");
@@ -270,14 +271,58 @@ static void ValidateCompactors(const Spec* spec, Buffer* err) {
   }
 }
 
+// The program checks every spec and plugin.yaml gets.
+static void ValidateAllPrograms(const Spec* spec, Buffer* err) {
+  const char* maps[] = {"compactors", "credentials", "adapters"};
+  for (int i = 0; i < 3; i++) ValidatePrograms(spec, maps[i], err);
+}
+
+// endpoint.<key> names an entry of <key>s, or an executable.
+static void ValidateEndpointProgram(const Spec* spec, const char* key,
+                                    Buffer* err) {
+  char* where = XAsprintf("endpoint.%s", key);
+  char* map = XAsprintf("%ss", key);
+  const char* name = JsonStr(spec->root, where, NULL);
+  cJSON* named = cJSON_GetObjectItemCaseSensitive(JsonGet(spec->root, map),
+                                                  name ? name : "");
+  char* path = name && !named ? PathJoin(spec->dir, name) : NULL;
+  if (path && access(path, X_OK)) {
+    Problem(spec, err, where, "not a name in %s, and %s is not executable", map,
+            path);
+  }
+  free(path);
+  free(map);
+  free(where);
+}
+
+// Host names are bare: no scheme, port or path.
+static void ValidateHosts(const Spec* spec, Buffer* err) {
+  cJSON* c;
+  cJSON_ArrayForEach(c, JsonGet(spec->root, "hosts")) {
+    const char* host = c->valuestring;
+    size_t len = strlen(host);
+    if (len && strspn(host, "abcdefghijklmnopqrstuvwxyz0123456789.-*") == len) {
+      continue;
+    }
+    Problem(spec, err, "hosts",
+            "\"%s\" is not a host name such as api.openai.com (lower case, "
+            "no scheme, port or path)",
+            host);
+  }
+}
+
 // Rules the table cannot express: required keys, ranges and templates.
 static void ValidateRules(const Spec* spec, Buffer* err) {
   cJSON* root = spec->root;
   if (!JsonStr(root, "model", NULL)) Problem(spec, err, "model", "required");
-  if (!JsonStr(root, "endpoint.base_url", NULL)) {
+  if (!JsonStr(root, "endpoint.base_url", NULL) &&
+      !JsonStr(root, "endpoint.credential", NULL)) {
     Problem(spec, err, "endpoint.base_url", "required");
   }
-  ValidateCompactors(spec, err);
+  ValidateAllPrograms(spec, err);
+  ValidateEndpointProgram(spec, "credential", err);
+  ValidateEndpointProgram(spec, "adapter", err);
+  ValidateHosts(spec, err);
   const char* strategy = JsonStr(root, "compaction.strategy", NULL);
   cJSON* named = cJSON_GetObjectItemCaseSensitive(JsonGet(root, "compactors"),
                                                   strategy ? strategy : "");
@@ -328,7 +373,8 @@ void PluginValidate(const Spec* plugin, Buffer* err) {
   }
   ValidateNode(plugin, plugin->root, kPluginFields, "", err);
   ValidateNames(plugin, err);
-  ValidateCompactors(plugin, err);
+  ValidateAllPrograms(plugin, err);
+  ValidateHosts(plugin, err);
   ValidateOwnName(plugin, err);
 }
 

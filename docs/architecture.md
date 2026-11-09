@@ -91,6 +91,7 @@ Every source file, by folder:
 | | `compact.c` | the compaction strategies |
 | `model/` | `llm.c` | builds the request, runs curl, classifies errors, retries |
 | | `auth.c` | finds the API key (environment, Keychain or credentials file) and writes the 0600 header file |
+| | `credential.c` | runs the credential program (`endpoint.credential`) and finds the adapter (`endpoint.adapter`) |
 | | `sse.c` | parses the streamed reply |
 | `io/` | `session.c` | session folders, transcript, meta, inbox |
 | | `events.c` | the event stream and observers |

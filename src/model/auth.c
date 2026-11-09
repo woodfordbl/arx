@@ -109,9 +109,10 @@ const char* ApiKey(cJSON* root) {
 // Where the last ApiKey() call found its key; see model.h.
 const char* ApiKeySource(void) { return g_key_source; }
 
-// The endpoint's base_url (without trailing slashes) followed by `path`.
+// The base URL (without trailing slashes) followed by `path`; see model.h.
 char* EndpointUrl(cJSON* root, const char* path) {
-  const char* base = JsonStr(root, "endpoint.base_url", "");
+  const char* base = JsonStr(CredentialValue(root), "base_url", NULL);
+  if (!base) base = JsonStr(root, "endpoint.base_url", "");
   size_t len = strlen(base);
   while (len && base[len - 1] == '/') len--;
   return XAsprintf("%.*s%s", (int)len, base, path);
@@ -123,18 +124,36 @@ const char* CurlPath(cJSON* root) {
   return JsonStr(root, "endpoint.curl", env && *env ? env : "curl");
 }
 
+// True when `headers` (an object, or NULL) has `name`, in any case.
+static int HasHeader(cJSON* headers, const char* name) {
+  cJSON* h;
+  cJSON_ArrayForEach(h, headers) {
+    if (!strcasecmp(h->string, name)) return 1;
+  }
+  return 0;
+}
+
 // Writes the request headers to a private file in `dir`; see model.h.
 char* WriteRequestHeaders(cJSON* root, const char* dir, int streaming) {
   Buffer h = {0};
   BufferAppendStr(&h, "Content-Type: application/json\n");
   if (streaming) BufferAppendStr(&h, "Accept: text/event-stream\n");
-  const char* key = ApiKey(root);
-  if (key && *key) BufferPrintf(&h, "Authorization: Bearer %s\n", key);
+  cJSON* value = CredentialValue(root);
+  cJSON* own = JsonGet(value, "headers");
+  const char* key = JsonStr(root, "endpoint.credential", NULL)
+                        ? JsonStr(value, "api_key", NULL)
+                        : ApiKey(root);
+  if (key && *key && !HasHeader(own, "Authorization")) {
+    BufferPrintf(&h, "Authorization: Bearer %s\n", key);
+  }
   cJSON* header;
   cJSON_ArrayForEach(header, JsonGet(root, "endpoint.headers")) {
-    if (cJSON_IsString(header)) {
+    if (cJSON_IsString(header) && !HasHeader(own, header->string)) {
       BufferPrintf(&h, "%s: %s\n", header->string, header->valuestring);
     }
+  }
+  cJSON_ArrayForEach(header, own) {
+    BufferPrintf(&h, "%s: %s\n", header->string, header->valuestring);
   }
   char* path = XAsprintf("%s/.arx-request-%d", dir, (int)getpid());
   int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);

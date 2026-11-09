@@ -20,6 +20,8 @@ you get the version that CI tested with it.
 | [reviewer](reviewer) | a `reviewer` subagent |
 | [plugin-authoring](plugin-authoring) | a skill about changing your own harness |
 | [never-stop](never-stop) | a `stop` hook for experiment loops, turned on by its settings |
+| [op-key](op-key) | a credential program that reads the API key from 1Password |
+| [chatgpt](chatgpt) | Sign in with ChatGPT: a credential program, the `responses` adapter and `arx chatgpt` |
 
 To work on one, link it from your checkout: `arx plugin add --link
 ./plugins/<name>`. `make test` checks each one against the arx of the same
