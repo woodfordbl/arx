@@ -3,6 +3,7 @@
 //   commands.c  built-in commands: schema, tool, watch, ctl, request,
 //               version, help
 //   check.c     `arx check` and `arx tools`: load the harness and report
+//   climb.c     `arx check --climb`: climb.yaml as JSON, for `arx climb`
 //   shell_tools.c  bash and edit, for `arx tool` (the shell plugin)
 //   external.c  `arx foo` runs `arx-foo` (next to the binary, then on PATH),
 //               and `arx help` lists every command
@@ -58,8 +59,17 @@ int RunBuiltin(const char* name, int argc, char** argv, Agent* a);
 // problems and warnings; --list: the active list; --hosts: the network
 // hosts, one per line; tools: the tools as the model sees them). `arx check
 // --plugin DIR` and `--kit-dir DIR` check one plugin or kit folder and print
-// key=value lines. Returns an ExitCode.
+// key=value lines; `--climb FILE` prints climb.yaml as JSON (see climb.c).
+// Returns an ExitCode.
 int CheckOrTools(int argc, char** argv, Agent* a);
+
+// ---- climb.c ----
+
+// Checks the climb.yaml at `path` against its field table and appends it to
+// `out` as one line of JSON, with every default filled in and durations in
+// seconds. Returns 0, or -1 with one "file:line: key: message" line per
+// problem in `err`.
+int ClimbDescribe(const char* path, Buffer* out, Buffer* err);
 
 // ---- external.c ----
 

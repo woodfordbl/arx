@@ -2,8 +2,8 @@
 #   make            release binary ./arx (-Os, LTO, dead-code stripped)
 #   make debug      ./arx-debug with AddressSanitizer and UBSan
 #   make test       run tests/run.sh, plugins.sh, layers.sh, cli.sh, shell.sh,
-#                   hooks.sh, runtime.sh, kits.sh and credentials.sh against
-#                   ./arx-debug
+#                   hooks.sh, runtime.sh, kits.sh, credentials.sh and climb.sh
+#                   against ./arx-debug
 #   make bench      check the performance budgets against ./arx
 #   make lint       style checks (scripts/lint.sh)
 #   make format     rewrite src/ in Google style
@@ -70,6 +70,7 @@ test: arx-debug
 	ARX=./arx-debug tests/runtime.sh
 	ARX=./arx-debug tests/kits.sh
 	ARX=./arx-debug tests/credentials.sh
+	ARX=./arx-debug tests/climb.sh
 
 install: arx
 	mkdir -p $(PREFIX)/bin $(PREFIX)/libexec/arx

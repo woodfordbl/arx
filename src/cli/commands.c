@@ -226,9 +226,10 @@ static int RequestCommand(int argc, char** argv, Agent* a) {
 
 const Command kCommands[] = {
     {"check",
-     "[--spec P] [--kit K] [--list | --hosts] | --plugin DIR | --kit-dir DIR",
+     "[--spec P] [--kit K] [--list | --hosts] | --plugin DIR | --kit-dir DIR "
+     "| --climb FILE",
      "validate the harness (or list its plugins or network hosts), one "
-     "plugin or one kit",
+     "plugin, one kit or a climb.yaml",
      CheckOrTools},
     {"tools", "[--spec P]", "print the tools as the model sees them",
      CheckOrTools},

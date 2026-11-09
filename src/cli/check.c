@@ -233,12 +233,13 @@ static void PrintCheck(Agent* a) {
   BufferFree(&warnings);
 }
 
-// `arx check --plugin DIR` and `--kit-dir DIR`: checks one folder without
-// loading it, and prints key=value lines for scripts.
+// `arx check --plugin DIR`, `--kit-dir DIR` and `--climb FILE`: checks one
+// folder or file without loading it, and prints it for scripts.
 static int CheckFolder(const char* flag, const char* dir) {
   Buffer out = {0}, err = {0};
-  int rc = !strcmp(flag, "--plugin") ? PluginDescribe(dir, &out, &err)
-                                     : KitDescribe(dir, &out, &err);
+  int rc = !strcmp(flag, "--plugin")    ? PluginDescribe(dir, &out, &err)
+           : !strcmp(flag, "--kit-dir") ? KitDescribe(dir, &out, &err)
+                                        : ClimbDescribe(dir, &out, &err);
   fputs(rc ? err.data : out.data, rc ? stderr : stdout);
   BufferFree(&out);
   BufferFree(&err);
@@ -249,7 +250,8 @@ static int CheckFolder(const char* flag, const char* dir) {
 int CheckOrTools(int argc, char** argv, Agent* a) {
   int check = argv[1][0] == 'c', list = 0, hosts = 0;
   if (check && argc == 4 &&
-      (!strcmp(argv[2], "--plugin") || !strcmp(argv[2], "--kit-dir"))) {
+      (!strcmp(argv[2], "--plugin") || !strcmp(argv[2], "--kit-dir") ||
+       !strcmp(argv[2], "--climb"))) {
     return CheckFolder(argv[2], argv[3]);
   }
   if (check && argc > 2 && !strcmp(argv[argc - 1], "--list")) {
