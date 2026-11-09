@@ -237,6 +237,18 @@ text_plugin b <<<'model_settings: {top_p: 0.7}'
 run "go"
 check "the first plugin's null removes the field" [ "$(jq 'has("top_p")' fake/req-04.json)" = false ]
 
+begin "plugin text reloads"
+text_plugin p <<<'instructions: {file: prompts/p.md}'
+mkdir -p plugins/p/prompts && echo "Old text." >plugins/p/prompts/p.md
+sse_tool bash '{\"command\":\"echo New text, longer. >plugins/p/prompts/p.md\"}' | reply 1 "200 OK"
+sse_text "done" | reply 2 "200 OK"
+run "go"
+check "the first call has the old text" has fake/req-01.json 'Old text.'
+msg0 2 >msg0.txt
+check "an edit to the prompt file reaches the next call" has msg0.txt 'New text, longer.'
+check "  in message 0, in place of the old text" lacks fake/req-02.json 'Old text.'
+check "the transcript starts over" has .arx/sessions/last/transcript.jsonl '{"_reset":true}'
+
 begin "no plugin text: the prompt is the same as before"
 sse_text "done" | reply 1 "200 OK"
 run "go"

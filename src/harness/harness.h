@@ -173,8 +173,8 @@ int PluginDescribe(const char* dir, Buffer* out, Buffer* err);
 // ---- signature.c ----
 
 // Fingerprints every harness file with stat() only, so it costs microseconds
-// before each model call: the spec and the prompt files it names, tools/,
-// hooks/ and skills in every layer, and each plugin.yaml and kit.yaml.
+// before each model call: the spec, the prompt files of the spec and each
+// plugin, tools/, hooks/ and skills in every layer, plugin.yaml and kit.yaml.
 uint64_t SpecSignature(const Spec* spec);
 
 // ---- validate.c ----
