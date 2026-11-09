@@ -66,8 +66,10 @@ fi
 # On a terminal, go on into setup, with its answers from /dev/tty: under
 # `curl | sh`, stdin is this script. The subshell matters: a failed
 # redirection on a special built-in exits a POSIX shell. The install worked,
-# so a cancelled setup still exits 0.
-if [ "$setup" -eq 1 ] && [ -z "${CI:-}" ] && [ -t 1 ] && (exec </dev/tty) 2>/dev/null; then
+# so a cancelled setup still exits 0. A release older than 0.2.0 has no
+# --if-needed, so it gets the old hint instead.
+if [ "$setup" -eq 1 ] && [ -z "${CI:-}" ] && [ -t 1 ] && (exec </dev/tty) 2>/dev/null &&
+  "$prefix/bin/arx" setup --help 2>/dev/null | grep -q -- --if-needed; then
   "$prefix/bin/arx" setup --if-needed </dev/tty ||
     echo "arx is installed. Run \`arx setup\` when you're ready."
   exit 0
