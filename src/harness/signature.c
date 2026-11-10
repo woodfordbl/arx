@@ -213,6 +213,22 @@ void HarnessFiles(const Spec* spec, HarnessFileFn fn, void* ctx) {
       free(path);
     }
   }
+  // A program that the spec names by its path, not by a name in those maps.
+  const char* direct[] = {"compaction.strategy", "endpoint.credential",
+                          "endpoint.adapter"};
+  const char* builtin[] = {"mask", "summarize", "hybrid", "restart"};
+  for (int i = 0; i < 3; i++) {
+    const char* value = JsonStr(spec->root, direct[i], NULL);
+    cJSON* map = JsonGet(spec->root, programs[i]);
+    int named = !value || cJSON_GetObjectItemCaseSensitive(map, value);
+    for (int k = 0; i == 0 && value && k < 4; k++) {
+      named |= !strcmp(value, builtin[k]);
+    }
+    if (named) continue;
+    char* path = PathJoin(spec->dir, value);
+    ReportNamed(spec, &w, "program", path);
+    free(path);
+  }
   // A plugin or kit that is added, removed, or changes its plugin.yaml or
   // kit.yaml.
   char* config = ConfigDir();

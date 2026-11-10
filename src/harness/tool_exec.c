@@ -12,6 +12,7 @@
 #include "src/agent/agent.h"
 #include "src/base/base.h"
 #include "src/harness/harness.h"
+#include "src/harness/trust.h"
 #include "src/io/io.h"
 
 // Captured output: the head and tail in memory, everything in a file.
@@ -309,7 +310,10 @@ ToolRun* ToolStart(Agent* a, const char* name, const char* args, char** text,
   const char* raw = args && *args ? args : "{}";
   cJSON* parsed = cJSON_Parse(raw);
   ToolRun* run = NULL;
-  if (!cJSON_IsObject(parsed)) {
+  const char* changed = NULL;
+  if (t->kind == kToolExec && !GateAllows(a, t->path, &changed)) {
+    *text = XAsprintf("%s %s", t->path, changed);  // see trust.h
+  } else if (!cJSON_IsObject(parsed)) {
     *text = XAsprintf("the arguments are not a valid JSON object: %.200s", raw);
   } else if (!(*text = CheckArgs(t, parsed))) {
     *output_path = SessionOutputPath(&a->session);

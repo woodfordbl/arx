@@ -9,6 +9,7 @@
 #include "src/agent/agent.h"
 #include "src/base/base.h"
 #include "src/harness/harness.h"
+#include "src/harness/trust.h"
 #include "src/io/io.h"
 #include "src/model/model.h"
 
@@ -249,7 +250,8 @@ static int External(struct Agent* a, const char* strategy) {
             .on_out = BufferSink,
             .out_ctx = &out};
   ProcResult r;
-  int ok = ProcRun(&p, &r) == 0 && r.code == 0;
+  const char* changed = NULL;  // a compactor that changed fails; see trust.h
+  int ok = GateAllows(a, path, &changed) && ProcRun(&p, &r) == 0 && r.code == 0;
   cJSON* result = ok ? cJSON_Parse(out.data ? out.data : "") : NULL;
   cJSON* messages = cJSON_GetObjectItem(result, "messages");
   ok = cJSON_GetArraySize(messages) > 0;

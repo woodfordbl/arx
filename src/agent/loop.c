@@ -148,7 +148,8 @@ int RunTurns(Agent* a) {
   KitLockWrite(&a->spec);  // a kit that pins versions: record the parts
   for (;;) {
     if (g_interrupted) return kExitInterrupted;
-    int code = CheckCaps(a);
+    int code = PolicyStop(a);  // a policy file changed and was about to run
+    if (code < 0) code = CheckCaps(a);
     if (code >= 0) return code;
     code = MaybeReload(a);
     if (code >= 0) return code;
@@ -161,6 +162,8 @@ int RunTurns(Agent* a) {
     cJSON* message;
     code = ModelTurn(a, &message);
     if (code >= 0) return code;
+    if (GateStopped(a)) cJSON_Delete(message);
+    if ((code = PolicyStop(a)) >= 0) return code;
     cJSON_AddItemToArray(a->messages, message);
     SessionAppend(&a->session, message);
     cJSON* calls = cJSON_GetObjectItem(message, "tool_calls");
@@ -169,7 +172,9 @@ int RunTurns(Agent* a) {
     } else {
       free(a->final_output);
       a->final_output = XStrdup(JsonStr(message, "content", ""));
-      if (!StopHook(a)) return kExitDone;
+      int go_on = StopHook(a);
+      if ((code = PolicyStop(a)) >= 0) return code;
+      if (!go_on) return kExitDone;
     }
     SessionWriteMeta(&a->session, "running");
   }

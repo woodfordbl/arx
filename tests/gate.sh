@@ -60,6 +60,16 @@ bash_then_done() {
   sse_text "done" | reply $((n + 1)) "200 OK"
 }
 
+# A streamed reply with two tool calls, as in tests/runtime.sh: sse_two
+# NAME ARGS NAME ARGS. ARGS is JSON escaped for a JSON string.
+sse_two() {
+  printf 'data: {"choices":[{"index":0,"delta":{"role":"assistant","tool_calls":['
+  printf '{"index":0,"id":"call_1","type":"function","function":{"name":"%s","arguments":"%s"}},' "$1" "$2"
+  printf '{"index":1,"id":"call_2","type":"function","function":{"name":"%s","arguments":"%s"}}' "$3" "$4"
+  printf ']}}]}\n\ndata: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}\n\n'
+  sse_end
+}
+
 # True when an event of TYPE matches the jq condition.
 event() { jq -es "any(.[]; .type == \"$1\" and ($2))" "$EVENTS" >/dev/null; }
 
@@ -189,6 +199,48 @@ bash_then_done "echo x >>tools/big.json" "true"
 run "go" --policy pol/p
 check "a rejected change to it stops the run with exit 5" exited 5
 check "the hook got no old copy" test "$(change '| has("old")')" = false
+
+fresh "a hook the agent changes runs only after the policy saw it"
+policy pol/p "$PROMPTS_ONLY"
+bash_then_done "echo 'touch marker' >>hooks/after_tool" "true"
+run "go" --policy pol/p
+check "exits 0" exited 0
+check "the changed hook did not run in the same turn" test ! -e marker
+check "its hook event says why" event hook '.point == "after_tool" and (.error | startswith("changed since the policy accepted it"))'
+check "the reload then reverted it" lacks hooks/after_tool marker
+
+fresh "a tool changed and called in the same reply"
+policy pol/p 'empty'
+sse_two bash '{\"command\":\"echo echo changed >>tools/look\"}' look '{}' | reply 1 "200 OK"
+sse_tool look '{}' | reply 2 "200 OK"
+sse_text "done" | reply 3 "200 OK"
+run "go" --policy pol/p
+check "the call ends with an error result" has fake/req-02.json 'changed since the policy accepted it; the policy sees it before the next model call'
+check "once the policy accepted it, it runs" has fake/req-03.json 'look ran\nchanged'
+
+fresh "a policy file changed and about to run"
+policy pol/p 'empty'
+script pol/p/hooks/after_tool <<<'#!/bin/sh'
+bash_then_done "echo 'touch \$ARX_CWD/marker' >>pol/p/hooks/after_tool" "true"
+run "go" --policy pol/p
+check "the run stops with exit 5" exited 5
+check "and the changed file never ran" test ! -e marker
+check "before the next model call" test ! -e fake/req-02.json
+
+fresh "a scheduler and a compactor the agent changes"
+policy pol/p 'empty'
+script bin/compact <<<'#!/bin/sh
+cat'
+{ spec; printf 'compactors: {mine: bin/compact}\ncompaction: {strategy: mine, trigger: 0.0001}\n'; } >agent.yaml
+script staged <<<'#!/bin/sh
+touch "$ARX_CWD/sched-ran"
+cat >/dev/null'
+sse_two bash '{\"command\":\"cp staged scheduler; echo touch compact-ran >>bin/compact\"}' look '{}' | reply 1 "200 OK"
+sse_text "done" | reply 2 "200 OK"
+run "go" --policy pol/p
+check "exits 0" exited 0
+check "the new scheduler reaches the gate as kind scheduler" event harness.edit '.kind == "scheduler" and .change == "added"'
+check "the changed compactor counts as a change of kind program" event harness.edit '.kind == "program" and .decision == "accept"'
 
 fresh "harness_edit outside a policy folder"
 policy pol/p 'empty'

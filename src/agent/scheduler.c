@@ -14,6 +14,7 @@
 #include "src/agent/agent.h"
 #include "src/base/base.h"
 #include "src/harness/harness.h"
+#include "src/harness/trust.h"
 #include "src/io/io.h"
 
 // The session's scheduler process.
@@ -93,6 +94,13 @@ int SchedOpen(Agent* a) {
   if (g_sched.child) {
     free(path);
     return 1;
+  }
+  const char* changed = NULL;
+  if (!GateAllows(a, path, &changed)) {
+    // The file changed since the policy accepted it: the built-in
+    // scheduler runs the calls until the next reload.
+    free(path);
+    return 0;
   }
   g_sched.path = path;
   char** env = PluginEnv(a, layer);
