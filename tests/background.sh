@@ -207,6 +207,33 @@ check "exits 0" exited 0
 check "the tool ended during the model call" awk '{ exit !($1 < 0.8) }' big-secs
 check "all of its output is saved" test "$(wc -c <.arx/sessions/last/tool-0001.out)" -eq 1048576
 
+begin "cancel from a tool"
+nap '[]'
+hook hooks/after_tool <<'EOF'
+pass
+EOF
+bg_sched </dev/null
+sse_calls nap '{\"x\":\"a\",\"secs\":5}' | reply 1 "200 OK"
+CALL_BASE=1 sse_calls bash '{\"command\":\"$ARX_BIN ctl $ARX_SESSION cancel c9; echo exit=$?; $ARX_BIN ctl $ARX_SESSION cancel c1\"}' |
+  reply 2 "200 OK"
+sse_text "waiting" | reply 3 "200 OK"
+sse_text "done" | reply 4 "200 OK"
+t0=$(now)
+run "go"
+t1=$(now)
+check "exits 0" exited 0
+check "an unknown id lists the calls in flight" has fake/req-03.json 'arx: no call c9 in flight (in flight: c1)'
+check "and exits 2" has fake/req-03.json 'exit=2'
+check "the cancel line names the call" has $INBOX '{"cmd":"cancel","call":"c1"}'
+check "the call was stopped" lacks log.txt 'end-a'
+check "without a wait" within "$t0" "$t1" 4
+check "the note says cancelled" grep -q 'c1 (nap: .*) was cancelled after' fake/req-04.json
+check "after_tool saw [cancelled]" has hooks/after_tool.in '[cancelled]'
+"$ARX" ctl last cancel call_1 2>ctl.txt
+code=$?
+check "a call that ended is not in flight" exited 2
+check "and none is" has ctl.txt 'no call call_1 in flight (in flight: none)'
+
 begin "ids"
 nap '[]'
 sched <<'EOF'
