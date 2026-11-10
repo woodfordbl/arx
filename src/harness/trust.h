@@ -2,10 +2,12 @@
 //   signature.c  walks every harness file; the fingerprint for hot reload
 //   policy.c     policy folders: --policy DIR and ARX_POLICY
 //   tool_layers.c  which layer's tool wins, and the tools of every layer
+//   manifest.c   the accepted list: each harness file as the policy accepted it
 
 #ifndef SRC_HARNESS_TRUST_H_
 #define SRC_HARNESS_TRUST_H_
 
+#include <stddef.h>
 #include <stdint.h>
 
 #include "src/harness/harness.h"
@@ -95,5 +97,72 @@ int ToolsAddLayers(struct Agent* a, char*** names, Buffer* notes);
 // spec folder).
 void ToolAddExecutable(struct Agent* a, const Layer* layer, const char* where,
                        const char* name, Buffer* notes);
+
+// ---- manifest.c ----
+
+// One harness file as it was accepted.
+typedef struct ManifestFile {
+  char *path, *kind, *layer, *rel;       // as HarnessFiles reported it
+  int policy;                            // it is in a policy folder
+  int exists;                            // 0: a named file that is missing
+  int64_t dev, ino, size, mtime, ctime;  // from stat(); times in ns
+  uint32_t mode;
+  char* link;  // the target when the file is a symlink, or NULL
+  char* data;  // its bytes, when `copied`
+  size_t len;
+  int copied;  // 0: in a policy folder, missing, or over the copy limit
+} ManifestFile;
+
+// The accepted list: every file of HarnessFiles.
+typedef struct Manifest {
+  ManifestFile* files;
+  int count;
+  size_t bytes;  // the size of all copies, at most 4 MB
+} Manifest;
+
+// Fills `m` with every harness file of `spec` as it is on disk now. With
+// `copy`, it keeps the bytes of each file outside the policy folders, up to
+// 4 MB in all; a file over the limit is not copied. A file that `prev` (may
+// be NULL) has as the same version gives its copy to `m`.
+void ManifestBuild(Manifest* m, const Spec* spec, Manifest* prev, int copy);
+
+// Frees the list and its copies.
+void ManifestFree(Manifest* m);
+
+// The record of `path`, or NULL. A leading "./" does not matter.
+ManifestFile* ManifestFind(const Manifest* m, const char* path);
+
+// True when `a` and `b` (each may be NULL) are the same version of a file:
+// both missing, or the same device, inode, size, mtime, ctime, mode and
+// symlink target. `touch -d` can set mtime back, but not ctime.
+int ManifestSame(const ManifestFile* a, const ManifestFile* b);
+
+// Called for each change: `change` is "added", "changed" or "removed";
+// `old` is NULL for a file the old list did not know. For a removed file,
+// `now` is NULL, or a record with `exists` 0 when the spec still names it.
+typedef void (*ManifestChangeFn)(void* ctx, const ManifestFile* old,
+                                 const ManifestFile* now, const char* change);
+
+// Calls `fn` (may be NULL) for each file that differs between two lists.
+// Returns the number of changes.
+int ManifestDiff(const Manifest* old, const Manifest* now, ManifestChangeFn fn,
+                 void* ctx);
+
+// True when a harness file of `spec` on disk is not as `m` has it: one
+// stat() and one lstat() for each file, and no read.
+int ManifestDirty(const Manifest* m, const Spec* spec);
+
+// True when the file of record `f` is still that version on disk.
+int ManifestCurrent(const ManifestFile* f);
+
+// Puts the accepted version `f` back on disk: writes its bytes and mode
+// through a temp file and rename(), restores a symlink, and removes a file
+// that was added (a record with `exists` 0). Then `f` holds the new stat().
+// Returns 0, or -1 when there is no copy or a write failed.
+int ManifestRevert(ManifestFile* f);
+
+// Copies the file at `path` to `dest`, making its folders, so a rejected
+// version is kept. A missing file is not an error. Returns 0 or -1.
+int ManifestKeep(const char* path, const char* dest);
 
 #endif  // SRC_HARNESS_TRUST_H_
