@@ -4,6 +4,7 @@
 //   spec.c     the `mcp_servers` key: its rules, a plugin's servers, hosts
 //   catalog.c  the servers of the spec, their cached tool lists, tool names
 //   toolset.c  the selection, and the MCP tools of the tool set
+//   search.c   mcp_search's ranking (BM25F) and what mcp_select does
 
 #ifndef SRC_MCP_MCP_H_
 #define SRC_MCP_MCP_H_
@@ -76,7 +77,8 @@ typedef struct McpServer {
   cJSON* cache;    // .arx/mcp/<name>.json when it is for this entry, or NULL
   McpTool* tools;  // the cache's tools, less include, exclude and disabled
   int tool_count;
-  int fresh;  // the list is from this process, or younger than its ttl
+  int fresh;    // the list is from this process, or younger than its ttl
+  char* error;  // why it failed, or NULL (servers.c)
 } McpServer;
 
 // The servers of the current spec, in its order.
@@ -143,5 +145,19 @@ Tool* McpToolFor(struct Agent* a, const char* name);
 // One line about a server for mcp_search: its `description`, else the
 // first sentence of its instructions, else "" (malloc'd).
 char* McpServerAbout(const McpServer* s);
+
+// ---- search.c ----
+
+// Appends what mcp_search prints for `query`: the best `limit` tools (0:
+// 8, at most 25) of every server, or of `server` when it is not NULL or
+// empty, one per line. An empty query lists the servers.
+void McpSearchText(const struct Agent* a, const char* query, const char* server,
+                   int limit, Buffer* out);
+
+// What mcp_select does: selects `names` and drops `drop` (arrays of the
+// model's names, or NULL). Returns what it did (malloc'd) and sets
+// `*is_error` for an unknown name, with the 3 closest names, and for a
+// selection over MCP_MAX_SELECTED, which changes nothing.
+char* McpSelectApply(struct Agent* a, cJSON* names, cJSON* drop, int* is_error);
 
 #endif  // SRC_MCP_MCP_H_

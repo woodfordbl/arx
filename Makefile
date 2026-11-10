@@ -57,12 +57,12 @@ PICK_HDR := $(wildcard pick/*.h)
 all: arx $(PICK)
 
 arx: $(REL_OBJ)
-	$(CC) $(REL) $(GC) $^ -o $@
+	$(CC) $(REL) $(GC) $^ -lm -o $@
 	strip $@
 
 debug: arx-debug
 arx-debug: $(DBG_OBJ)
-	$(CC) -fsanitize=address,undefined $^ -o $@
+	$(CC) -fsanitize=address,undefined $^ -lm -o $@
 
 build/rel/src/%.o: src/%.c $(HDR)
 	@mkdir -p $(dir $@)
