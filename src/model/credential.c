@@ -95,33 +95,31 @@ static void Keep(const char* path, cJSON* value) {
   g_expires = JsonNum(value, "expires_at", 0);
 }
 
-// Sends the model.credential event for one run of the program.
+// Sends the model.credential event for one run of the program; `expires`
+// is the new value's expires_at, or 0.
 static void Announce(const char* path, const char* reason, double secs,
-                     const char* error) {
+                     double expires, const char* error) {
   const char* slash = strrchr(path, '/');
   cJSON* e = EventNew("model.credential");
   cJSON_AddStringToObject(e, "program", slash ? slash + 1 : path);
   cJSON_AddStringToObject(e, "reason", reason);
   cJSON_AddNumberToObject(e, "secs", secs);
-  if (!error && g_expires > 0) {
-    cJSON_AddNumberToObject(e, "expires_in", g_expires - WallNow());
+  if (!error && expires > 0) {
+    cJSON_AddNumberToObject(e, "expires_in", expires - WallNow());
   }
   if (error) JsonAddTruncated(e, "error", error, 300);
   EventSend(e);
 }
 
-// Runs the program and classifies the run; writes the reason to `why`.
-static CredentialStatus RunProgram(cJSON* root, const char* path,
-                                   const char* reason, Buffer* why) {
-  cJSON* in = cJSON_CreateObject();
-  cJSON_AddStringToObject(in, "reason", reason);
-  cJSON_AddStringToObject(in, "model", JsonStr(root, "model", ""));
-  cJSON_AddStringToObject(in, "base_url",
-                          JsonStr(root, "endpoint.base_url", ""));
-  char* json = cJSON_PrintUnformatted(in);
+// Runs one credential program and classifies the run; see model.h.
+CredentialStatus CredentialRun(const char* path, cJSON* input, cJSON** value,
+                               Buffer* why) {
+  char* json = cJSON_PrintUnformatted(input);
   char* text = XAsprintf("%s\n", json);  // one line, for `read` in sh
+  char* reason = XStrdup(JsonStr(input, "reason", ""));
   free(json);
-  cJSON_Delete(in);
+  cJSON_Delete(input);
+  *value = NULL;
   Buffer out = {0}, err = {0};
   char* argv[] = {(char*)path, NULL};
   Proc p = {.argv = argv,
@@ -148,23 +146,39 @@ static CredentialStatus RunProgram(cJSON* root, const char* path,
     BufferPrintf(why, "the credential program failed (exit %d)", r.code);
     if (*stderr_text) BufferPrintf(why, ": %s", stderr_text);
   } else {
-    cJSON* value = cJSON_Parse(out.data ? out.data : "");
-    const char* bad = BadValue(value);
+    cJSON* parsed = cJSON_Parse(out.data ? out.data : "");
+    const char* bad = BadValue(parsed);
     if (bad) {
       BufferPrintf(why, "the credential program's output is not usable: %s",
                    bad);
-      cJSON_Delete(value);
+      cJSON_Delete(parsed);
     } else {
-      Keep(path, value);
+      *value = parsed;
       status = kCredentialOk;
     }
   }
-  Announce(path, reason, started ? r.secs : 0,
+  Announce(path, reason, started ? r.secs : 0, JsonNum(*value, "expires_at", 0),
            status == kCredentialOk ? NULL : why->data);
+  free(reason);
   free(stderr_text);
   free(text);
   BufferFree(&out);
   BufferFree(&err);
+  return status;
+}
+
+// Runs the endpoint's program with the fields of a model call and keeps
+// its value; writes the reason to `why`.
+static CredentialStatus RunProgram(cJSON* root, const char* path,
+                                   const char* reason, Buffer* why) {
+  cJSON* in = cJSON_CreateObject();
+  cJSON_AddStringToObject(in, "reason", reason);
+  cJSON_AddStringToObject(in, "model", JsonStr(root, "model", ""));
+  cJSON_AddStringToObject(in, "base_url",
+                          JsonStr(root, "endpoint.base_url", ""));
+  cJSON* value;
+  CredentialStatus status = CredentialRun(path, in, &value, why);
+  if (status == kCredentialOk) Keep(path, value);
   return status;
 }
 
