@@ -20,6 +20,7 @@ typedef struct Walk {
   void* ctx;
   const char* layer;  // the label of the current folder
   const char* dir;    // the current folder, for `rel`
+  int policy;         // the current folder is a policy folder
 } Walk;
 
 // Reports one file. `rel` is its path inside the current folder; NULL
@@ -28,7 +29,7 @@ static void Report(const Walk* w, const char* kind, const char* path,
                    const char* rel) {
   size_t n = strlen(w->dir);
   if (!rel && !strncmp(path, w->dir, n) && path[n] == '/') rel = path + n + 1;
-  HarnessFile file = {path, kind, w->layer, rel ? rel : path};
+  HarnessFile file = {path, kind, w->layer, rel ? rel : path, w->policy};
   w->fn(w->ctx, &file);
 }
 
@@ -48,29 +49,31 @@ static void ReportDir(const Walk* w, const char* kind, const char* dir,
   free(folder);
 }
 
-// The label of the plugin layer whose folder holds `path` ("plugin:NAME",
-// malloc'd), or NULL. Sets `*dir` to that folder.
-static char* PluginLabel(const Spec* spec, const char* path, const char** dir) {
+// The plugin or policy layer whose folder holds `path`, or NULL.
+static const Layer* LayerOf(const Spec* spec, const char* path) {
   for (int l = 0; l < spec->layer_count; l++) {
     const Layer* layer = &spec->layers[l];
     size_t n = strlen(layer->dir);
-    if (!layer->plugin || strncmp(path, layer->dir, n) || path[n] != '/') {
-      continue;
+    if (layer->plugin && !strncmp(path, layer->dir, n) && path[n] == '/') {
+      return layer;
     }
-    *dir = layer->dir;
-    return XAsprintf("plugin:%s", layer->plugin);
   }
   return NULL;
 }
 
 // Reports `path`, a file that the spec names, in the folder that holds it:
-// a plugin's, the kit's, or else the spec folder.
+// a plugin's, the kit's, or else the spec folder. A policy folder reports
+// all of its files itself.
 static void ReportNamed(const Spec* spec, const Walk* w, const char* kind,
                         const char* path) {
   Walk in = *w;
-  char* label = PluginLabel(spec, path, &in.dir);
+  const Layer* layer = LayerOf(spec, path);
+  if (layer && layer->policy) return;
+  char* label = layer ? XAsprintf("plugin:%s", layer->plugin) : NULL;
   size_t n = spec->kit_dir ? strlen(spec->kit_dir) : 0;
-  if (!label && n && !strncmp(path, spec->kit_dir, n) && path[n] == '/') {
+  if (layer) {
+    in.dir = layer->dir;
+  } else if (n && !strncmp(path, spec->kit_dir, n) && path[n] == '/') {
     label = XAsprintf("kit:%s", spec->kit);
     in.dir = spec->kit_dir;
   }
@@ -113,6 +116,39 @@ static void ReportLayer(const Spec* spec, const Walk* w, const Layer* layer) {
   free(scheduler);
 }
 
+// The kind of the file at `rel` in a policy folder.
+static const char* PolicyKind(const char* rel) {
+  const char* slash = strchr(rel, '/');
+  size_t n = strlen(rel);
+  if (!strcmp(rel, "plugin.yaml")) return "plugin";
+  if (!strcmp(rel, "scheduler")) return "scheduler";
+  if (!strncmp(rel, "tools/", 6) && !strchr(slash + 1, '/')) return "tool";
+  if (!strncmp(rel, "hooks/", 6) && !strchr(slash + 1, '/')) return "hook";
+  if (n > 9 && !strcmp(rel + n - 9, "/SKILL.md")) return "skill";
+  return "file";
+}
+
+// Reports every file under `dir`, a policy folder or a folder in one, at
+// most kPolicyDepth folders deep. A change to any of them stops a run, so
+// the walk covers the helper files of the policy's hooks and tools too.
+static void ReportTree(const Walk* w, const char* dir, int depth) {
+  enum { kPolicyDepth = 8 };
+  DIR* d = opendir(dir);
+  struct dirent* e;
+  while (d && (e = readdir(d))) {
+    if (e->d_name[0] == '.') continue;
+    char* path = XAsprintf("%s/%s", dir, e->d_name);
+    struct stat st;
+    if (lstat(path, &st) == 0 && S_ISDIR(st.st_mode)) {
+      if (depth < kPolicyDepth) ReportTree(w, path, depth + 1);
+    } else {
+      Report(w, PolicyKind(path + strlen(w->dir) + 1), path, NULL);
+    }
+    free(path);
+  }
+  if (d) closedir(d);
+}
+
 // Reports each `file` (plugin.yaml or kit.yaml) one level under
 // `parent`/`sub`, in the folder "<kind>:<entry>".
 static void ReportInstalled(const Walk* w, const char* parent, const char* sub,
@@ -125,7 +161,7 @@ static void ReportInstalled(const Walk* w, const char* parent, const char* sub,
     char* dir = XAsprintf("%s/%s", folder, e->d_name);
     char* path = XAsprintf("%s/%s", dir, file);
     char* label = XAsprintf("%s:%s", kind, e->d_name);
-    Walk in = {w->fn, w->ctx, label, dir};
+    Walk in = {w->fn, w->ctx, label, dir, 0};
     Report(&in, kind, path, file);
     free(label);
     free(path);
@@ -138,13 +174,13 @@ static void ReportInstalled(const Walk* w, const char* parent, const char* sub,
 // Walks every harness file; see trust.h.
 void HarnessFiles(const Spec* spec, HarnessFileFn fn, void* ctx) {
   int own = !spec->config || strcmp(spec->config, spec->path);
-  Walk w = {fn, ctx, own ? "spec" : "config", spec->dir};
+  Walk w = {fn, ctx, own ? "spec" : "config", spec->dir, 0};
   const char* slash = strrchr(spec->path, '/');
   Report(&w, own ? "spec" : "config", spec->path,
          slash ? slash + 1 : spec->path);
   if (spec->config && own) {
     slash = strrchr(spec->config, '/');
-    Walk c = {fn, ctx, "config", spec->dir};
+    Walk c = {fn, ctx, "config", spec->dir, 0};
     Report(&c, "config", spec->config, slash ? slash + 1 : spec->config);
   }
   ReportText(spec, &w, JsonGet(spec->root, "instructions"));
@@ -155,10 +191,16 @@ void HarnessFiles(const Spec* spec, HarnessFileFn fn, void* ctx) {
     const Layer* layer = &spec->layers[i];
     int is_spec = !layer->plugin && !seen_spec;
     seen_spec |= is_spec;
-    char* label = layer->plugin ? XAsprintf("plugin:%s", layer->plugin)
-                                : XStrdup(is_spec ? "spec" : "config");
-    Walk in = {fn, ctx, label, layer->dir};
-    ReportLayer(spec, &in, layer);
+    char* label = layer->plugin
+                      ? XAsprintf("%s:%s", layer->policy ? "policy" : "plugin",
+                                  layer->plugin)
+                      : XStrdup(is_spec ? "spec" : "config");
+    Walk in = {fn, ctx, label, layer->dir, layer->policy};
+    if (layer->policy) {
+      ReportTree(&in, layer->dir, 0);
+    } else {
+      ReportLayer(spec, &in, layer);
+    }
     free(label);
   }
   const char* programs[] = {"compactors", "credentials", "adapters"};

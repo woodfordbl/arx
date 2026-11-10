@@ -30,6 +30,55 @@ static void AddFolder(cJSON* list, const char* dir, Buffer* err) {
   free(real);
 }
 
+// The name of the policy in folder `dir`; see trust.h.
+const char* PolicyName(const char* dir) {
+  const char* slash = strrchr(dir, '/');
+  return slash ? slash + 1 : dir;
+}
+
+// Appends each line of `text` to `err` as "arx: policy DIR: <line>".
+static void Problems(Buffer* err, const char* dir, const char* text) {
+  while (*text) {
+    size_t n = strcspn(text, "\n");
+    BufferPrintf(err, "arx: policy %s: %.*s\n", dir, (int)n, text);
+    text += n + (text[n] == '\n');
+  }
+}
+
+// Adds the policy layers; see trust.h.
+void PolicyLoad(Spec* spec, Buffer* err) {
+  cJSON* over = cJSON_CreateObject();
+  cJSON* dir;
+  cJSON_ArrayForEach(dir, spec->policy) {
+    const char* where = dir->valuestring;
+    const char* name = PolicyName(where);
+    Spec plugin;
+    Buffer bad = {0};
+    if (PluginRead(where, &plugin, &bad) == 0) {
+      const char* own = JsonStr(plugin.root, "name", name);
+      if (strcmp(own, name)) {
+        BufferPrintf(&bad, "%s: name \"%s\" must match the folder name\n",
+                     plugin.path, own);
+      }
+      for (int l = 0; l < spec->layer_count; l++) {
+        if (strcmp(spec->layers[l].plugin, name)) continue;
+        BufferPrintf(&bad, "another policy folder is also named %s\n", name);
+      }
+    }
+    if (bad.len) {
+      Problems(err, where, bad.data);
+    } else {
+      PluginAdopt(spec, &plugin, where, name, over);
+      PluginRow(spec, name, "policy", "--policy", where);
+    }
+    SpecFree(&plugin);
+    BufferFree(&bad);
+  }
+  // A policy's values win over the spec's and over --set.
+  if (cJSON_IsObject(spec->root)) JsonMergeOver(spec->root, over);
+  cJSON_Delete(over);
+}
+
 // Resolves the policy folders; see trust.h.
 int PolicyResolve(cJSON** policy, Buffer* err) {
   size_t before = err->len;

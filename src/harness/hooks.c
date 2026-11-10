@@ -76,6 +76,7 @@ int HookRunOne(struct Agent* a, const Layer* layer, const char* point,
   *event = EventNew("hook");
   cJSON_AddStringToObject(*event, "point", point);
   if (layer->plugin) cJSON_AddStringToObject(*event, "plugin", layer->plugin);
+  if (layer->policy) cJSON_AddTrueToObject(*event, "policy");
   if (HookBand(&a->spec, layer, point) != 1) {
     cJSON_AddStringToObject(*event, "band",
                             kBandNames[HookBand(&a->spec, layer, point)]);

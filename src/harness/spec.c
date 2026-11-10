@@ -255,6 +255,7 @@ int SpecLoad(const char* path, cJSON* sets, cJSON* policy, Spec* spec,
   if (!path) {
     *spec = config;  // the defaults are the whole spec
     spec->config = XStrdup(spec->path);
+    spec->policy = cJSON_Duplicate(policy, 1);
     listed =
         cJSON_IsObject(spec->root) ? BuildList(spec, NULL, 1, sets, err) : 0;
   } else if (SpecParse(path, spec, err)) {
@@ -263,6 +264,7 @@ int SpecLoad(const char* path, cJSON* sets, cJSON* policy, Spec* spec,
   } else {
     spec->path = XStrdup(path);
     spec->dir = DirName(path);
+    spec->policy = cJSON_Duplicate(policy, 1);
     if (cJSON_IsObject(spec->root)) {
       listed = BuildList(spec, &config, 0, sets, err);
     }
@@ -286,7 +288,7 @@ int SpecLoad(const char* path, cJSON* sets, cJSON* policy, Spec* spec,
     } else if (!spec->prompt_from) {
       spec->prompt_from = XStrdup("default");
     }
-    spec->policy = cJSON_Duplicate(policy, 1);
+    PolicyLoad(spec, err);
     PluginsLoad(spec);
   }
   if (listed == 0) SpecValidate(spec, err);

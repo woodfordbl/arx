@@ -86,10 +86,11 @@ static void TrackSettings(Spec* spec, cJSON* have, cJSON* mine,
 }
 
 // Takes in a plugin's instructions and model_settings; see harness.h.
-void PluginKeysAdopt(Spec* spec, cJSON* root, Layer* layer) {
+void PluginKeysAdopt(Spec* spec, cJSON* root, Layer* layer, cJSON* over) {
   // A value in the settings replaces the text, and null drops it. Settings
-  // for model_settings merge over the plugin's own, in Adopt.
-  cJSON* text = JsonGet(layer->settings, "instructions");
+  // for model_settings merge over the plugin's own, in Adopt. No setting
+  // changes or drops a policy's text.
+  cJSON* text = over ? NULL : JsonGet(layer->settings, "instructions");
   if (text) {
     cJSON_DeleteItemFromObjectCaseSensitive(root, "instructions");
     if (!cJSON_IsNull(text)) {
@@ -97,13 +98,12 @@ void PluginKeysAdopt(Spec* spec, cJSON* root, Layer* layer) {
     }
   }
   // The text stays with the layer: it is added to the prompt, not merged
-  // into the spec's instructions. A policy layer (trust) keeps its text
-  // the same way, but gets no settings, and merges its model_settings over
-  // the spec, first policy first, instead of under it.
+  // into the spec's instructions. A policy's model settings win over the
+  // spec's, so they are tracked against the policies before it only.
   layer->instructions =
       cJSON_DetachItemFromObjectCaseSensitive(root, "instructions");
   AbsoluteText(layer->instructions, layer->dir);
-  TrackSettings(spec, JsonGet(spec->root, "model_settings"),
+  TrackSettings(spec, JsonGet(over ? over : spec->root, "model_settings"),
                 JsonGet(root, "model_settings"), "model_settings",
                 layer->plugin);
 }

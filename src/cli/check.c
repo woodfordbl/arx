@@ -40,9 +40,12 @@ static char* LayerFile(const Layer* layer, const char* sub, const char* name) {
 
 // How warnings name a layer.
 static char* LayerLabel(const Spec* spec, const Layer* layer) {
+  if (layer->policy) return XAsprintf("policy %s", layer->plugin);
   if (layer->plugin) return XAsprintf("plugin %s", layer->plugin);
-  if (layer == &spec->layers[0]) return XStrdup("the spec folder");
-  return XStrdup("the config folder");
+  for (const Layer* l = spec->layers; l < layer; l++) {
+    if (!l->plugin) return XStrdup("the config folder");
+  }
+  return XStrdup("the spec folder");
 }
 
 // Prints the hooks of every layer, with the plugins that add them.
@@ -183,21 +186,13 @@ static void OverlapWarnings(const Spec* spec, Buffer* out) {
   }
 }
 
-// True when `list` (an array of strings) has `name`.
-static int Lists(cJSON* list, const char* name) {
-  cJSON* c;
-  cJSON_ArrayForEach(c, list) {
-    if (cJSON_IsString(c) && !strcmp(c->valuestring, name)) return 1;
-  }
-  return 0;
-}
-
-// Warns when a plugin's tool hides a tool of a layer below it, unless the
-// plugin declares it in `replaces:`.
+// Warns when a plugin's tool hides a tool of a layer below it only by its
+// place in the order. A hide that the tool rule explains (ToolPass: a
+// policy's tool, or a name in `replaces:`) gets no warning.
 static void HiddenWarnings(const Spec* spec, Buffer* out) {
   for (int i = 0; i < spec->layer_count; i++) {
     const Layer* layer = &spec->layers[i];
-    if (!layer->plugin) continue;
+    if (!layer->plugin || layer->policy) continue;
     char* dir = PathJoin(layer->dir, "tools");
     char** names;
     int n = ListNames(dir, &names);
@@ -205,7 +200,8 @@ static void HiddenWarnings(const Spec* spec, Buffer* out) {
       char* mine = LayerFile(layer, "tools", names[t]);
       for (int j = i + 1; mine && j < spec->layer_count; j++) {
         char* other = LayerFile(&spec->layers[j], "tools", names[t]);
-        if (other && !Lists(layer->replaces, names[t])) {
+        if (other && ToolPass(layer, names[t]) == 3 &&
+            ToolPass(&spec->layers[j], names[t]) == 3) {
           char* label = LayerLabel(spec, &spec->layers[j]);
           BufferPrintf(out,
                        "- plugin %s hides the tool %s of %s; if that is on "

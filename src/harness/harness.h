@@ -10,6 +10,7 @@
 //   fields.c     the field tables of agent.yaml, plugin.yaml and kit.yaml
 //   validate.c, schema.c  validation and `arx schema`, from those tables
 //   tools.c      finds tools: tools/<name> in every layer, and subagents
+//   policy.c, tool_layers.c, manifest.c, gate.c  see trust.h
 //   tool_exec.c  runs one tool call; subagents run arx again
 //   keys.c       the keys of a tool call, which say what may run together
 //   hooks.c      runs hooks/<point>, by band and then in layer order
@@ -40,6 +41,7 @@ typedef struct Layer {
   cJSON* settings;  // a plugin's settings from the active list, or NULL
   cJSON* replaces;  // the tools a plugin hides on purpose, or NULL
   cJSON* instructions;  // a plugin's text node, with absolute paths, or NULL
+  int policy;           // a policy folder (--policy): see trust.h
 } Layer;
 
 // A loaded, validated spec.
@@ -154,7 +156,8 @@ void KitLockWrite(const Spec* spec);
 void PluginsLoad(Spec* spec);
 
 // Adopt's part for a plugin's instructions and model_settings (plugin_keys.c).
-void PluginKeysAdopt(Spec* spec, cJSON* root, Layer* layer);
+// `over` holds the values of the policy folders before this one, or is NULL.
+void PluginKeysAdopt(Spec* spec, cJSON* root, Layer* layer, cJSON* over);
 
 // Frees spec->layers.
 void LayersFree(Spec* spec);
@@ -266,9 +269,9 @@ typedef struct ToolSet {
 
 // Rebuilds a->tools from the spec and every layer's tools/: an executable
 // is a tool named after its file, described by <file>.json or else
-// `<tool> --schema`, with {{timeout}} and {{tool_output.*}} filled in. The
-// first layer with a working tool of a name wins. A file that only runs
-// `exec "$ARX_BIN" tool NAME "$@"` starts as `arx tool NAME`. A spec entry
+// `<tool> --schema`, with {{timeout}} and {{tool_output.*}} filled in. When
+// layers share a name, ToolPass (trust.h) says which wins. A file that only
+// runs `exec "$ARX_BIN" tool NAME "$@"` starts as `arx tool NAME`. A spec entry
 // with `agent: path` is a subagent. Problems become notes, once each.
 void ToolsBuild(struct Agent* a);
 

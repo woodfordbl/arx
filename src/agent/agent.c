@@ -130,13 +130,14 @@ static void SkillsIndex(Agent* a, Buffer* out) {
 static void TextPlugins(Agent* a, Buffer* out) {
   int n = 0, at = 0;
   for (int l = 0; l < a->spec.layer_count; l++) {
-    n += a->spec.layers[l].plugin && a->spec.layers[l].instructions;
+    const Layer* layer = &a->spec.layers[l];
+    n += layer->plugin && !layer->policy && layer->instructions;
   }
   if (!n) return;
   BufferAppendStr(out, n == 1 ? " The plugin " : " The plugins ");
   for (int l = 0; l < a->spec.layer_count; l++) {
     const Layer* layer = &a->spec.layers[l];
-    if (!layer->plugin || !layer->instructions) continue;
+    if (!layer->plugin || layer->policy || !layer->instructions) continue;
     at++;
     BufferPrintf(out, "%s%s",
                  at == 1   ? ""
@@ -155,7 +156,7 @@ static void PluginsText(Agent* a, Buffer* out) {
   size_t before = out->len;
   for (int l = 0; l < a->spec.layer_count; l++) {
     const Layer* layer = &a->spec.layers[l];
-    if (!layer->plugin) continue;
+    if (!layer->plugin || layer->policy) continue;
     BufferPrintf(out, "%s%s (%s)", out->len == before ? "" : ", ",
                  layer->plugin, layer->dir);
   }
@@ -247,15 +248,14 @@ static void AppendPart(Buffer* out, char* part) {
 
 // The text of each plugin layer, each rendered on its own and joined by a
 // blank line, or NULL when none adds text. With `policy`, the text of each
-// policy layer instead: those come with trust (--policy DIR), so there are
-// none yet.
+// policy layer instead (--policy DIR), in the order of the folders.
 static char* PluginText(Agent* a, int policy) {
   Buffer out = {0};
   g_rendering_plugins = 1;
-  for (int l = 0; !policy && l < a->spec.layer_count; l++) {
+  for (int l = 0; l < a->spec.layer_count; l++) {
     const Layer* layer = &a->spec.layers[l];
-    char* text =
-        layer->plugin ? SpecText(&a->spec, layer->instructions, NULL) : NULL;
+    int mine = layer->plugin && !layer->policy == !policy;
+    char* text = mine ? SpecText(&a->spec, layer->instructions, NULL) : NULL;
     AppendPart(&out, text ? RenderTemplate(a, text) : NULL);
     free(text);
   }
