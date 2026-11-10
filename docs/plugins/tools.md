@@ -161,6 +161,9 @@ Declare them in the schema (the schema file or `--schema`):
   the keys again for the new call.
 - **The results** go to the model in call order, so the transcript is the
   same as when the calls run one at a time.
+- **A background call** holds only its named keys. `*` does not count
+  against it, so `bash` runs beside it. See
+  [Keys of a background call](schedulers.md#keys-of-a-background-call).
 
 The [built-in scheduler](schedulers.md) starts calls by their keys. A
 scheduler plugin can replace it.

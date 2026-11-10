@@ -74,10 +74,11 @@ Every source file, by folder:
 | | `check.c` | `arx check` and `arx tools` |
 | | `shell_tools.c` | the `bash` and `edit` tools behind `arx tool NAME` |
 | | `external.c` | `arx foo` runs `arx-foo`; `arx help` lists every command |
-| `agent/` | `loop.c` | the turn loop: caps, reload, inbox, notes, compaction, tool calls, stop hook |
+| `agent/` | `loop.c` | the turn loop: caps, reload, inbox, notes, compaction, tool calls, the wait for background calls, stop hook |
 | | `model_call.c` | one model call through its hooks |
 | | `tool_calls.c` | the tool runtime, over the session's call table |
-| | `scheduler.c` | the scheduler plugin, which decides when queued tool calls run |
+| | `background.c` | background calls: the placeholder, the result line in the inbox, cancel, shutdown and resume |
+| | `scheduler.c` | the scheduler plugin, which decides when queued tool calls run and which move to the background |
 | | `run.c` | session lifecycle: load, open or resume, observers, headless or interactive, result |
 | | `agent.c` | caps parsing, notes, the system prompt and `{{templates}}` |
 | `harness/` | `spec.c` | YAML to JSON with line numbers, `--set`, merging over `config.yaml` |

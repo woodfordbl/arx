@@ -124,12 +124,49 @@ problems without changing anything.
 | The subagent comes from a user plugin | it loads your user plugins too, so it has its own subagent tool and can call itself, up to the depth cap | add a `plugins:` list to its spec, such as `plugins: [shell]` |
 | The subagent can edit files you did not plan | it gets `bash` and `edit` from your `shell` plugin | turn `edit` off in its spec with `tools: {edit: {enabled: false}}` |
 
-## Planned
+## Run a subagent in the background
 
-**Planned:** calls that do not block. A scheduler will return
-`started as c7` at once and send the real result later, so the parent goes
-on working while a subagent runs. See
-[Planned changes](planned.md#calls-that-do-not-block).
+By default the parent waits for a subagent. With the
+[`background` plugin](../../plugins/background), a subagent call returns
+`started as c1` at once, the parent goes on working, and the answer comes
+later as a `[harness]` note.
+
+1. Install the plugin. It needs `python3`.
+
+   ```sh
+   arx plugin add background
+   ```
+
+2. If your spec or kit has a `plugins:` list, add `background` to it. The
+   settings are optional:
+
+   ```yaml
+   # agent.yaml
+   plugins:
+     - shell
+     - reviewer
+     - background: {agents: true, max: 4}
+   ```
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `agents` | `true` | Move every subagent call to the background at once. |
+| `tools` | `[]` | Also move calls to these tools at once. |
+| `after` | none | Move any other call to the background when it still runs after this long, such as `30s`. |
+| `max` | `4` | The most background calls that run at once. More calls get `queued as c5` and start when one ends. |
+
+- **The wake turn**: when the parent has nothing else to do, it replies
+  without a tool call and arx waits. Each batch of answers then costs one
+  more model call. If the parent needs the answer at once, that is one turn
+  more than a foreground call.
+- **Cost**: each subagent still gets the parent's caps, so a low `max` is
+  the guard on cost.
+- **Cancel**: the plugin adds a `cancel_call` tool. The model passes the id
+  from the placeholder, such as `c1`. You can run `arx ctl last cancel c1`.
+- **Ctrl-C** stops background subagents too, and none outlives the session.
+
+[Schedulers](schedulers.md#run-calls-in-the-background) has the full
+contract: the placeholder, the note, cancel and `--resume`.
 
 ## Related
 
