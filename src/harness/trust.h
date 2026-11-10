@@ -1,5 +1,6 @@
 // trust.h: the parts of the harness that guard it. They build on harness.h.
 //   signature.c  walks every harness file; the fingerprint for hot reload
+//   policy.c     policy folders: --policy DIR and ARX_POLICY
 
 #ifndef SRC_HARNESS_TRUST_H_
 #define SRC_HARNESS_TRUST_H_
@@ -38,5 +39,13 @@ void HarnessFiles(const Spec* spec, HarnessFileFn fn, void* ctx);
 // microseconds before each model call: path, modification time and size,
 // and the mode of the entries of tools/ and hooks/.
 uint64_t SpecSignature(const Spec* spec);
+
+// ---- policy.c ----
+
+// Replaces `*policy` (the --policy arguments, an array of strings or NULL)
+// with the absolute policy folders: those of ARX_POLICY (a colon-separated
+// list) first, then the flags', each once. NULL when there are none.
+// Returns 0, or -1 with one line for each missing folder in `err`.
+int PolicyResolve(cJSON** policy, Buffer* err);
 
 #endif  // SRC_HARNESS_TRUST_H_

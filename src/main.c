@@ -53,6 +53,7 @@ int main(int argc, char** argv) {
   }
   free(a.cap_args);
   cJSON_Delete(a.sets);
+  cJSON_Delete(a.policy);
   free(g_self);
   return code;
 }

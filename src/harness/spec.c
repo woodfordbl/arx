@@ -237,7 +237,8 @@ static int BuildList(Spec* spec, Spec* config, int spec_is_config, cJSON* sets,
 }
 
 // Loads, merges, overrides, validates and fingerprints; see harness.h.
-int SpecLoad(const char* path, cJSON* sets, Spec* spec, Buffer* err) {
+int SpecLoad(const char* path, cJSON* sets, cJSON* policy, Spec* spec,
+             Buffer* err) {
   Spec config;
   memset(spec, 0, sizeof(*spec));
   size_t errors_before = err->len;
@@ -285,6 +286,7 @@ int SpecLoad(const char* path, cJSON* sets, Spec* spec, Buffer* err) {
     } else if (!spec->prompt_from) {
       spec->prompt_from = XStrdup("default");
     }
+    spec->policy = cJSON_Duplicate(policy, 1);
     PluginsLoad(spec);
   }
   if (listed == 0) SpecValidate(spec, err);
@@ -315,6 +317,7 @@ void SpecFree(Spec* spec) {
   cJSON_Delete(spec->setting_from);
   BufferFree(&spec->warnings);
   free(spec->prompt_from);
+  cJSON_Delete(spec->policy);
   memset(spec, 0, sizeof(*spec));
 }
 

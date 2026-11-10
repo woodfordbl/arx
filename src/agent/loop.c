@@ -49,7 +49,7 @@ static void MaybeReload(Agent* a) {
   Spec fresh;
   Buffer err = {0};
   cJSON* e = EventNew("harness.reload");
-  if (SpecLoad(a->spec_path, a->sets, &fresh, &err)) {
+  if (SpecLoad(a->spec_path, a->sets, a->policy, &fresh, &err)) {
     a->spec.sig = sig;  // report this version once, not every turn
     AgentNote(a,
               "Your harness edit was rejected; the previous version is "

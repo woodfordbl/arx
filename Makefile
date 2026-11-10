@@ -5,7 +5,8 @@
 #   make test       run the src/base unit tests (tests/base_test.c), then
 #                   tests/run.sh, plugins.sh, layers.sh, cli.sh, shell.sh,
 #                   hooks.sh, runtime.sh, kits.sh, credentials.sh, state.sh,
-#                   climb.sh, climb-run.sh and ui.sh against ./arx-debug
+#                   climb.sh, climb-run.sh, ui.sh and trust.sh against
+#                   ./arx-debug
 #   make bench      check the performance budgets against ./arx
 #   make lint       style checks (scripts/lint.sh)
 #   make format     rewrite src/ and pick/ in Google style
@@ -103,6 +104,7 @@ test: arx-debug build/dbg/base_test $(PICK)
 	ARX=./arx-debug tests/climb.sh
 	ARX=./arx-debug tests/climb-run.sh
 	ARX=./arx-debug tests/ui.sh
+	ARX=./arx-debug tests/trust.sh
 
 # The browser build: the same sources with proc_host.c in place of the
 # native platform files. zig bundles wasi-libc; WASI_CC can name wasi-sdk's

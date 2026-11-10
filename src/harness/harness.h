@@ -64,17 +64,20 @@ typedef struct Spec {
   cJSON* setting_from;  // {"model_settings.<path>": plugin}, from plugins
   Buffer warnings;      // for `arx check`: plugins that set a field apart
   char* prompt_from;    // where the base prompt came from, for `arx check`
+  cJSON* policy;        // the policy folders (absolute), in order, or NULL
 } Spec;
 
 // Loads and validates `path`, merged over the kit and the user's defaults
 // in ConfigDir()/config.yaml (the spec wins key by key, and the kit wins
 // over the defaults), applies `sets` (--set, and --kit as `kit=NAME`; may be
 // NULL), builds the active list (see ActiveBuild) and adds the plugins (see
-// PluginsLoad). A missing kit is an error. With `path` NULL the defaults are
-// the whole spec, and tools/ and hooks/ come from the config directory.
-// Returns 0 and fills `spec`, or returns -1, appends one line per problem to
-// `err` ("file:line: path: message") and leaves `spec` empty.
-int SpecLoad(const char* path, cJSON* sets, Spec* spec, Buffer* err);
+// PluginsLoad), the policy folders in `policy` (may be NULL) first. A missing
+// kit is an error. With `path` NULL the defaults are the whole spec, and
+// tools/ and hooks/ come from the config directory. Returns 0 and fills
+// `spec`, or returns -1, appends one line per problem to `err`
+// ("file:line: path: message") and leaves `spec` empty.
+int SpecLoad(const char* path, cJSON* sets, cJSON* policy, Spec* spec,
+             Buffer* err);
 
 // Parses the YAML file at `path` into spec->root and spec->lines, without
 // validating it. Returns 0, or -1 with the problem in `err`.

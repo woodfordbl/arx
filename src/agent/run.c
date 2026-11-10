@@ -11,6 +11,7 @@
 #include "src/agent/agent.h"
 #include "src/base/base.h"
 #include "src/harness/harness.h"
+#include "src/harness/trust.h"
 #include "src/io/io.h"
 
 // The "status" for an exit code.
@@ -59,7 +60,8 @@ static int OpenSession(Agent* a) {
 // Loads the harness and starts the session. Returns 0 or an exit code.
 static int Start(Agent* a) {
   Buffer err = {0};
-  if (SpecLoad(a->spec_path, a->sets, &a->spec, &err)) {
+  if (PolicyResolve(&a->policy, &err) ||
+      SpecLoad(a->spec_path, a->sets, a->policy, &a->spec, &err)) {
     fputs(err.data, stderr);
     BufferFree(&err);
     return kExitUsage;

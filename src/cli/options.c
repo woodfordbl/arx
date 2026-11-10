@@ -51,6 +51,9 @@ int ParseOptions(int argc, char** argv, int first, Agent* a) {
       cJSON_AddStringToObject(a->sets, "kit", value);
     } else if (!strcmp(arg, "--set")) {
       if (SpecAddSet(a->sets, value)) return UsageError("bad --set", value);
+    } else if (!strcmp(arg, "--policy")) {
+      if (!a->policy) a->policy = cJSON_CreateArray();
+      cJSON_AddItemToArray(a->policy, cJSON_CreateString(value));
     } else if (!strcmp(arg, "--cap")) {
       if (CapsParse(&a->caps, value)) return UsageError("bad --cap", value);
       a->cap_args[a->cap_count++] = (char*)value;

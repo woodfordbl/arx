@@ -49,6 +49,7 @@ typedef struct Agent {
   const char* resume;  // session to resume, or NULL
   const char* events;  // --events target, or NULL
   cJSON* sets;         // --set overrides, applied on every (re)load
+  cJSON* policy;       // policy folders: ARX_POLICY's, then --policy's
   Caps caps;
   char** cap_args;  // the raw --cap arguments, passed on to subagents
   int cap_count;

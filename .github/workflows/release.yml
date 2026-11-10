@@ -56,7 +56,7 @@ jobs:
             make all CC="gcc -static" VERSION='"${GITHUB_REF_NAME#v}"' &&
             ARX=./arx tests/run.sh && ARX=./arx tests/plugins.sh &&
             ARX=./arx tests/layers.sh && ARX=./arx tests/cli.sh &&
-            ARX=./arx tests/ui.sh &&
+            ARX=./arx tests/ui.sh && ARX=./arx tests/trust.sh &&
             tests/bench.sh &&
             make dist TARGET=${{ matrix.target }} VERSION='"${GITHUB_REF_NAME#v}"
       - uses: actions/upload-artifact@v4

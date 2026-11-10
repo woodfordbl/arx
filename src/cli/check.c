@@ -13,6 +13,7 @@
 #include "src/base/base.h"
 #include "src/cli/cli.h"
 #include "src/harness/harness.h"
+#include "src/harness/trust.h"
 
 static const char* const kBandNames[] = {"policy", "normal", "final"};
 // Bytes of text above which one plugin's instructions get a warning.
@@ -22,7 +23,8 @@ static const size_t kLongText = 4096;
 static int LoadSpec(Agent* a) {
   Buffer err = {0};
   ResolveSpec(a);
-  int failed = SpecLoad(a->spec_path, a->sets, &a->spec, &err);
+  int failed = PolicyResolve(&a->policy, &err) ||
+               SpecLoad(a->spec_path, a->sets, a->policy, &a->spec, &err);
   if (failed) fputs(err.data, stderr);
   BufferFree(&err);
   return failed ? kExitUsage : 0;
