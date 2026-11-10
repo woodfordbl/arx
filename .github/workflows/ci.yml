@@ -37,6 +37,7 @@ jobs:
             ARX=./arx tests/layers.sh && ARX=./arx tests/cli.sh &&
             ARX=./arx tests/climb.sh && ARX=./arx tests/climb-run.sh &&
             ARX=./arx tests/ui.sh && ARX=./arx tests/trust.sh &&
+            ARX=./arx tests/gate.sh &&
             tests/bench.sh'
 
   wasm:

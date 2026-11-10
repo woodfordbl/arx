@@ -3,6 +3,7 @@
 //   policy.c     policy folders: --policy DIR and ARX_POLICY
 //   tool_layers.c  which layer's tool wins, and the tools of every layer
 //   manifest.c   the accepted list: each harness file as the policy accepted it
+//   gate.c       the gate: harness_edit hooks judge each change before a reload
 
 #ifndef SRC_HARNESS_TRUST_H_
 #define SRC_HARNESS_TRUST_H_
@@ -164,5 +165,64 @@ int ManifestRevert(ManifestFile* f);
 // Copies the file at `path` to `dest`, making its folders, so a rejected
 // version is kept. A missing file is not an error. Returns 0 or -1.
 int ManifestKeep(const char* path, const char* dest);
+
+// ---- policy.c, for gate.c ----
+
+// Adds `keys` to `change`, a change of a YAML file (the spec, config.yaml,
+// a plugin.yaml or a kit.yaml): the dotted path of each value that changed,
+// was added or went away, down to the first scalar or list. For the kinds
+// spec and config it also adds `pinned`: the keys that `sets` (--set and
+// --kit) override. `old` is a file with the accepted version, or NULL;
+// `now` is the file's record now, or NULL when it is gone. A file that does
+// not parse gets no keys.
+void EditKeys(cJSON* change, const char* old, const ManifestFile* now,
+              cJSON* sets);
+
+// ---- gate.c ----
+
+// The gate of a run with a policy folder: a->gate, or NULL without one.
+typedef struct Gate Gate;
+
+// Starts the gate after the first load, when the run has a policy folder:
+// it takes the harness files on disk as accepted. When a policy folder has
+// a hooks/harness_edit, it also keeps their copies. Does nothing without a
+// policy, or when the gate is already open.
+void GateOpen(struct Agent* a);
+
+// Frees the gate.
+void GateFree(struct Agent* a);
+
+// True when a harness file on disk is not the accepted version, so a reload
+// is due. Call it only with a gate.
+int GateDirty(struct Agent* a);
+
+// Judges the changes on disk before a reload. A change in a policy folder
+// stops the run. Otherwise each policy folder's harness_edit hook gets
+// {"point", "session", "turn", "changes": [{path, rel, layer, kind, change,
+// exec, old, keys, pinned}]}, by band and then in layer order. It prints
+// nothing to accept, {"reject": {PATH: REASON}}, {"decision": "reject"} or
+// {"decision": "stop"}, each with "reason". A failed hook rejects every
+// change, unless its `fail` option is `open`. arx reverts each rejected
+// change from its copy, keeps the rejected version in
+// <session>/harness/rejected/, notes the agent, and sends one harness.edit
+// event for each change. Sets `*rejected` to the number of rejected
+// changes. Returns -1 to go on with the reload, or kExitPolicy when a hook
+// said stop, a policy file changed or a file cannot be reverted.
+int GateReload(struct Agent* a, int* rejected);
+
+// Takes the harness files of a->spec, as GateReload judged them, as the
+// accepted list. Call it after the load that follows GateReload, whether
+// the new spec loaded or not.
+void GateAccept(struct Agent* a);
+
+// Checks the file at `path` right before arx runs it. Returns 1 when it is
+// the accepted version, or when nothing guards it (no gate; or no
+// harness_edit hook and the file is outside the policy folders). Else
+// returns 0 and sets `*why` to a message (a string constant); for a file in
+// a policy folder it also stops the run.
+int GateAllows(struct Agent* a, const char* path, const char** why);
+
+// Why the policy stopped the run (exit 5), or NULL.
+const char* GateStopped(struct Agent* a);
 
 #endif  // SRC_HARNESS_TRUST_H_

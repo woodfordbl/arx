@@ -40,12 +40,27 @@ static int CheckCaps(Agent* a) {
   return kExitCap;
 }
 
+// Returns kExitPolicy, with a note, when the policy stopped the run; else -1.
+static int PolicyStop(Agent* a) {
+  if (!GateStopped(a)) return -1;
+  cJSON* e = EventNew("note");
+  char* text = XAsprintf("stopped by the policy: %s", GateStopped(a));
+  cJSON_AddStringToObject(e, "text", text);
+  EventSend(e);
+  free(text);
+  return kExitPolicy;
+}
+
 // Reloads the spec, tools and prompt when any harness file changed. A bad
-// edit keeps the previous version and tells the agent why.
-static void MaybeReload(Agent* a) {
-  uint64_t sig = SpecSignature(&a->spec);
-  if (sig == a->spec.sig) return;
+// edit keeps the previous version and tells the agent why. With a policy
+// folder, the gate judges the changes first (GateReload) and may revert
+// some or stop the run. Returns -1 to go on, or kExitPolicy.
+static int MaybeReload(Agent* a) {
+  uint64_t sig = a->gate ? 0 : SpecSignature(&a->spec);
+  if (a->gate ? !GateDirty(a) : sig == a->spec.sig) return -1;
   double start = Now();
+  int rejected = 0;
+  if (a->gate && GateReload(a, &rejected) >= 0) return PolicyStop(a);
   Spec fresh;
   Buffer err = {0};
   cJSON* e = EventNew("harness.reload");
@@ -73,9 +88,12 @@ static void MaybeReload(Agent* a) {
     cJSON_AddTrueToObject(e, "ok");
     cJSON_AddNumberToObject(e, "tools", a->tools.count);
   }
+  if (a->gate) GateAccept(a);
+  if (rejected) cJSON_AddNumberToObject(e, "rejected", rejected);
   cJSON_AddNumberToObject(e, "ms", (Now() - start) * 1000);
   EventSend(e);
   BufferFree(&err);
+  return -1;
 }
 
 // Applies `arx ctl` commands: notes for the agent, and stop.
@@ -132,7 +150,8 @@ int RunTurns(Agent* a) {
     if (g_interrupted) return kExitInterrupted;
     int code = CheckCaps(a);
     if (code >= 0) return code;
-    MaybeReload(a);
+    code = MaybeReload(a);
+    if (code >= 0) return code;
     ReadInbox(a);
     if (a->stop_requested) return kExitDone;
     FlushNotes(a);

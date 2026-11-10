@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # trust.sh: tests policy folders against tests/fake-curl: --policy and
 # ARX_POLICY, what a policy puts first (hooks, tools, text, settings), and
-# that no list or kit removes it. Run with `make test`.
+# that no list or kit removes it. tests/gate.sh tests the harness_edit
+# gate. Run with `make test`.
 set -u
 . "$(dirname "$0")/lib.sh"
 unset ARX_POLICY

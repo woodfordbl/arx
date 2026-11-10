@@ -1,7 +1,8 @@
 // policy.c: policy folders. A policy folder is a plugin folder that the
 // person who starts a run names with --policy DIR or ARX_POLICY. It loads
 // before the spec folder, and no key in agent.yaml, config.yaml or a kit
-// can remove it, because none of them names it.
+// can remove it, because none of them names it. This file also names the
+// keys that an edit to a YAML file changed, for the harness_edit hook.
 
 #include <errno.h>
 #include <stdlib.h>
@@ -97,4 +98,61 @@ int PolicyResolve(cJSON** policy, Buffer* err) {
   *policy = cJSON_GetArraySize(list) ? list : NULL;
   if (!*policy) cJSON_Delete(list);
   return err->len == before ? 0 : -1;
+}
+
+// Adds to `keys` the dotted path of each value that differs between `a`
+// and `b` (each may be NULL), down to the first scalar or list.
+static void DiffKeys(cJSON* a, cJSON* b, const char* path, cJSON* keys) {
+  if (cJSON_IsObject(a) && cJSON_IsObject(b)) {
+    for (int side = 0; side < 2; side++) {
+      cJSON* mine = side ? b : a;
+      cJSON* c;
+      cJSON_ArrayForEach(c, mine) {
+        cJSON* other =
+            cJSON_GetObjectItemCaseSensitive(side ? a : b, c->string);
+        if (side && other) continue;  // both have it: done from `a`
+        char* p =
+            *path ? XAsprintf("%s.%s", path, c->string) : XStrdup(c->string);
+        DiffKeys(side ? other : c, side ? c : other, p, keys);
+        free(p);
+      }
+    }
+  } else if (*path && !(a && b && cJSON_Compare(a, b, 1))) {
+    cJSON_AddItemToArray(keys, cJSON_CreateString(path));
+  }
+}
+
+// Adds the changed keys of a YAML file to a change; see trust.h.
+void EditKeys(cJSON* change, const char* old, const ManifestFile* now,
+              cJSON* sets) {
+  Spec before = {0}, after = {0};
+  Buffer err = {0};
+  int ok = !old || SpecParse(old, &before, &err) == 0;
+  if (now && now->exists) ok = ok && SpecParse(now->path, &after, &err) == 0;
+  if (ok) {
+    cJSON* empty = cJSON_CreateObject();
+    cJSON* keys = cJSON_AddArrayToObject(change, "keys");
+    DiffKeys(cJSON_IsObject(before.root) ? before.root : empty,
+             cJSON_IsObject(after.root) ? after.root : empty, "", keys);
+    cJSON_Delete(empty);
+    const char* kind = JsonStr(change, "kind", "");
+    cJSON* pinned = strcmp(kind, "spec") && strcmp(kind, "config")
+                        ? NULL
+                        : cJSON_AddArrayToObject(change, "pinned");
+    cJSON* key;
+    if (!pinned) keys = NULL;
+    cJSON_ArrayForEach(key, keys) {
+      cJSON* set;
+      cJSON_ArrayForEach(set, sets) {
+        size_t n = strlen(set->string);
+        const char* k = key->valuestring;
+        if (strncmp(k, set->string, n) || (k[n] && k[n] != '.')) continue;
+        cJSON_AddItemToArray(pinned, cJSON_CreateString(k));
+        break;
+      }
+    }
+  }
+  SpecFree(&before);
+  SpecFree(&after);
+  BufferFree(&err);
 }

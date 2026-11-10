@@ -77,12 +77,19 @@ static int Start(Agent* a) {
   }
   FreeEnv(env);
   ToolsBuild(a);
+  GateOpen(a);  // the files on disk at the start are the accepted ones
   cJSON* e = EventNew("session.start");
   cJSON_AddStringToObject(e, "name", JsonStr(a->spec.root, "name", "agent"));
   cJSON_AddStringToObject(e, "model", JsonStr(a->spec.root, "model", ""));
   cJSON_AddStringToObject(e, "spec", a->spec.path);
   cJSON_AddBoolToObject(e, "resumed", a->resume != NULL);
   cJSON_AddNumberToObject(e, "tools", a->tools.count);
+  cJSON* names = a->spec.policy ? cJSON_AddArrayToObject(e, "policy") : NULL;
+  for (int l = 0; names && l < a->spec.layer_count; l++) {
+    const Layer* layer = &a->spec.layers[l];
+    if (!layer->policy) continue;
+    cJSON_AddItemToArray(names, cJSON_CreateString(layer->plugin));
+  }
   EventSend(e);
   return 0;
 }
@@ -210,6 +217,7 @@ int AgentMain(Agent* a) {
   if (code) return code;
   code = a->interactive ? Interactive(a) : Headless(a);
   Finish(a, code);
+  GateFree(a);
   ToolsFree(&a->tools);
   SpecFree(&a->spec);
   SessionClose(&a->session);

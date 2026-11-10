@@ -71,6 +71,7 @@ typedef struct Agent {
   int stop_requested;        // `arx ctl stop` arrived
   Call** calls;              // the session's call table (tool_calls.c)
   int call_count;
+  struct Gate* gate;  // the gate on harness edits (trust.h), or NULL
 } Agent;
 
 // Parses one --cap argument ("turns=50", "usd=2", "wall=8h", "depth=2")
