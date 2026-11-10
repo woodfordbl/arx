@@ -10,16 +10,21 @@
 #include "src/base/base.h"
 #include "src/cli/cli.h"
 
-// Runs the agent: headless with -p or piped stdin, else interactive.
+// Runs the agent: headless with -p or piped stdin, else interactive. With
+// --input jsonl a piped stdin carries the prompts, so the run is interactive.
 static int RunAgent(int argc, char** argv, Agent* a) {
   int code = ParseOptions(argc, argv, 1, a);
   if (code) return code;
+  if (a->input_jsonl && a->prompt) {
+    return UsageError("--input jsonl does not take -p", NULL);
+  }
   ResolveSpec(a);
   char* stdin_prompt = NULL;
-  if ((a->prompt && !strcmp(a->prompt, "-")) || (!a->prompt && !isatty(0))) {
+  int piped = !a->prompt && !a->input_jsonl && !isatty(0);
+  if ((a->prompt && !strcmp(a->prompt, "-")) || piped) {
     a->prompt = stdin_prompt = ReadStdin();
   }
-  a->interactive = !a->prompt && isatty(0);
+  a->interactive = a->input_jsonl || (!a->prompt && isatty(0));
   if (!a->interactive && !a->resume && (!a->prompt || !*a->prompt)) {
     code = UsageError("no task: use -p TASK, or pipe one on stdin", NULL);
   } else {

@@ -21,9 +21,10 @@
 extern char** environ;
 
 // The first Ctrl-C stops the current step; a second one exits at once.
+// g_interrupted keeps the signal, so a reader can tell SIGTERM from Ctrl-C.
 static void OnSignal(int sig) {
   if (g_interrupted && sig == SIGINT) _exit(kExitInterrupted);
-  g_interrupted = 1;
+  g_interrupted = sig;
 }
 
 // No SA_RESTART: blocking reads return so the loop can notice the signal.

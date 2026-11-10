@@ -24,17 +24,20 @@ arx check | tools | schema | tool | request PATH | watch | ctl | version | help
 
 ## Running an agent
 
-`arx` with no command runs the agent, in one of two modes:
+`arx` with no command runs the agent, in one of three modes:
 
 | Mode | Starts when | Use it when |
 |---|---|---|
 | Interactive | stdin is a terminal and there is no `-p` | you want to watch and steer the agent turn by turn |
 | Headless | you pass `-p TASK` or `-p -` (task on stdin), or stdin is a pipe | the agent runs alone: scripts, CI, long experiments |
+| JSON lines | you pass `--input jsonl` | a program drives one long session: a front-end, an editor bridge, a browser |
 
 - **Interactive**: each line you type is a message. Ctrl-C stops the
   current turn. `/exit`, `/quit`, Ctrl-D, or Ctrl-C at the prompt ends the
   session.
 - **Headless**: the agent runs until it stops, then arx exits.
+- **JSON lines**: arx reads one prompt per line on stdin and keeps running
+  until stdin ends. See [`--input jsonl`](#--input-jsonl).
 
 | Option | Description |
 |---|---|
@@ -44,9 +47,38 @@ arx check | tools | schema | tool | request PATH | watch | ctl | version | help
 | `--set KEY=VALUE` | Overrides a spec value for this run, such as `limits.max_turns=10`. Repeatable. See [Overrides](spec.md#overrides). |
 | `--cap KEY=VALUE` | Sets a hard limit the spec cannot raise. Repeatable. See [Caps](#caps). |
 | `--resume ID\|last` | Continues a session with its full history and its plugins' state. |
+| `--input jsonl` | Reads prompts as JSON lines on stdin and keeps running. See [`--input jsonl`](#--input-jsonl). |
 | `--json` | Prints the result as JSON on stdout. See [JSON result](#json-result). |
 | `--events PATH\|-\|fd:N` | Also writes the event stream to a file, stdout or a file descriptor. |
 | `-q`, `--quiet` | Turns off the terminal view. |
+
+### `--input jsonl`
+
+`--input jsonl` runs one session that takes its prompts from a program. It
+works like interactive mode, with a pipe in place of the terminal. Use it to
+drive arx from a front-end, with `--quiet --events fd:3` to read what
+happens.
+
+```bash
+printf '%s\n' '{"prompt": "List the files here."}' '{"prompt": "Now count them."}' |
+  arx --input jsonl --quiet --events events.jsonl
+```
+
+- **Input**: one JSON object per line, `{"prompt": "TEXT"}`. arx ignores
+  other keys and blank lines. Any other line gives an `error` event that
+  starts with `bad input line:`, and arx reads on.
+- **Each prompt** gives a `prompt.start` event, then the turns, then a
+  `prompt.end` event with the `status` and the answer. See
+  [Events](plugins/reference.md#events).
+- **Cancel**: SIGINT stops the prompt that runs, with `status`
+  `interrupted`. The session stays open, also when the signal arrives
+  between prompts. `arx ctl ID stop` ends the current prompt the same way,
+  with `status` `done`.
+- **End**: the session ends when stdin ends, on SIGTERM, or when
+  authentication fails. `/exit` is text here, not a command.
+- **Limits**: `-p` with `--input jsonl` is a usage error. `jsonl` is the
+  only value. `limits.max_turns` and the caps count every prompt of the
+  session, and `--cap wall` counts the time between prompts too.
 
 ### Caps
 
@@ -219,7 +251,8 @@ arx ctl last stop
 
 - **`note TEXT`**: the agent sees the note as a `[harness]` message before
   its next model call.
-- **`stop`**: the agent stops after its current turn, with exit code 0.
+- **`stop`**: the agent stops after its current turn, with exit code 0. In an
+  interactive or `--input jsonl` session, it ends the current prompt only.
 
 Both append a line to the session's `inbox` file, so anything that can write
 a file can steer a run.

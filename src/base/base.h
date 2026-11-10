@@ -72,7 +72,7 @@ void LineSink(void* ctx, const char* data, size_t n);
 // Takes the first whole line out of `b` (malloc'd, no newline), or NULL.
 char* LinePop(Buffer* b);
 
-// Set by the SIGINT/SIGTERM handler; long waits check it and return early.
+// Set by the SIGINT/SIGTERM handler, to its signal; long waits return early.
 extern volatile sig_atomic_t g_interrupted;
 
 // Absolute path of the running arx binary, used to start subagents.

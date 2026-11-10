@@ -54,7 +54,8 @@ typedef struct Agent {
   int cap_count;
   int json;         // print the result as JSON on stdout
   int quiet;        // no terminal view
-  int interactive;  // read messages from the terminal
+  int interactive;  // read messages from the terminal, or as --input says
+  int input_jsonl;  // --input jsonl: prompts are JSON lines on stdin
   // State.
   Spec spec;
   ToolSet tools;

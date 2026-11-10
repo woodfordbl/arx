@@ -110,7 +110,7 @@ static char* AfterTool(Agent* a, cJSON* call, char* text, int is_error,
   int interrupted = g_interrupted;
   g_interrupted = 0;
   HookChain(a, "after_tool", in, NULL);
-  if (interrupted) g_interrupted = 1;
+  if (interrupted) g_interrupted = interrupted;
   char* result = XStrdup(JsonStr(in, "result", text));
   *backoff = Backoff(in);
   cJSON_Delete(in);

@@ -2,7 +2,9 @@
 // or resume the session, start the event stream and observers, run headless
 // or interactively, and report the result.
 
+#include <errno.h>
 #include <inttypes.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -137,41 +139,93 @@ static int Headless(Agent* a) {
   return RunTurns(a);
 }
 
-// Interactive: one line per message. Ctrl-C stops the current turn; Ctrl-D,
-// /exit or Ctrl-C at the prompt ends the session.
-static int Interactive(Agent* a) {
-  char *line = NULL, *first_prompt = NULL;
-  size_t cap = 0;
-  int code = kExitDone, started = a->resume != NULL;
+// Reads the next line of stdin through `in` (malloc'd, no newline), or NULL
+// at the end of input. With `retry`, a signal is not the end: Ctrl-C only
+// ends a prompt, so one that lands after the prompt ended is dropped and
+// the read goes on. SIGTERM still ends the input.
+static char* ReadLine(Buffer* in, int retry) {
   for (;;) {
-    fputs(g_events.color ? "\n\033[1m› \033[0m" : "\n› ", stderr);
-    g_interrupted = 0;
-    if (getline(&line, &cap, stdin) < 0) break;
-    line[strcspn(line, "\n")] = 0;
-    if (!*line) continue;
-    if (!strcmp(line, "/exit") || !strcmp(line, "/quit")) break;
+    if (retry && g_interrupted == SIGTERM) return NULL;
+    if (retry) g_interrupted = 0;
+    char* line = LinePop(in);
+    if (line) return line;
+    char chunk[4096];
+    ssize_t n = read(0, chunk, sizeof(chunk));
+    if (n > 0) {
+      BufferAppend(in, chunk, (size_t)n);
+    } else if (n == 0 || errno != EINTR || !retry) {
+      return n == 0 && in->len ? BufferTake(in) : NULL;  // a last line
+    }
+  }
+}
+
+// The prompt of one --input jsonl line (consumed): {"prompt": "TEXT"}, with
+// other keys ignored. Returns NULL for a blank line, and for any other line
+// after an error event.
+static char* JsonlPrompt(char* line) {
+  cJSON* o = cJSON_Parse(line);
+  const char* text = cJSON_IsObject(o) ? JsonStr(o, "prompt", NULL) : NULL;
+  char* prompt = text && *text ? XStrdup(text) : NULL;
+  if (!prompt && line[strspn(line, " \t\r")]) {
+    char* clean = Utf8Clean(line, strlen(line));
+    char* why = XAsprintf("bad input line: %s", clean);
+    cJSON* e = EventNew("error");
+    JsonAddTruncated(e, "error", why, 300);
+    EventSend(e);
+    free(why);
+    free(clean);
+  }
+  cJSON_Delete(o);
+  free(line);
+  return prompt;
+}
+
+// Interactive: one prompt per line, from the terminal or as --input jsonl.
+// Ctrl-C stops the current prompt. At the terminal, Ctrl-D, /exit or Ctrl-C
+// at the prompt ends the session; with --input jsonl, the end of stdin does.
+static int Interactive(Agent* a) {
+  Buffer in = {0};
+  char* first_prompt = NULL;
+  int code = kExitDone, started = a->resume != NULL, jsonl = a->input_jsonl;
+  for (;;) {
+    if (!jsonl) {
+      fputs(g_events.color ? "\n\033[1m› \033[0m" : "\n› ", stderr);
+      g_interrupted = 0;
+    }
+    char* line = ReadLine(&in, jsonl);
+    if (!line) break;
+    if (jsonl) line = JsonlPrompt(line);
+    int quit = !jsonl && (!strcmp(line, "/exit") || !strcmp(line, "/quit"));
+    if (!line || !*line || quit) {
+      free(line);
+      if (quit) break;
+      continue;
+    }
     if (!started) {
       first_prompt = XStrdup(line);
       a->prompt = first_prompt;  // kept for {{prompt}} after a restart
     }
     Prompt(a, line, !started);
+    free(line);
     started = 1;
-    // The answer of this prompt, not of the one before.
+    // This prompt's answer and its own `arx ctl stop`, not the last one's.
     free(a->final_output);
     a->final_output = NULL;
+    a->stop_requested = 0;
     code = RunTurns(a);
     cJSON* e = EventNew("prompt.end");
     AddTotals(a, e, code);
     JsonAddTruncated(e, "final_output", a->final_output, 2000);
     EventSend(e);
     if (code == kExitInterrupted) {
-      fputs("\n(interrupted)\n", stderr);
+      if (!jsonl) fputs("\n(interrupted)\n", stderr);
       code = kExitDone;
     } else if (code == kExitAuth) {
       break;
     }
   }
-  free(line);
+  if (jsonl && g_interrupted == SIGTERM) code = kExitInterrupted;
+  BufferFree(&in);
   a->prompt = NULL;
   free(first_prompt);
   return code;
