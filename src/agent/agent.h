@@ -150,8 +150,8 @@ void CallRuns(Agent* a, Call* c);
 void CallCancel(Agent* a, const char* id);
 
 // Delivers a background call that ended, after `secs` seconds (below 0: it
-// never ran): appends its `result` line to the inbox. Does nothing for a
-// foreground call.
+// never ran): appends its `result` line to the inbox and writes meta.json.
+// Does nothing for a foreground call.
 void CallEnded(Agent* a, Call* c, double secs);
 
 // The number of background calls whose result the agent has not seen.
@@ -162,6 +162,11 @@ int CallsInFlight(Agent* a);
 // after_tool hooks and a `result` line with the status `stopped`. Waits
 // until they are gone.
 void CallsShutdown(Agent* a);
+
+// After --resume: gives the agent a note for each call that was in flight
+// when the session stopped (its `result` line from the inbox, or "did not
+// finish" when arx was killed), and empties the session's `calls`.
+void CallsResume(Agent* a);
 
 // Frees the calls that are done and whose tool message is in the history,
 // and takes them out of the table.

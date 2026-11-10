@@ -107,4 +107,28 @@ check "it never ran" lacks log.txt 'start-a'
 check "the scheduler gets done with ran false" has sched.log '{"done": {"id": "call_1", "secs": 0, "is_error": true, "backoff": null, "ran": false}}'
 check "a non-zero exit is an error" grep -q '"call":"c2".*"status":"error".*\[exit code 1\]' $INBOX
 
+begin "ids"
+nap '[]'
+sched <<'EOF'
+    if "ready" in m:
+        r = m["ready"]
+        if r["name"] == "nap":
+            send(start=[r["id"]], detach=[r["id"]])
+        else:
+            send(start=[r["id"]])
+EOF
+sse_calls nap '{\"x\":\"a\",\"secs\":0}' nap '{\"x\":\"b\",\"secs\":0}' |
+  reply 1 "200 OK"
+CALL_BASE=2 sse_calls bash '{\"command\":\"sleep 0.5\"}' | reply 2 "200 OK"
+run "go" --cap turns=2
+check "two calls get c1 and c2" has fake/req-02.json 'started as c2'
+check "meta.json keeps the counter" grep -q '"call_seq":[[:space:]]*2' .arx/sessions/last/meta.json
+check "and the calls in flight" grep -q '"call":[[:space:]]*"c1"' .arx/sessions/last/meta.json
+check "with the output file" grep -q '"out":[[:space:]]*".*/tool-0001.out"' .arx/sessions/last/meta.json
+CALL_BASE=3 sse_calls nap '{\"x\":\"c\",\"secs\":0}' | reply 3 "200 OK"
+CALL_BASE=4 sse_calls bash '{\"command\":\"sleep 0.5\"}' | reply 4 "200 OK"
+sse_text "done" | reply 5 "200 OK"
+run "more" --resume last
+check "after --resume the next one is c3" has fake/req-04.json 'started as c3'
+
 summary

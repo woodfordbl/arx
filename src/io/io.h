@@ -2,9 +2,11 @@
 //   session.c  the files under .arx/sessions/<id>/:
 //                transcript.jsonl  every message, with reset markers
 //                events.jsonl      the event stream
-//                meta.json         counters, for --resume
+//                meta.json         counters and calls in flight, for --resume
 //                tool-NNNN.out     full tool outputs
-//                inbox             commands from `arx ctl` (note, stop)
+//                inbox             one JSON line each: commands from `arx
+//                                  ctl` (note, stop, cancel), and the
+//                                  results of background calls
 //   events.c   the event stream, arx's plugin API: one JSON line per event,
 //              {"v":1,"t":...,"session":...,"depth":0,"turn":7,"type":...}.
 //              arx is the only writer; observers can never block it.
@@ -56,11 +58,18 @@ void SessionAppend(Session* s, cJSON* message);
 // a reset marker, then every message.
 void SessionReset(Session* s, cJSON* messages);
 
-// Writes meta.json with the counters and `status`.
+// Writes meta.json with the counters, the calls in flight and `status`.
 void SessionWriteMeta(Session* s, const char* status);
 
 // Returns the inbox commands added since the last call, as a JSON array.
 cJSON* SessionReadInbox(Session* s);
+
+// Appends `line` to the inbox as one JSON line. Returns 0 or -1.
+int SessionInboxAppend(Session* s, const cJSON* line);
+
+// Returns the last `result` line for background call `call` ("c7") in the
+// whole inbox, also before the read offset, or NULL. The caller frees it.
+cJSON* SessionInboxFind(Session* s, const char* call);
 
 // Returns the path for the next tool output file.
 char* SessionOutputPath(Session* s);

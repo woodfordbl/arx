@@ -104,6 +104,8 @@ void CallDetach(Agent* a, Call* c) {
   cJSON_AddBoolToObject(e, "queued", c->state == kQueued);
   EventSend(e);
   CallRuns(a, c);
+  // `arx ctl ID cancel` and --resume read the calls in flight from here.
+  SessionWriteMeta(&a->session, "running");
 }
 
 // A background call's process runs: keeps it for the session, so every
@@ -150,25 +152,20 @@ void CallEnded(Agent* a, Call* c, double secs) {
   cJSON_AddNumberToObject(r, "secs", secs < 0 ? Now() - c->detached_at : secs);
   cJSON_AddStringToObject(r, "text", c->text);
   free(preview);
-  char* line = cJSON_PrintUnformatted(r);
-  char* text = XAsprintf("%s\n", line);
-  char* path = XAsprintf("%s/inbox", a->session.dir);
-  if (AppendFile(path, text, strlen(text))) {
+  if (SessionInboxAppend(&a->session, r)) {
     // Without the file the result still reaches the agent, from memory.
     cJSON* e = EventNew("error");
     char* why = XAsprintf(
-        "cannot append to %s; the result of %s goes to the "
+        "cannot append to the inbox of %s; the result of %s goes to the "
         "agent's notes",
-        path, c->short_id);
+        a->session.id, c->short_id);
     cJSON_AddStringToObject(e, "error", why);
     EventSend(e);
     free(why);
     Note(a, r);
   }
-  free(path);
-  free(text);
-  free(line);
   cJSON_Delete(r);
+  SessionWriteMeta(&a->session, "running");
 }
 
 // The calls whose result the agent has not seen; see agent.h.
@@ -190,6 +187,35 @@ void CallsShutdown(Agent* a) {
     }
   }
   while (CallsPoll(a, 0.1)) continue;
+}
+
+// Notes for the calls a stopped session left; see agent.h.
+void CallsResume(Agent* a) {
+  cJSON* left = a->session.calls;
+  a->session.calls = cJSON_CreateArray();
+  if (!cJSON_GetArraySize(left)) {
+    cJSON_Delete(left);
+    return;
+  }
+  cJSON* e;
+  cJSON_ArrayForEach(e, left) {
+    const char* call = JsonStr(e, "call", "");
+    const char* out = JsonStr(e, "out", NULL);
+    cJSON* r = SessionInboxFind(&a->session, call);
+    if (r) {
+      Note(a, r);
+    } else {
+      // arx was killed: the call left no result, and it is not restarted.
+      AgentNote(a,
+                "%s (%s: %s) did not finish: the session stopped while it "
+                "ran.%s%s%s",
+                call, JsonStr(e, "name", ""), JsonStr(e, "preview", ""),
+                out ? " Output so far: " : "", out ? out : "", out ? "." : "");
+    }
+    cJSON_Delete(r);
+  }
+  cJSON_Delete(left);
+  SessionWriteMeta(&a->session, "running");
 }
 
 // Frees a call that left the table.
