@@ -5,6 +5,10 @@
 //   catalog.c  the servers of the spec, their cached tool lists, tool names
 //   toolset.c  the selection, and the MCP tools of the tool set
 //   search.c   mcp_search's ranking (BM25F) and what mcp_select does
+//   launch.c   starts a server's process: ${NAME}, credential, environment
+//   servers.c  a server's process: starts, exits, restarts, failure, stop
+//   probe.c    the era probe (server/discover, else initialize), the tool
+//              list, and what a server sends on its own
 
 #ifndef SRC_MCP_MCP_H_
 #define SRC_MCP_MCP_H_
@@ -77,8 +81,24 @@ typedef struct McpServer {
   cJSON* cache;    // .arx/mcp/<name>.json when it is for this entry, or NULL
   McpTool* tools;  // the cache's tools, less include, exclude and disabled
   int tool_count;
-  int fresh;    // the list is from this process, or younger than its ttl
-  char* error;  // why it failed, or NULL (servers.c)
+  int fresh;  // the list is from this process, or younger than its ttl
+  // The running server (servers.c and probe.c).
+  McpState state;
+  char* error;       // why it failed, or NULL
+  ProcChild* child;  // its process, kept for the session
+  RpcPeer* peer;
+  Buffer out;      // its stdout, until McpPump takes the lines
+  char* log;       // where its stderr and our notes about it go
+  int modern;      // speaks 2026-07-28: its requests carry _meta
+  char* version;   // the protocol version in use
+  cJSON* info;     // its discover or initialize result
+  cJSON* listing;  // the tools/list pages so far
+  int pages;
+  double started, ready_by;  // Now() at the start; its startup deadline
+  double restart_at;         // not before this, after a crash
+  double exits[3];           // when it last exited
+  double expires;            // its credential's expires_at, or 0
+  int calls;                 // tools/call requests in flight (calls.c)
 } McpServer;
 
 // The servers of the current spec, in its order.
@@ -145,6 +165,65 @@ Tool* McpToolFor(struct Agent* a, const char* name);
 // One line about a server for mcp_search: its `description`, else the
 // first sentence of its instructions, else "" (malloc'd).
 char* McpServerAbout(const McpServer* s);
+
+// ---- launch.c ----
+
+// Starts the process of `s`: `command` and `args`, or `arx mcp http` for a
+// `url`, with ${NAME} expanded, the credential's api_key in `api_key_env`,
+// the tools' ARX_* variables and `env`. Its stdout goes to s->out and its
+// stderr to s->log. Returns NULL with the reason in `err`.
+ProcChild* McpLaunch(struct Agent* a, McpServer* s, Buffer* err);
+
+// Appends a line to the server's log.
+void McpLog(const McpServer* s, const char* fmt, ...);
+
+// ---- servers.c ----
+
+// The protocol revision arx speaks, and the one it falls back to.
+#define MCP_VERSION "2026-07-28"
+#define MCP_LEGACY_VERSION "2025-11-25"
+
+// Starts `s` when it does not run: nothing starts until the agent needs a
+// server. After a crash it waits 0, 2 and then 8 seconds; three exits in 5
+// minutes, or a start that fails, make it kMcpFailed until its entry
+// changes. A stdio server whose credential expired restarts.
+void McpServerNeed(struct Agent* a, McpServer* s);
+
+// Runs `s` until it is ready or failed. Returns 1 when it is ready.
+int McpServerWait(struct Agent* a, McpServer* s);
+
+// Sends an mcp.server event with `state` (start, ready, exit, failed,
+// stop); `error` may be NULL, and `code` is -1 without an exit code.
+void McpAnnounce(const McpServer* s, const char* state, const char* error,
+                 int code);
+
+// Makes `s` kMcpFailed with the reason `why`: stops it, ends its calls,
+// and tells the agent in a [harness] note, once.
+void McpServerFail(McpServer* s, const char* why);
+
+// Feeds each server the lines it printed, fires timeouts, and handles
+// exits. Calls in flight on a server that exits end with kRpcClosed and
+// the exit code, the last lines of its log and the log's path.
+void McpServersPump(struct Agent* a);
+
+// Stops the process of `s` and frees what servers.c keeps for it.
+void McpServerDrop(McpServer* s);
+
+// Stops every server: closes their stdin, waits up to 2 seconds for all of
+// them, then stops the rest (SIGTERM to the group, then SIGKILL).
+void McpShutdown(void);
+
+// ---- probe.c ----
+
+// Creates the peer of a server that just started and finds its era: the
+// cache's, else server/discover with 5 seconds, else initialize. Then
+// lists its tools, stores them (McpCacheStore) and makes it kMcpReady.
+void McpProbe(McpServer* s);
+
+// Sends a request to a server that runs; `params` is consumed and gains
+// `_meta` for a modern server. Returns the request id (see RpcCall).
+int64_t McpRequest(McpServer* s, const char* method, cJSON* params,
+                   double timeout, RpcDoneFn done, void* ctx);
 
 // ---- search.c ----
 

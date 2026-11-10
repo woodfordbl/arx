@@ -204,6 +204,7 @@ void McpCacheStore(McpServer* s, cJSON* tools, const char* era,
 
 // Frees a server that left the spec.
 static void FreeServer(McpServer* s) {
+  McpServerDrop(s);
   FreeTools(s);
   cJSON_Delete(s->cache);
   cJSON_Delete(s->entry);
