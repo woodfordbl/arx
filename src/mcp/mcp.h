@@ -9,6 +9,7 @@
 //   servers.c  a server's process: starts, exits, restarts, failure, stop
 //   probe.c    the era probe (server/discover, else initialize), the tool
 //              list, and what a server sends on its own
+//   calls.c    one call: tools/call, its result as text, cancel, progress
 
 #ifndef SRC_MCP_MCP_H_
 #define SRC_MCP_MCP_H_
@@ -224,6 +225,41 @@ void McpProbe(McpServer* s);
 // `_meta` for a modern server. Returns the request id (see RpcCall).
 int64_t McpRequest(McpServer* s, const char* method, cJSON* params,
                    double timeout, RpcDoneFn done, void* ctx);
+
+// ---- calls.c ----
+
+// A call to an MCP tool, or to mcp_search or mcp_select, that runs.
+typedef struct McpCall McpCall;
+
+// Starts a call to the kToolMcp tool `t` with `args` (copied). The server
+// starts when it does not run, and the call waits for it; its timeout
+// already runs. `id` is the model's call id, for tool.progress events, and
+// `out_path` the call's tool-NNNN.out, which names the files of images.
+// mcp_search and mcp_select end once the servers they need have listed.
+McpCall* McpCallStart(struct Agent* a, const Tool* t, cJSON* args,
+                      const char* id, const char* out_path);
+
+// True when the call has its result.
+int McpCallDone(const McpCall* c);
+
+// Ends a call, cancelling it when it still runs, and frees it. Returns the
+// text for the model (malloc'd), and sets `*is_error` and `*secs`.
+char* McpCallFinish(McpCall* c, int* is_error, double* secs);
+
+// Sends tool.progress for the call that `params` of a
+// notifications/progress names by its progressToken.
+void McpCallProgress(McpServer* s, cJSON* params);
+
+// One round of the client: McpServersPump, then each call: sends it when
+// its server is ready, ends it when the server failed, at its timeout
+// (with notifications/cancelled) and on Ctrl-C. No MCP code runs inside
+// ProcPoll; this reads what it buffered.
+void McpPump(struct Agent* a);
+
+// Before each model call: McpPump, a start of each `preload` server whose
+// tools are not listed, a wait of up to 5 seconds for a list that is being
+// read again, and the selection, when its file changed.
+void McpTurn(struct Agent* a);
 
 // ---- search.c ----
 

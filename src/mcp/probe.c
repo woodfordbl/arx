@@ -224,6 +224,8 @@ static void OnNotify(void* ctx, const char* method, cJSON* params) {
   McpServer* s = ctx;
   if (!strcmp(method, "notifications/tools/list_changed")) {
     if (s->state == kMcpReady && !s->listing) List(s, NULL);
+  } else if (!strcmp(method, "notifications/progress")) {
+    McpCallProgress(s, params);
   } else if (!strcmp(method, "notifications/message")) {
     char* text = cJSON_PrintUnformatted(params);
     McpLog(s, "message: %s", text ? text : "");
