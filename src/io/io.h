@@ -121,8 +121,10 @@ void EventDelta(const char* text, size_t n);
 // Sends any batched model text now.
 void EventFlush(void);
 
-// Passes a subagent's event line through to our sinks and shows it.
-void EventForward(const char* line, size_t n);
+// Passes a subagent's event line through to our sinks, and shows it when
+// `draw` is set. A background subagent's lines are not drawn, so they do
+// not mix with the parent's streamed text; `arx watch` still shows them.
+void EventForward(const char* line, size_t n, int draw);
 
 // Starts `sh -c command` with the event stream on its stdin and `env`
 // ("KEY=value", NULL-terminated, may be NULL) added to its environment.

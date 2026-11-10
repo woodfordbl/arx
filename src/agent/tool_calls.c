@@ -191,9 +191,14 @@ static void Launch(Agent* a, Call* c) {
   c->state = kRunning;
   if (!c->run) {
     Complete(a, c, 0);
-  } else {
-    CallRuns(a, c);
+    return;
   }
+  // The process started: front-ends show the call as in progress.
+  cJSON* e = EventNew("tool.run");
+  cJSON_AddStringToObject(e, "id", c->id);
+  cJSON_AddStringToObject(e, "name", JsonStr(c->call, "name", ""));
+  EventSend(e);
+  CallRuns(a, c);
 }
 
 // Runs the before_tool hooks of one call and sends tool.start. Leaves the

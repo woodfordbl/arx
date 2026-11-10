@@ -124,7 +124,7 @@ static void ForwardSink(void* ctx, const char* data, size_t n) {
   char* nl;
   while (b->len && (nl = memchr(b->data, '\n', b->len))) {
     size_t len = (size_t)(nl - b->data) + 1;
-    EventForward(b->data, len);
+    EventForward(b->data, len, !run->quiet);
     memmove(b->data, b->data + len, b->len - len);
     b->len -= len;
   }

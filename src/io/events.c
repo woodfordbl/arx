@@ -114,11 +114,11 @@ void EventDelta(const char* text, size_t n) {
 }
 
 // A subagent's line is already a complete event with its own depth.
-void EventForward(const char* line, size_t n) {
+void EventForward(const char* line, size_t n, int draw) {
   EventFlush();
   WriteLine(line, n);
   if (line[n - 1] != '\n') WriteLine("\n", 1);
-  if (!g_events.render) return;
+  if (!g_events.render || !draw) return;
   char* s = XStrndup(line, n);
   cJSON* e = cJSON_Parse(s);
   if (e) RenderEvent(e, 1);

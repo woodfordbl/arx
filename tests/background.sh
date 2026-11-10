@@ -57,8 +57,12 @@ sse_calls nap '{\"x\":\"a\",\"secs\":1}' | reply 1 "200 OK"
 CALL_BASE=1 sse_calls bash '{\"command\":\"echo hi-there\"}' | reply 2 "200 OK"
 sse_text "waiting" | reply 3 "200 OK"
 sse_text "done" | reply 4 "200 OK"
-run "go"
+"$ARX" -p go >out.txt 2>err.txt
+code=$?
 check "exits 0" exited 0
+check "tool.run for every call" test "$(count "$EVENTS" '"type":"tool.run"')" -eq 2
+check "the view draws the detach" has err.txt '↳ c1 nap runs in the background'
+check "and names the call when it ends" has err.txt '↳ c1 nap: exit 0'
 check "another tool ran while c1 ran" has fake/req-03.json 'hi-there'
 check "c1 was still running then" lacks fake/req-03.json 'finished after'
 check "its note came later" has fake/req-04.json 'finished after'
@@ -80,6 +84,7 @@ check "the placeholder says queued" has fake/req-02.json 'queued as c1 in the ba
 check "no output file yet" lacks fake/req-02.json 'Output so far'
 check "tool.detach says queued" has "$EVENTS" '"call":"c1","queued":true'
 check "it ran on the tick, turns later" has fake/req-03.json 'napped-a'
+check "tool.run comes after tool.detach" test "$(grep -n -o '"type":"tool.[a-z]*"' "$EVENTS" | cut -d'"' -f4 | tr '\n' ' ')" = "tool.start tool.detach tool.run tool.end "
 
 begin "cancel from the scheduler"
 nap '["*"]'

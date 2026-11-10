@@ -93,11 +93,20 @@ static int RenderWork(cJSON* e, const char* type, int depth) {
   } else if (!strcmp(type, "tool.start")) {
     Line(depth, kCyan, "  ⏵ %s %s", JsonStr(e, "name", ""),
          JsonStr(e, "preview", ""));
+  } else if (!strcmp(type, "tool.detach")) {
+    Line(depth, kCyan, "    ↳ %s %s %s in the background",
+         JsonStr(e, "call", ""), JsonStr(e, "name", ""),
+         cJSON_IsTrue(JsonGet(e, "queued")) ? "waits" : "runs");
   } else if (!strcmp(type, "tool.end")) {
+    // A background call ends turns later, so its line names the call.
+    const char* call = JsonStr(e, "call", NULL);
+    char* who =
+        call ? XAsprintf("%s %s: ", call, JsonStr(e, "name", "")) : NULL;
     Line(depth, cJSON_IsTrue(JsonGet(e, "error")) ? kRed : kDim,
-         "    ↳ exit %d · %.1fs · %s B  %s", (int)JsonNum(e, "exit", 0),
-         JsonNum(e, "secs", 0), Human(JsonNum(e, "bytes", 0), &a),
-         JsonStr(e, "preview", ""));
+         "    ↳ %sexit %d · %.1fs · %s B  %s", who ? who : "",
+         (int)JsonNum(e, "exit", 0), JsonNum(e, "secs", 0),
+         Human(JsonNum(e, "bytes", 0), &a), JsonStr(e, "preview", ""));
+    free(who);
   } else {
     return 0;
   }
