@@ -117,21 +117,20 @@ static char* LibDir(void) {
   return lib;
 }
 
-// Runs arx-<name>; see cli.h.
-int RunExternal(const char* name, int argc, char** argv) {
-  if (strchr(name, '/')) return -1;
-  char* path = FindCommand(name);
-  if (!path) return -1;
+// Replaces arx with the command at `path` (consumed) and its `n` arguments,
+// with the variables every command gets. Returns kExitError: it did not
+// start.
+static int ExecCommand(char* path, int n, char** rest) {
   char* dir = DirName(path);
   setenv("ARX_BIN", g_self, 1);
   setenv("ARX_LIBEXEC", dir, 1);
   char* lib = LibDir();  // so plugin commands can source $ARX_LIB/ui.sh
   setenv("ARX_LIB", lib, 1);
   SetPluginEnv(dir);
-  char** args = XMalloc((size_t)argc * sizeof(*args));
+  char** args = XMalloc((size_t)(n + 2) * sizeof(*args));
   args[0] = path;
-  for (int i = 2; i < argc; i++) args[i - 1] = argv[i];
-  args[argc - 1] = NULL;
+  for (int i = 0; i < n; i++) args[i + 1] = rest[i];
+  args[n + 1] = NULL;
   ProcExec(args, 0);
   fprintf(stderr, "arx: cannot run %s: %s\n", path, strerror(errno));
   free(args);
@@ -139,6 +138,23 @@ int RunExternal(const char* name, int argc, char** argv) {
   free(dir);
   free(path);
   return kExitError;
+}
+
+// Runs arx-<name>; see cli.h.
+int RunExternal(const char* name, int argc, char** argv) {
+  char* path = strchr(name, '/') ? NULL : FindCommand(name);
+  return path ? ExecCommand(path, argc - 2, argv + 2) : -1;
+}
+
+// Hands an interactive run to arx-<name>; see cli.h.
+void RunUi(const char* name, int argc, char** argv) {
+  char* path = strchr(name, '/') ? NULL : FindCommand(name);
+  if (path) {
+    ExecCommand(path, argc - 1, argv + 1);
+  } else {
+    fprintf(stderr, "arx: ui: no command arx-%s; ", name);
+  }
+  fputs("using the built-in view\n", stderr);
 }
 
 // Reads a command's summary from its "# arx-<name>: summary" line.

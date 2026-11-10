@@ -39,6 +39,13 @@ arx check | tools | schema | tool | request PATH | watch | ctl | version | help
 - **JSON lines**: arx reads one prompt per line on stdin and keeps running
   until stdin ends. See [`--input jsonl`](#--input-jsonl).
 
+The `ui` key of the spec hands an interactive run to a command. With
+`ui: NAME`, bare `arx` on a terminal runs `arx-NAME` with every option you
+gave, and that command draws the session. arx does this only when stdin and
+stdout are terminals and there is no `-p`, `--input`, `--json` or
+`--events`. When there is no `arx-NAME`, arx prints a warning and uses the
+built-in view. `--set ui=none` turns it off for one run.
+
 | Option | Description |
 |---|---|
 | `-p`, `--prompt TASK` | Runs one task. `-` reads the task from stdin. |
