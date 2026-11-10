@@ -164,4 +164,17 @@ check "config.yaml and --set settings reach the hook, agent.yaml's do not" \
   test "$(jq -c . settings.txt)" = '{"from_config":1,"both":"config","from_set":1}'
 check "the policy still loads once" test "$("$ARX" check --policy pol/p --list | grep -c '	p	')" = 1
 
+fresh "a subagent gets the policy"
+mkplugin pol/p </dev/null
+mkhook pol/p session_start
+spec >sub.yaml
+echo 'tools: {researcher: {agent: sub.yaml}}' >>agent.yaml
+sse_tool researcher '{\"task\":\"look it up\"}' | reply 1 "200 OK"
+sse_text "sub-result" | reply 2 "200 OK"
+sse_text "done" | reply 3 "200 OK"
+run "go" --policy pol/p
+check "the policy's hook ran in both" test "$(count order.txt p)" = 2
+check "the subagent's events show the policy hook at depth 1" \
+  jq -es 'any(.[]; .type == "hook" and .depth == 1 and .policy == true)' .arx/sessions/last/events.jsonl
+
 summary

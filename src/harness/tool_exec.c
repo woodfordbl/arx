@@ -129,11 +129,12 @@ struct ToolRun {
 };
 
 // Starts a subagent: `arx -p - --spec <path> --json --events fd:3`, with our
-// caps and one more level of depth. Each subagent forwards its own events,
-// one whole line at a time, so several can run at once.
+// caps, our policy folders and one more level of depth. Each subagent forwards
+// its own events, one whole line at a time, so several can run at once.
 static ProcChild* StartSubagent(Agent* a, Tool* t, ToolRun* run) {
   int k = 0;
-  char** argv = XMalloc((size_t)(12 + 2 * a->cap_count) * sizeof(*argv));
+  int extra = 2 * (a->cap_count + cJSON_GetArraySize(a->policy));
+  char** argv = XMalloc((size_t)(12 + extra) * sizeof(*argv));
   char* fixed[] = {g_self,   "-p",      "-",        "--spec", t->path,
                    "--json", "--quiet", "--events", "fd:3"};
   for (size_t i = 0; i < sizeof(fixed) / sizeof(fixed[0]); i++) {
@@ -142,6 +143,11 @@ static ProcChild* StartSubagent(Agent* a, Tool* t, ToolRun* run) {
   for (int i = 0; i < a->cap_count; i++) {
     argv[k++] = "--cap";
     argv[k++] = a->cap_args[i];
+  }
+  cJSON* dir;
+  cJSON_ArrayForEach(dir, a->policy) {  // the same policy, also from a flag
+    argv[k++] = "--policy";
+    argv[k++] = dir->valuestring;
   }
   argv[k] = NULL;
   free(run->env[6]);
