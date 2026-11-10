@@ -21,8 +21,7 @@
 
 // ---- util.c ----
 
-// The harness version, printed by `arx version` and in session.start events.
-// The build sets it from the git tag (see the Makefile); "dev" otherwise.
+// The harness version, from the git tag (see the Makefile), else "dev".
 #ifndef ARX_VERSION
 #define ARX_VERSION "dev"
 #endif
@@ -97,23 +96,19 @@ char* XStrndup(const char* s, size_t n);
 char* XAsprintf(const char* fmt, ...);
 
 // Returns a copy of `n` bytes that is valid UTF-8 with no NULs: bad bytes
-// become U+FFFD and NULs become '?'. Tool output is cleaned this way before
-// it goes into JSON.
+// become U+FFFD and NULs become '?', as tool output needs to go into JSON.
 char* Utf8Clean(const char* s, size_t n);
 
-// Returns a copy of `s` cut to at most `max` bytes (at a character boundary),
-// with "…" appended when it was cut.
+// Returns a copy of `s` cut to `max` bytes at a character, then "…".
 char* Truncate(const char* s, size_t max);
 
-// Reads a whole file. Returns a malloc'd, NUL-terminated string, or NULL on
-// error. Stores the length in `*len` when `len` is not NULL.
+// Reads a whole file into a malloc'd string, or NULL. Sets `*len` if given.
 char* ReadFile(const char* path, size_t* len);
 
 // Writes all `n` bytes to `fd`, retrying on EINTR. Returns 0 or -1.
 int WriteAll(int fd, const void* p, size_t n);
 
-// Replaces `path` atomically (temp file + rename), keeping its file mode.
-// Returns 0 or -1.
+// Replaces `path` atomically, keeping its file mode. Returns 0 or -1.
 int WriteFileAtomic(const char* path, const char* data, size_t len);
 
 // Appends to `path`, creating it if needed. Returns 0 or -1.
@@ -132,12 +127,10 @@ char* DirName(const char* path);
 char* SelfPath(const char* argv0);
 
 // Returns arx's config directory (malloc'd): $ARX_CONFIG_DIR, else
-// $XDG_CONFIG_HOME/arx, else ~/.config/arx. It holds config.yaml (the user's
-// defaults) and, outside macOS, the 0600 credentials file.
+// $XDG_CONFIG_HOME/arx, else ~/.config/arx. It holds config.yaml.
 char* ConfigDir(void);
 
-// Returns a file's modification time in nanoseconds, or -1 if it is missing.
-// Stores its size in `*size` (-1 if missing) when `size` is not NULL.
+// Returns a file's mtime in nanoseconds and its `*size`; -1 if missing.
 int64_t MtimeNs(const char* path, int64_t* size);
 
 // Returns monotonic time in seconds.
@@ -184,9 +177,8 @@ typedef struct ProcResult {
   double secs;
 } ProcResult;
 
-// Runs `p` and waits for it. The child gets its own process group, so a
-// timeout or Ctrl-C kills it and everything it started (SIGTERM, then
-// SIGKILL after a grace period). Returns 0, or -1 if it could not start.
+// Runs `p` and waits. The child has its own process group, so a timeout or
+// Ctrl-C kills all it started (SIGTERM, then SIGKILL). Returns 0, or -1.
 int ProcRun(const Proc* p, ProcResult* r);
 
 // A child started by ProcStart.
@@ -229,8 +221,8 @@ void ProcRelease(ProcChild* c);
 // its group, and ProcPoll sends SIGKILL after the grace period.
 void ProcStop(ProcChild* c);
 
-// Returns a copy of the environment with `extra` ("KEY=value", NULL-terminated)
-// added or replaced. Free only the array; the strings are borrowed.
+// Returns the environment with `extra` ("KEY=value", NULL-terminated) added
+// or replaced. Free only the array; the strings are borrowed.
 char** EnvWith(char* const* extra);
 
 // ---- platform: proc_posix.c natively, proc_host.c in the browser ----
@@ -242,12 +234,10 @@ void ProcInit(void);
 // it /dev/null and the default SIGPIPE. Returns -1 and errno on failure.
 int ProcExec(char* const* argv, int null_stdin);
 
-// True when `path` is a regular file this platform can run: natively, one
-// we may execute; in the browser, one the runtime has a runner for.
+// True when `path` is a regular file this platform can run.
 int IsRunnable(const char* path);
 
-// Starts `sh -c command` with `env` added, to read events on stdin. Returns
-// the write end (non-blocking, close-on-exec) and sets *pid, or -1.
+// Starts `sh -c command` with `env`; returns its stdin (and *pid), or -1.
 int ProcObserverStart(const char* command, char* const* env, int* pid);
 
 // Waits up to `secs` for observer `pid` to exit.
