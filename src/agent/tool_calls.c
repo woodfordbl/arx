@@ -17,6 +17,7 @@
 #include "src/base/base.h"
 #include "src/harness/harness.h"
 #include "src/io/io.h"
+#include "src/mcp/mcp.h"
 
 // A one-line summary of a tool call for the terminal view: the command,
 // path or task when there is one, else the raw arguments.
@@ -48,10 +49,15 @@ static cJSON* NewCall(Agent* a, const char* id, const char* name,
   cJSON_AddStringToObject(call, "id", id);
   cJSON_AddStringToObject(call, "name", name);
   cJSON* parsed = cJSON_Parse(args);
-  cJSON* keys = KeysFor(ToolFind(a, name), parsed);
+  const Tool* tool = ToolFind(a, name);
+  cJSON* keys = KeysFor(tool, parsed);
   cJSON_AddItemToObject(call, "args",
                         parsed ? parsed : cJSON_CreateString(args));
   cJSON_AddItemToObject(call, "keys", keys);
+  // Input only: a guard can deny the calls of one MCP server by name.
+  if (tool && tool->server) {
+    cJSON_AddStringToObject(call, "server", tool->server);
+  }
   return call;
 }
 
@@ -208,9 +214,11 @@ static void Prepare(Agent* a, Call* c, cJSON* raw) {
   cJSON_AddStringToObject(start, "id", c->id);
   cJSON_AddStringToObject(start, "name", name);
   cJSON_AddStringToObject(start, "preview", preview);
+  c->model_call = NewCall(a, c->id, name, c->args);
+  const char* server = JsonStr(c->model_call, "server", NULL);
+  if (server) cJSON_AddStringToObject(start, "server", server);
   EventSend(start);
   free(preview);
-  c->model_call = NewCall(a, c->id, name, c->args);
   c->call = cJSON_Duplicate(c->model_call, 1);
   int is_error = 1;
   char* text = BeforeTool(a, c->call, &is_error);
@@ -275,21 +283,28 @@ int CallsPoll(Agent* a, double wait) {
   if (SchedActive()) StartByPlugin(a);
   if (!SchedActive()) StartByKeys(a);
   ProcChild** kids = XMalloc((size_t)(a->call_count + 1) * sizeof(*kids));
-  int k = 0, queued = 0;
+  int k = 0, queued = 0, running = 0;
   for (int i = 0; i < a->call_count; i++) {
-    if (a->calls[i]->state == kRunning) kids[k++] = ToolChild(a->calls[i]->run);
+    // An MCP call runs with no process of its own.
+    ProcChild* kid =
+        a->calls[i]->state == kRunning ? ToolChild(a->calls[i]->run) : NULL;
+    if (kid) kids[k++] = kid;
+    running += a->calls[i]->state == kRunning;
     queued += a->calls[i]->state == kQueued;
+    // A search of the cache has its answer at once: do not wait for it.
+    if (a->calls[i]->state == kRunning && !kid) wait = 0.001;
   }
-  if (k || queued) ProcPoll(kids, k, SchedWait(wait));
+  if (running || queued) ProcPoll(kids, k, SchedWait(wait));
   free(kids);
+  McpPump(a);
   for (int i = 0; i < a->call_count; i++) {
     Call* c = a->calls[i];
-    if (c->state != kRunning || !ProcDone(ToolChild(c->run))) continue;
+    if (c->state != kRunning || !ToolDone(c->run)) continue;
     c->text = ToolFinish(c->run, &c->is_error, c->end);
     c->run = NULL;
     Complete(a, c, JsonNum(c->end, "secs", 0));
   }
-  return k + queued;
+  return running + queued;
 }
 
 // Adds the tool message of a call that is done to the history and the

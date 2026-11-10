@@ -1,15 +1,9 @@
 #!/usr/bin/env bash
-# mcp.sh: the MCP client: the mcp_servers key, mcp_search and mcp_select,
-# server starts and calls, against tests/fake-mcp. Run with `make test`.
+# mcp.sh: the MCP client: the mcp_servers key, the two tools in the prompt,
+# search, select, calls and eras, against tests/fake-mcp. mcp-servers.sh has
+# the server lifecycle. Run with `make test`.
 set -u
-. "$(dirname "$0")/lib.sh"
-
-# Prints the spec with the YAML on stdin under mcp_servers.
-mcp_spec() {
-  spec
-  echo "mcp_servers:"
-  sed 's/^/  /'
-}
+. "$(dirname "$0")/mcp-lib.sh"
 
 begin "mcp_servers: validation"
 mcp_spec >agent.yaml <<'EOF2'
@@ -94,5 +88,174 @@ check "mcp_search needs a query" [ "$(jq -c '.[2].function.parameters.required' 
 check "tools.<server>__<tool> needs no file" lacks check.txt "tools.github__create_issue is configured"
 check "another missing tool is still reported" has check.txt "tools.other is configured but tools/other is missing"
 check "nothing starts for a check" [ ! -e .arx/mcp ]
+
+begin "search"
+gh_spec 'description: Issues and pull requests' >agent.yaml
+calls mcp_search '{\"query\":\"\"}' \
+  mcp_search '{\"query\":\"create issue\"}' \
+  mcp_search '{\"query\":\"pull requests\"}' \
+  mcp_search '{\"query\":\"delet\"}' \
+  mcp_search '{\"query\":\"repository\",\"limit\":2}' \
+  mcp_search '{\"query\":\"issue\",\"server\":\"nope\"}' \
+  mcp_search '{\"query\":\"zebra\"}' \
+  mcp_search '{\"query\":\"GH__ECHO\"}'
+run "go"
+check "an empty query lists the servers" result_has 1 "gh: Issues and pull requests (5 tools)"
+check "the search starts the server once" [ "$(starts gh)" = 1 ]
+check "it writes the cache" [ "$(jq '.tools | length' .arx/mcp/gh.json)" = 5 ]
+check "create_issue ranks first for \"create issue\"" \
+  [ "$(result 2 | sed -n 2p)" = "gh__create_issue: Create a new issue in a repository. (repo, title, body?)" ]
+check "the first line counts the matches" result_has 2 'of 5 tools match "create issue":'
+check "the last line names mcp_select" result_has 2 "Call mcp_select with the names you want."
+check "camelCase names split into words" [ "$(result 3 | sed -n 2p | cut -d: -f1)" = "gh__listPullRequests" ]
+check "a prefix finds the word" [ "$(result 4 | sed -n 2p | cut -d: -f1)" = "gh__delete_repo" ]
+check "limit cuts the list" [ "$(result 5 | grep -c '^gh__')" = 2 ]
+check "limit says how many matched" result_has 5 "; the best 2:"
+check "an unknown server lists the servers" result_has 6 'No MCP server is called "nope"'
+check "no match says so" result_has 7 'No tool of 5 matches "zebra"'
+check "an exact name ranks first, in any case" [ "$(result 8 | sed -n 2p | cut -d: -f1)" = "gh__echo" ]
+check "the request still has two MCP tools" [ "$(tool_names 9)" = "bash edit mcp_search mcp_select" ]
+calls mcp_search '{\"query\":\"create issue\"}'
+run "go"
+check "a second session searches the cache with no start" [ "$(starts gh)" = 1 ]
+check "  and finds the same tool" result_has 1 "gh__create_issue:"
+gh_spec 'description: Issues, timeout: 30' >agent.yaml
+calls mcp_search '{\"query\":\"create issue\"}'
+run "go"
+check "a changed entry lists again" [ "$(starts gh)" = 2 ]
+calls mcp_search '{\"query\":\"create issue\"}'
+FAKE_MCP_TTL=1 run "go"
+check "a fresh list is used" [ "$(starts gh)" = 2 ]
+calls mcp_search '{\"query\":\"create issue\"}'
+jq '.ttlMs = 2000 | .listed_at -= 5' .arx/mcp/gh.json >cache.tmp && mv cache.tmp .arx/mcp/gh.json
+run "go"
+check "an expired ttlMs lists again" [ "$(starts gh)" = 3 ]
+
+begin "select"
+gh_spec >agent.yaml
+calls mcp_select '{\"names\":[\"gh__create_issue\",\"gh__echo\"]}' \
+  mcp_select '{\"names\":[\"gh__create_isue\"]}' \
+  mcp_select '{\"drop\":[\"gh__echo\"]}'
+run "go"
+check "select says what it added" result_has 1 "Selected gh__create_issue, gh__echo. 2 MCP tools are selected."
+check "the next request has the selected tools, in order" \
+  [ "$(tool_names 2)" = "bash edit mcp_search mcp_select gh__create_issue gh__echo" ]
+check "  with the full schema" [ "$(jq -c '.tools[4].function.parameters.required' fake/req-02.json)" = '["repo","title"]' ]
+check "  without \$schema" [ "$(jq '.tools[4].function.parameters | has("$schema")' fake/req-02.json)" = false ]
+check "  and the full description" [ "$(jq -r '.tools[4].function.description' fake/req-02.json)" = "Create a new issue in a repository. It needs a title." ]
+check "an unknown name is an error with the closest names" result_has 2 'No MCP tool is called "gh__create_isue". Closest: gh__create_issue'
+check "drop removes a tool" result_has 3 "Dropped gh__echo. 1 MCP tool is selected."
+check "  from the next request" [ "$(tool_names 4)" = "bash edit mcp_search mcp_select gh__create_issue" ]
+check "selected.json holds the selection" [ "$(cat .arx/sessions/last/mcp/selected.json)" = '["gh__create_issue"]' ]
+id=$(basename "$(readlink .arx/sessions/last)")
+calls
+run "more" --resume "$id"
+check "--resume keeps the selection" [ "$(tool_names 1)" = "bash edit mcp_search mcp_select gh__create_issue" ]
+python3 -c 'import json; print(json.dumps([{"name": "t%d" % i, "description": "Tool %d" % i, "inputSchema": {"type": "object"}} for i in range(40)]))' >many.json
+echo "gh: {command: $FAKE_MCP, args: [gh, many.json]}" | mcp_spec >agent.yaml
+names=$(python3 -c 'print(",".join("\\\"gh__t%d\\\"" % i for i in range(33)))')
+calls mcp_select "{\\\"names\\\":[$names]}"
+run "go"
+check "over 32 tools is an error" result_has 1 "At most 32 MCP tools are selected at once, and this makes 33. Nothing changed."
+check "  and selects nothing" [ "$(tool_names 2)" = "bash edit mcp_search mcp_select" ]
+
+begin "calls"
+gh_spec 'preload: [echo]' >agent.yaml
+calls gh__echo '{\"text\":\"hi\"}' \
+  gh__delete_repo '{\"repo\":\"a/b\"}' \
+  gh__echo '{\"kind\":\"error\"}' \
+  gh__echo '{\"kind\":\"structured\"}' \
+  gh__echo '{\"kind\":\"image\"}' \
+  gh__echo '{\"kind\":\"link\"}' \
+  gh__echo '{\"kind\":\"long\"}' \
+  gh__echo '{\"kind\":\"input\"}' \
+  gh__echo '{\"kind\":\"rpc\"}' \
+  gh__nope '{}'
+run "go"
+check "a preloaded tool is in the first request" [ "$(tool_names 1)" = "bash edit mcp_search mcp_select gh__echo" ]
+check "  and its server started before it" [ "$(starts gh)" = 1 ]
+check "text comes back" [ "$(result 1)" = "echo: hi" ]
+check "the server gets its own tool name and the arguments" \
+  grep -q '"method": *"tools/call", *"params": *{"name": *"delete.repo", *"arguments": *{"repo": *"a/b"}' fake/mcp-gh.jsonl
+check "a call to an unselected catalog tool runs" [ "$(result 2)" = "delete.repo: " ]
+check "  and arx selects it" [ "$(tool_names 3)" = "bash edit mcp_search mcp_select gh__echo gh__delete_repo" ]
+check "isError gives the text" [ "$(result 3)" = "it broke" ]
+check "  and an error" [ "$(grep '"tool.end"' $EVENTS | sed -n 3p | jq .error)" = true ]
+check "structuredContent alone comes back as JSON" [ "$(result 4)" = '{"n":3,"ok":true}' ]
+check "an image is saved to a file" result_has 5 "[image/png, 1 KB: $WS/.arx/sessions/"
+image=$(result 5 | sed -n 's/.*: \(.*\.png\)\]$/\1/p')
+check "  with its bytes" grep -q "PNG fake image bytes" "$image"
+check "  named after the call's output file" [ "$(basename "$image")" = "tool-0005-2.png" ]
+check "a resource link is one line" [ "$(result 6)" = "[resource: file:///a.txt (a.txt, text/plain)]" ]
+check "long output is cut" result_has 7 "bytes omitted; full output: $WS/.arx/sessions/"
+check "  with all of it in tool-NNNN.out" [ "$(grep -c 'line of output' .arx/sessions/last/tool-0007.out)" = 2000 ]
+check "input_required is an error that names the request" \
+  [ "$(result 8)" = "the server asked for input arx cannot give (elicitation/create): Which repo?" ]
+check "a JSON-RPC error gives its code" [ "$(result 9)" = "MCP error -32602: no such thing" ]
+check "a name the server lacks is an unknown tool" result_has 10 'unknown tool "gh__nope"'
+check "tool.end has the server" [ "$(grep '"tool.end"' $EVENTS | head -1 | jq -r .server)" = gh ]
+check "the servers stop with the session" [ "$(grep -c '"state":"stop"' $EVENTS)" = 1 ]
+check "  and the process is gone" sh -c "! kill -0 $(cat fake/mcp-gh.pid) 2>/dev/null"
+mkdir other && cp agent.yaml other/ && cd other && mkdir fake && export FAKE_DIR=$PWD/fake
+gh_spec >agent.yaml
+calls gh__echo '{\"text\":\"cold\"}' gh__missing '{}'
+run "go"
+check "a tool of a server that has not listed runs" [ "$(result 1)" = "echo: cold" ]
+check "  after the server listed" [ "$(jq '.tools | length' .arx/mcp/gh.json)" = 5 ]
+check "  and is selected with its schema" [ "$(jq -c '.tools[4].function.parameters.properties | keys' fake/req-02.json)" = '["kind","text"]' ]
+check "a name it does not list fails" result_has 2 'unknown tool "gh__missing"'
+
+begin "names, include and exclude"
+cat >tools.json <<'EOF2'
+[{"name": "a.b", "description": "First."}, {"name": "a_b", "description": "Second."},
+ {"name": "a_tool_with_a_very_long_name_that_goes_on_and_on_past_sixty_four_chars", "description": "Long."},
+ {"name": "drop_me", "description": "Gone."}, {"name": "x_off", "description": "Off."}]
+EOF2
+{ echo "gh: {command: $FAKE_MCP, args: [gh, tools.json], exclude: [\"drop_*\"], include: [\"a*\", \"drop_*\", \"x_*\"]}" | mcp_spec
+  echo 'tools: {gh__x_off: {enabled: false}}'; } >agent.yaml
+calls mcp_search '{\"query\":\"first second long gone off\"}'
+run "go"
+check "other characters become _" result_has 1 "gh__a_b: First."
+check "a second tool with that name gets a hash" result | grep -Eq '^gh__a_b_[0-9a-f]{6}: Second\.'
+check "a long name is cut to 62 characters with a hash" [ "$(result 1 | grep 'Long\.' | cut -d: -f1 | tr -d '\n' | wc -c | tr -d ' ')" = 62 ]
+check "an excluded tool does not exist" sh -c "! grep -q drop_me fake/req-02.json"
+check "tools.<name>.enabled: false removes a tool" sh -c "! grep -q x_off fake/req-02.json"
+
+begin "eras"
+gh_spec >agent.yaml
+calls gh__echo '{\"text\":\"m\"}'
+run "go"
+check "modern: server/discover, no handshake" sh -c "grep -q server/discover fake/mcp-gh.jsonl && ! grep -q initialize fake/mcp-gh.jsonl"
+check "  every request carries _meta" [ "$(grep -c 'io.modelcontextprotocol/protocolVersion' fake/mcp-gh.jsonl)" = 3 ]
+check "  mcp.server ready says the era" grep -q '"state":"ready","era":"modern","version":"2026-07-28","tools":5' $EVENTS
+rm -rf .arx/mcp fake/mcp-gh.jsonl
+calls gh__echo '{\"text\":\"l\"}'
+FAKE_MCP_MODE=legacy run "go"
+check "legacy: initialize after server/discover fails" [ "$(jq -r .method fake/mcp-gh.jsonl | tr '\n' ' ')" = "server/discover initialize null notifications/initialized tools/list tools/call " ]
+check "  the call works" [ "$(result 1)" = "echo: l" ]
+check "  a ping gets {}" grep -q '"id":900,"result":{}' fake/mcp-gh.jsonl
+check "  legacy requests carry no _meta" sh -c "! grep tools/list fake/mcp-gh.jsonl | grep -q _meta"
+check "  the cache records the era" [ "$(jq -r '.era + " " + .version' .arx/mcp/gh.json)" = "legacy 2025-06-18" ]
+rm -f fake/mcp-gh.jsonl
+calls gh__echo '{\"text\":\"l\"}'
+FAKE_MCP_MODE=legacy run "go"
+check "  the second start skips the probe" [ "$(head -1 fake/mcp-gh.jsonl | jq -r .method)" = initialize ]
+rm -rf .arx/mcp fake/mcp-gh.jsonl
+calls gh__echo '{\"text\":\"s\"}'
+t0=$(now)
+FAKE_MCP_MODE=silent run "go"
+t1=$(now)
+check "a silent server falls back to initialize" [ "$(result 1)" = "echo: s" ]
+check "  after 5 seconds" sh -c "! awk -v a=$t0 -v b=$t1 'BEGIN { exit !(b - a < 5) }' && awk -v a=$t0 -v b=$t1 'BEGIN { exit !(b - a < 9) }'"
+rm -rf .arx/mcp
+calls gh__echo '{\"text\":\"o\"}'
+FAKE_MCP_MODE=old run "go"
+check "a modern server without our revision fails, with its versions" \
+  [ "$(jq -r '.messages[-2].content' fake/req-02.json)" = 'the MCP server gh failed: it speaks MCP ["2099-01-01"], and arx speaks 2026-07-28' ]
+check "  and a [harness] note says so, with the log" result_has 1 "The MCP server gh failed: it speaks MCP"
+rm -rf .arx/mcp
+calls mcp_search '{\"query\":\"issue\"}'
+FAKE_MCP_MODE=pages run "go"
+check "a list in pages is followed" result_has 1 "of 5 tools match"
 
 summary

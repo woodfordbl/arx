@@ -1,0 +1,169 @@
+#!/usr/bin/env python3
+"""fake-mcp: a stand-in MCP server on stdio for tests.
+
+usage: fake-mcp NAME [TOOLS.json]
+
+FAKE_MCP_MODE picks the behavior, as words separated by commas:
+  modern (the default)  answers server/discover, speaks 2026-07-28
+  legacy       knows only initialize; server/discover gets -32601
+  silent       like legacy, and never answers server/discover
+  old          modern, but supports only 2099-01-01 (error -32022)
+  slow         a call with kind "slow" answers after FAKE_MCP_SLOW seconds
+               (5), while the server reads on
+  crash=N      exits with code 3 on tools/call number N of this process
+  dies         exits with code 4 as soon as it starts
+  chatty       writes 2 MB to stderr after each tools/call
+  changes      has listChanged; the tool "rename" renames create_issue to
+               open_issue and says so
+  pages        lists one tool per page
+It logs each message it gets to $FAKE_DIR/mcp-NAME.jsonl, its pid to
+mcp-NAME.pid, and one line per start (with ARX_* and FAKE_* variables) to
+mcp-NAME.starts. TOOLS.json is a list of tools; without it there are five.
+"""
+import base64, json, os, sys, threading
+
+name = sys.argv[1]
+fake = os.environ.get("FAKE_DIR", ".")
+mode = dict((w.split("=") + [""])[:2] for w in
+            os.environ.get("FAKE_MCP_MODE", "modern").split(","))
+legacy = "legacy" in mode or "silent" in mode
+
+def schema(**props):
+    required = [k for k in props if not k.endswith("_")]
+    return {"$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object", "required": required,
+            "properties": {k.rstrip("_"): {"type": "string", "description": v}
+                           for k, v in props.items()}}
+
+tools = [
+    {"name": "create_issue", "title": "Create issue",
+     "description": "Create a new issue in a repository. It needs a title.",
+     "inputSchema": schema(repo="The repository", title="The title",
+                           body_="The text")},
+    {"name": "listPullRequests",
+     "description": "List the pull requests of a repository.",
+     "inputSchema": schema(repo="The repository")},
+    {"name": "delete.repo", "description": "Delete a repository for good.",
+     "inputSchema": schema(repo="The repository")},
+    {"name": "echo", "description": "Return the text, or what kind names.",
+     "inputSchema": schema(text_="The text", kind_="What to return")},
+    {"name": "rename", "description": "Change the tool list.",
+     "inputSchema": schema()},
+]
+if len(sys.argv) > 2:
+    with open(sys.argv[2]) as f:
+        tools = json.load(f)
+
+with open(f"{fake}/mcp-{name}.pid", "w") as f:
+    f.write(str(os.getpid()))
+with open(f"{fake}/mcp-{name}.starts", "a") as f:
+    keep = {k: v for k, v in os.environ.items()
+            if k.startswith(("ARX_PLUGIN_DIR", "FAKE_", "TOKEN", "ARX_SESSION"))}
+    f.write(json.dumps({"argv": sys.argv[1:], "cwd": os.getcwd(), **keep}) + "\n")
+if "dies" in mode:
+    sys.stderr.write("fake-mcp: cannot open the database\n")
+    sys.exit(4)
+lock = threading.Lock()
+
+def send(message):
+    with lock:
+        sys.stdout.write(json.dumps({"jsonrpc": "2.0", **message}) + "\n")
+        sys.stdout.flush()
+
+def call(message, count):
+    params = message["params"]
+    args = params.get("arguments") or {}
+    kind = args.get("kind", "text")
+    text = args.get("text", "")
+    token = (params.get("_meta") or {}).get("progressToken")
+    if params["name"] == "rename":
+        tools[0]["name"] = "open_issue"
+        send({"method": "notifications/tools/list_changed"})
+    if mode.get("crash") == str(count):
+        sys.stderr.write("fake-mcp: out of memory\n")
+        sys.stderr.flush()
+        os._exit(3)
+    if kind == "error":
+        return {"content": [{"type": "text", "text": "it broke"}], "isError": True}
+    if kind == "structured":
+        return {"content": [], "structuredContent": {"n": 3, "ok": True}}
+    if kind == "image":
+        data = base64.b64encode(b"\x89PNG fake image bytes").decode()
+        return {"content": [{"type": "text", "text": "a picture:"},
+                            {"type": "image", "mimeType": "image/png", "data": data}]}
+    if kind == "link":
+        return {"content": [{"type": "resource_link", "uri": "file:///a.txt",
+                             "name": "a.txt", "mimeType": "text/plain"}]}
+    if kind == "input":
+        return {"resultType": "input_required", "inputRequests": {"r1": {
+            "method": "elicitation/create", "params": {"message": "Which repo?"}}}}
+    if kind == "long":
+        return {"content": [{"type": "text", "text": "line of output\n" * 2000}]}
+    if kind == "progress":
+        send({"method": "notifications/progress", "params": {
+            "progressToken": token, "progress": 1, "total": 2, "message": "half"}})
+    if kind == "rpc":
+        raise ValueError("no such thing")
+    return {"content": [{"type": "text", "text": f"{params['name']}: {text}"}]}
+
+def page(params):
+    if "pages" not in mode:
+        return {"tools": tools, "ttlMs": int(os.environ.get("FAKE_MCP_TTL", "0"))}
+    at = int(params.get("cursor") or 0)
+    result = {"tools": tools[at:at + 1]}
+    if at + 1 < len(tools):
+        result["nextCursor"] = str(at + 1)
+    return result
+
+capabilities = {"tools": {"listChanged": "changes" in mode}}
+count = 0
+for line in sys.stdin:
+    with open(f"{fake}/mcp-{name}.jsonl", "a") as f:
+        f.write(line)
+    message = json.loads(line)
+    method, rid = message.get("method"), message.get("id")
+    params = message.get("params") or {}
+    if rid is None or method is None:
+        continue
+    error = None
+    if method == "server/discover":
+        if "silent" in mode:
+            continue
+        if legacy:
+            error = {"code": -32601, "message": "Method not found"}
+        elif "old" in mode:
+            error = {"code": -32022, "message": "Unsupported protocol version",
+                     "data": {"supported": ["2099-01-01"]}}
+        else:
+            result = {"supportedVersions": ["2026-07-28"],
+                      "capabilities": capabilities,
+                      "serverInfo": {"name": name, "version": "1"},
+                      "instructions": f"The {name} server. It has test tools."}
+    elif method == "initialize" and legacy:
+        result = {"protocolVersion": "2025-06-18", "capabilities": capabilities,
+                  "serverInfo": {"name": name, "version": "1"}}
+        send({"id": 900, "method": "ping"})
+    elif method == "subscriptions/listen":
+        send({"method": "notifications/subscriptions/acknowledged",
+              "params": {"subscriptionId": rid}})
+        continue
+    elif method == "tools/list":
+        result = page(params)
+    elif method == "tools/call":
+        count += 1
+        try:
+            result = call(message, count)
+        except ValueError as e:
+            error = {"code": -32602, "message": str(e)}
+        if (params.get("arguments") or {}).get("kind") == "slow":
+            reply = {"id": rid, "result": result}
+            wait = float(os.environ.get("FAKE_MCP_SLOW", "5"))
+            threading.Timer(wait, send, [reply]).start()
+            continue
+        if "chatty" in mode:
+            for _ in range(2048):
+                sys.stderr.write("x" * 1023 + "\n")
+            sys.stderr.flush()
+    else:
+        error = {"code": -32601, "message": "Method not found"}
+    send({"id": rid, "error": error} if error else {"id": rid, "result": result})

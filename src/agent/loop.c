@@ -12,6 +12,7 @@
 #include "src/base/base.h"
 #include "src/harness/harness.h"
 #include "src/io/io.h"
+#include "src/mcp/mcp.h"
 
 // Returns kExitCap when a cap or limit is reached, else -1.
 static int CheckCaps(Agent* a) {
@@ -61,6 +62,7 @@ static void MaybeReload(Agent* a) {
     a->spec = fresh;
     KitLockWrite(&a->spec);
     ToolsBuild(a);
+    McpSync(a);
     char* system = SystemPrompt(a);
     cJSON* first = cJSON_GetArrayItem(a->messages, 0);
     if (first && strcmp(JsonStr(first, "content", ""), system)) {
@@ -132,6 +134,7 @@ int RunTurns(Agent* a) {
     int code = CheckCaps(a);
     if (code >= 0) return code;
     MaybeReload(a);
+    McpTurn(a);
     ReadInbox(a);
     if (a->stop_requested) return kExitDone;
     FlushNotes(a);

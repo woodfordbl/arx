@@ -12,6 +12,7 @@
 #include "src/base/base.h"
 #include "src/harness/harness.h"
 #include "src/io/io.h"
+#include "src/mcp/mcp.h"
 
 // The "status" for an exit code.
 static const char* StatusName(int code) {
@@ -73,6 +74,7 @@ static int Start(Agent* a) {
   }
   FreeEnv(env);
   ToolsBuild(a);
+  McpSync(a);
   cJSON* e = EventNew("session.start");
   cJSON_AddStringToObject(e, "name", JsonStr(a->spec.root, "name", "agent"));
   cJSON_AddStringToObject(e, "model", JsonStr(a->spec.root, "model", ""));
@@ -205,6 +207,7 @@ int AgentMain(Agent* a) {
   int code = Start(a);
   if (code) return code;
   code = a->interactive ? Interactive(a) : Headless(a);
+  McpShutdown();
   Finish(a, code);
   ToolsFree(&a->tools);
   SpecFree(&a->spec);

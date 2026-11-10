@@ -287,7 +287,8 @@ cJSON* ToolsJson(const ToolSet* tools);
 // A tool call that runs; see ToolStart.
 typedef struct ToolRun ToolRun;
 
-// Finds the tool called `name`, or returns NULL.
+// Finds the tool called `name`, or NULL. An MCP tool that is not selected
+// joins the set, so keep no Tool* across a call of this.
 Tool* ToolFind(struct Agent* a, const char* name);
 
 // Starts tool `name` with JSON `args` and returns at once; ProcPoll on
@@ -298,8 +299,11 @@ ToolRun* ToolStart(struct Agent* a, const char* name, const char* args,
                    char** text, int* is_error, char** output_path,
                    cJSON* end_event);
 
-// The process of a started call, for ProcPoll.
+// The process of a started call, for ProcPoll; NULL for an MCP call.
 ProcChild* ToolChild(ToolRun* run);
+
+// True when a started call has ended: its process, or its MCP request.
+int ToolDone(ToolRun* run);
 
 // Ends a call (stopping its process if it still runs) and frees `run`.
 // Returns the text for the model (malloc'd), sets `*is_error`, and adds
@@ -309,7 +313,7 @@ char* ToolFinish(ToolRun* run, int* is_error, cJSON* end_event);
 // Returns the ARX_* environment for tools and hooks, NULL-terminated:
 // ARX_SESSION, _SESSION_DIR, _TURN, _CWD, _SPEC, _SPEC_DIR, _DEPTH, _BIN;
 // ARX_PLUGIN_DIR for `plugin_dir`; and for a plugin's name, ARX_STATE_DIR
-// (<session>/plugins/<name>) and ARX_DATA_DIR (<cwd>/.arx/data/<name>).
+// and ARX_DATA_DIR (<session>/plugins/<name>, <cwd>/.arx/data/<name>).
 char** ToolEnv(struct Agent* a, const char* plugin_dir, const char* plugin);
 
 // ToolEnv for a program of `layer`, plus ARX_PLUGIN_SETTINGS for a plugin's.
@@ -328,12 +332,11 @@ int KeysValid(cJSON* keys);
 
 // Returns the keys of a call to `tool` (NULL: unknown, which gets []) with
 // `args`, as a new array: ["*"] when it declares none, [] for a subagent.
-// In each key, {name} becomes the top-level argument `name` ("" if
-// missing), and in a "host:" key its host: "host:{url}" -> "host:a.com".
+// {name} becomes the top-level argument `name` ("" if missing), and in a
+// "host:" key its host: "host:{url}" -> "host:a.com".
 cJSON* KeysFor(const Tool* tool, cJSON* args);
 
-// True when two calls with these keys may not run at the same time: one of
-// them has "*", or they share a key.
+// True when two calls may not run together: "*", or a key they share.
 int KeysConflict(cJSON* a, cJSON* b);
 
 // ---- hooks.c ----
