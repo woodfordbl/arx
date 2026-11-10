@@ -185,4 +185,30 @@ echo 'hooks: {harness_edti: {timeout: 3s}}' >>agent.yaml
 "$ARX" check >check.txt 2>&1
 check "the known points list it" has check.txt 'stop, harness_edit)'
 
+fresh "arx check and the prompt with a policy"
+mkplugin pol/guard </dev/null
+mkplugin pol/prompts-only <<<'hooks: {before_tool: {band: policy, fail: closed}}'
+mkhook pol/guard before_tool
+mkhook pol/prompts-only before_tool
+script pol/prompts-only/hooks/harness_edit <<<'#!/bin/sh'
+script hooks/harness_edit <<<'#!/bin/sh'
+echo 'instructions: "{{harness}}"' >>agent.yaml
+"$ARX" check --policy pol/guard --policy pol/prompts-only >check.txt 2>&1
+check "check prints the policy line before plugins" \
+  test "$(grep -n -E '^(policy|plugins):' check.txt | cut -d: -f2- | tr '\n' ' ')" = "policy: guard prompts-only plugins: shell "
+check "the hooks line marks policy hooks" has check.txt 'before_tool(guard*,prompts-only*)'
+check "harness_edit lists only policy folders" has check.txt 'harness_edit(prompts-only)'
+check "warns about a harness_edit outside a policy folder" has check.txt '- hooks/harness_edit runs only in a policy folder (--policy)'
+check "warns about a policy inside the working directory" has check.txt "- policy $WS/pol/guard is inside the working directory, so the agent's bash can change it"
+check "warns about a guard that fails open" has check.txt '- policy guard: before_tool hook without band: policy and fail: closed'
+check "but not about one that fails closed" lacks check.txt 'policy prompts-only: before_tool'
+sse_text "hi" | reply 1 "200 OK"
+run "go" --policy pol/guard --policy pol/prompts-only
+check "the harness text names the policies, not their folders" \
+  has fake/req-01.json '- Policy: guard, prompts-only. They come before your harness and you cannot remove them'
+check "and says where a rejected edit goes" has fake/req-01.json '/harness/rejected/.'
+check "the folders are not in the prompt" lacks fake/req-01.json "$WS/pol/guard"
+"$ARX" help >help.txt 2>&1
+check "help lists --policy" has help.txt '--policy DIR'
+
 summary

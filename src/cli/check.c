@@ -48,7 +48,8 @@ static char* LayerLabel(const Spec* spec, const Layer* layer) {
   return XStrdup("the spec folder");
 }
 
-// Prints the hooks of every layer, with the plugins that add them.
+// Prints the hooks of every layer, with the plugins that add them and a `*`
+// after a policy folder's. harness_edit runs only in a policy folder.
 static void PrintHooks(Agent* a) {
   printf("\nhooks:");
   for (const char* const* p = kHookPoints; *p; p++) {
@@ -56,11 +57,14 @@ static void PrintHooks(Agent* a) {
     int found = 0;
     for (int l = 0; l < a->spec.layer_count; l++) {
       const Layer* layer = &a->spec.layers[l];
-      char* path = LayerFile(layer, "hooks", *p);
+      int gate = !strcmp(*p, "harness_edit");
+      char* path =
+          gate && !layer->policy ? NULL : LayerFile(layer, "hooks", *p);
       if (path) {
         found = 1;
         if (layer->plugin) {
-          BufferPrintf(&from, "%s%s", from.len ? "," : "", layer->plugin);
+          BufferPrintf(&from, "%s%s%s", from.len ? "," : "", layer->plugin,
+                       layer->policy && !gate ? "*" : "");
         }
       }
       free(path);
@@ -80,17 +84,22 @@ static size_t TextBytes(const Spec* spec, cJSON* node) {
   return n;
 }
 
-// Prints where the base prompt comes from, and the plugins that add text:
-// "prompt: kit coding; plugins add reviewer (212 bytes), ...".
+// Prints where the base prompt comes from, and the policy folders and
+// plugins that add text: "prompt: kit coding; policies add guard (80
+// bytes); plugins add reviewer (212 bytes), ...".
 static void PrintPrompt(const Spec* spec) {
   printf("prompt: %s", spec->prompt_from ? spec->prompt_from : "default");
-  int any = 0;
-  for (int l = 0; l < spec->layer_count; l++) {
-    const Layer* layer = &spec->layers[l];
-    if (!layer->plugin || !layer->instructions) continue;
-    printf("%s%s (%zu bytes)", any ? ", " : "; plugins add ", layer->plugin,
-           TextBytes(spec, layer->instructions));
-    any = 1;
+  for (int policy = 1; policy >= 0; policy--) {
+    int any = 0;
+    for (int l = 0; l < spec->layer_count; l++) {
+      const Layer* layer = &spec->layers[l];
+      if (!layer->plugin || !layer->instructions) continue;
+      if (layer->policy != policy) continue;
+      const char* first = policy ? "; policies add " : "; plugins add ";
+      printf("%s%s (%zu bytes)", any ? ", " : first, layer->plugin,
+             TextBytes(spec, layer->instructions));
+      any = 1;
+    }
   }
   printf("\n");
 }
@@ -137,7 +146,7 @@ static void PrintPlugins(Agent* a) {
   int any = 0;
   for (int l = 0; l < a->spec.layer_count; l++) {
     const Layer* layer = &a->spec.layers[l];
-    if (!layer->plugin) continue;
+    if (!layer->plugin || layer->policy) continue;
     printf("%s%s", any ? " " : "plugins: ", layer->plugin);
     any = 1;
   }
@@ -289,6 +298,7 @@ static void PrintCheck(Agent* a) {
   int any = 0;
   PrintSettings(spec, JsonGet(spec->root, "model_settings"), "", &any);
   if (any) printf("\n");
+  CheckPolicyLine(spec);
   PrintPlugins(a);
   if (a->notes.len) printf("problems:\n%s", a->notes.data);
   Buffer warnings = {0};
@@ -296,6 +306,7 @@ static void PrintCheck(Agent* a) {
   HiddenWarnings(spec, &warnings);
   if (spec->warnings.len) BufferAppendStr(&warnings, spec->warnings.data);
   LongTextWarnings(spec, &warnings);
+  CheckPolicyWarnings(spec, &warnings);
   if (warnings.len) printf("warnings:\n%s", warnings.data);
   BufferFree(&warnings);
 }

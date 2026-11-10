@@ -93,6 +93,8 @@ void PrintOptions(FILE* out) {
       "                        defaults from `arx setup`)\n"
       "  --kit NAME            use an installed kit (its plugins, in order,\n"
       "                        and its prompt); the agent cannot change it\n"
+      "  --policy DIR          load a policy folder first; repeatable. The\n"
+      "                        agent cannot remove it (also: ARX_POLICY)\n"
       "  --set KEY=VALUE       override a spec value, e.g. model=...\n"
       "  --cap KEY=VALUE       hard limit: turns, tokens, usd, wall, depth\n"
       "  --resume ID|last      continue a session\n"
