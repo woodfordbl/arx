@@ -61,7 +61,7 @@ EOF2
 "$ARX" check >check.txt 2>&1
 code=$?
 check "the spec is valid" exited 0
-check "check lists the servers and their transports" has check.txt "mcp: notes (stdio) linear (http) local (http) github (stdio)"
+check "check lists the servers and their transports" has check.txt "mcp: notes (stdio, not listed) linear (http, not listed) local (http, not listed) github (stdio, not listed)"
 check "the spec turns a plugin's server off" lacks check.txt "extra ("
 check "check warns about http to a remote host" has check.txt "mcp_servers.linear.url is http, not https"
 check "loopback http gets no warning" lacks check.txt "mcp_servers.local.url"
@@ -72,5 +72,27 @@ check "--hosts leaves out a server that is off" lacks hosts.txt "extra.example.c
 check "check --plugin prints mcp_servers=" has describe.txt "mcp_servers=github extra"
 "$ARX" schema >schema.json
 check "arx schema has the key" [ "$(jq -r '.properties.mcp_servers.additionalProperties.properties.preload.type | join(",")' schema.json)" = "boolean,array" ]
+
+begin "the prompt cost: two tools"
+"$ARX" tools >tools.json
+check "no servers: no mcp_search" [ "$(jq -r '[.[].function.name] | join(" ")' tools.json)" = "bash edit" ]
+{ mcp_spec <<'EOF2'
+github: {command: ./none, description: GitHub issues and pull requests}
+linear: {url: "https://mcp.linear.example/mcp"}
+notes: {command: ./none, enabled: false}
+EOF2
+  echo 'tools: {github__create_issue: {timeout: 5}, other: {timeout: 5}}'
+} >agent.yaml
+"$ARX" tools >tools.json
+check "with servers the set gains mcp_search and mcp_select only" \
+  [ "$(jq -r '[.[].function.name] | join(" ")' tools.json)" = "bash edit mcp_search mcp_select" ]
+jq -r '.[2].function.description' tools.json >about.txt
+check "mcp_search names the servers" has about.txt "these MCP servers: github (GitHub issues and pull requests), linear. Then call mcp_select"
+check "a server that is off is not named" lacks about.txt "notes"
+check "mcp_search needs a query" [ "$(jq -c '.[2].function.parameters.required' tools.json)" = '["query"]' ]
+"$ARX" check >check.txt 2>&1
+check "tools.<server>__<tool> needs no file" lacks check.txt "tools.github__create_issue is configured"
+check "another missing tool is still reported" has check.txt "tools.other is configured but tools/other is missing"
+check "nothing starts for a check" [ ! -e .arx/mcp ]
 
 summary

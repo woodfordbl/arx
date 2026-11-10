@@ -149,7 +149,9 @@ void McpCheck(const Spec* spec, Buffer* line, Buffer* warnings) {
   cJSON_ArrayForEach(e, JsonGet(spec->root, "mcp_servers")) {
     const char* url = JsonStr(e, "url", NULL);
     if (!McpEnabled(e)) continue;
-    BufferPrintf(line, " %s (%s)", e->string, url ? "http" : "stdio");
+    int cached = McpCachedCount(e->string, e);
+    BufferPrintf(line, " %s (%s, ", e->string, url ? "http" : "stdio");
+    BufferPrintf(line, cached < 0 ? "not listed)" : "%d tools cached)", cached);
     Buffer host = {0};
     AppendHost(&host, url ? url : "");
     if (url && !strncmp(url, "http://", 7) && strcmp(host.data, "localhost") &&

@@ -246,6 +246,7 @@ void SpecSchema(Buffer* out);
 typedef enum ToolKind {
   kToolExec,   // tools/<name>, arguments as JSON on stdin
   kToolAgent,  // a subagent: arx -p - --spec <path>
+  kToolMcp,    // a tool of an MCP server, or mcp_search and mcp_select
 } ToolKind;
 
 // One tool as the model sees it, plus how to run it.
@@ -260,6 +261,8 @@ typedef struct Tool {
   char* plugin;      // that plugin's name, or NULL
   char* core;        // NAME when the file only runs `arx tool NAME`, or NULL
   cJSON* keys;       // key templates from the schema; NULL means ["*"]
+  char* server;      // kToolMcp: its server, or NULL for mcp_search/select
+  char* remote;      // kToolMcp: the server's own name for it, or NULL
 } Tool;
 
 // The tools of the current harness version.

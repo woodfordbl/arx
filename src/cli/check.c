@@ -338,6 +338,7 @@ int CheckOrTools(int argc, char** argv, Agent* a) {
   int code = ParseOptions(argc, argv, 2, a);
   if (code || (code = LoadSpec(a))) return code;
   ToolsBuild(a);
+  McpSync(a);
   if (!check) {
     cJSON* tools = ToolsJson(&a->tools);
     char* text = cJSON_Print(tools);

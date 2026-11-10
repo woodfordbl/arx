@@ -13,6 +13,7 @@
 #include "src/agent/agent.h"
 #include "src/base/base.h"
 #include "src/harness/harness.h"
+#include "src/mcp/mcp.h"
 
 static const char kAgentParams[] =
     "{\"type\":\"object\",\"properties\":{\"task\":{\"type\":\"string\","
@@ -208,9 +209,8 @@ static void Add(ToolSet* t, ToolKind kind, const char* name, const char* desc,
       params_json ? cJSON_Duplicate(params_json, 1) : cJSON_Parse(params);
   tool->path = path ? XStrdup(path) : NULL;
   tool->timeout = timeout;
-  tool->plugin_dir = NULL;
-  tool->plugin = NULL;
-  tool->core = NULL;
+  tool->plugin_dir = tool->plugin = tool->core = NULL;
+  tool->server = tool->remote = NULL;
   tool->keys = kind == kToolAgent ? cJSON_CreateArray() : NULL;
 }
 
@@ -333,7 +333,8 @@ static void AddConfigured(struct Agent* a, char** names, int n, Buffer* notes) {
       }
       free(desc);
       free(path);
-    } else if (!found && JsonBool(entry, "enabled", 1)) {
+    } else if (!found && JsonBool(entry, "enabled", 1) &&
+               !McpOwns(a->spec.root, entry->string)) {
       BufferPrintf(notes, "- tools.%s is configured but tools/%s is missing\n",
                    entry->string, entry->string);
     }
@@ -371,6 +372,8 @@ void ToolsFree(ToolSet* tools) {
     free(tools->items[i].plugin_dir);
     free(tools->items[i].plugin);
     free(tools->items[i].core);
+    free(tools->items[i].server);
+    free(tools->items[i].remote);
     cJSON_Delete(tools->items[i].params);
     cJSON_Delete(tools->items[i].keys);
   }
