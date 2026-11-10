@@ -8,8 +8,8 @@
 #include "src/harness/harness.h"
 
 const char* const kHookPoints[] = {
-    "session_start", "before_model", "after_model", "before_tool",
-    "after_tool",    "stop",         NULL};
+    "session_start", "before_model", "after_model",  "before_tool",
+    "after_tool",    "stop",         "harness_edit", NULL};
 const char kNameChars[] =
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-";
 

@@ -196,6 +196,7 @@ static int FailsClosed(struct Agent* a, const Layer* layer, const char* point) {
 int HookChain(struct Agent* a, const char* point, cJSON* object,
               cJSON* changed) {
   int result = 0, final_result = 0, n = a->spec.layer_count;
+  if (!strcmp(point, "harness_edit")) return 0;  // only the gate runs it
   for (int k = 0; k < 3 * n; k++) {
     const Layer* layer = &a->spec.layers[k % n];
     int band = HookBand(&a->spec, layer, point);

@@ -211,8 +211,8 @@ extern const Field kPluginFields[];
 // The keys of kit.yaml, ending with a zeroed Field.
 extern const Field kKitFields[];
 
-// The hook points, NULL-terminated: session_start, before_model,
-// after_model, before_tool, after_tool, stop.
+// The hook points, NULL-terminated: session_start, before_model, after_model,
+// before_tool, after_tool, stop, harness_edit (policy folders only: gate.c).
 extern const char* const kHookPoints[];
 
 // The characters allowed in tool names (OpenAI function names).

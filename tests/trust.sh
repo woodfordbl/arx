@@ -177,4 +177,11 @@ check "the policy's hook ran in both" test "$(count order.txt p)" = 2
 check "the subagent's events show the policy hook at depth 1" \
   jq -es 'any(.[]; .type == "hook" and .depth == 1 and .policy == true)' .arx/sessions/last/events.jsonl
 
+fresh "the harness_edit hook point"
+mkplugin pol/p <<<'hooks: {harness_edit: {timeout: 30s, fail: open}}'
+check "a policy's plugin.yaml may set its options" "$ARX" check --policy pol/p
+echo 'hooks: {harness_edti: {timeout: 3s}}' >>agent.yaml
+"$ARX" check >check.txt 2>&1
+check "the known points list it" has check.txt 'stop, harness_edit)'
+
 summary

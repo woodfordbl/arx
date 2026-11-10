@@ -155,6 +155,10 @@ static int Combine(const char* point, cJSON* answer, cJSON** output) {
 // Runs every layer's hook for a decision point; see harness.h.
 int HookRun(struct Agent* a, const char* point, cJSON* input, cJSON** output) {
   *output = NULL;
+  if (!strcmp(point, "harness_edit")) {  // only the gate runs this point
+    cJSON_Delete(input);
+    return 0;
+  }
   cJSON_AddStringToObject(input, "point", point);
   cJSON_AddStringToObject(input, "session", a->session.id);
   cJSON_AddNumberToObject(input, "turn", a->session.turns);
