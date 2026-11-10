@@ -188,6 +188,7 @@ char* SessionOutputPath(Session* s) {
 // Closes the transcript and frees the strings.
 void SessionClose(Session* s) {
   if (s->transcript) fclose(s->transcript);
+  cJSON_Delete(s->calls);
   free(s->id);
   free(s->dir);
   memset(s, 0, sizeof(*s));

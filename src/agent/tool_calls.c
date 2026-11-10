@@ -7,7 +7,8 @@
 // the result; it runs for every call that ran, also after an error, a
 // timeout or Ctrl-C. When a hook changed the call, the result says what
 // ran, since the model only knows the call it made. Results go into the
-// history in call order.
+// history in call order; a call that a scheduler plugin moved to the
+// background (background.c) gets a placeholder there and runs on.
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,9 +19,8 @@
 #include "src/harness/harness.h"
 #include "src/io/io.h"
 
-// A one-line summary of a tool call for the terminal view: the command,
-// path or task when there is one, else the raw arguments.
-static char* Preview(const char* args) {
+// A one-line summary of a tool call; see agent.h.
+char* CallPreview(const char* args) {
   cJSON* parsed = cJSON_Parse(args);
   const char* s = JsonStr(parsed, "command", NULL);
   if (!s) s = JsonStr(parsed, "path", NULL);
@@ -128,7 +128,7 @@ static char* RanAs(cJSON* model_call, cJSON* call) {
     return NULL;
   }
   char* args = ArgsText(call);
-  char* preview = Preview(args);
+  char* preview = CallPreview(args);
   char* line = renamed ? XAsprintf("[ran as: %s %s]", name, preview)
                        : XAsprintf("[ran as: %s]", preview);
   free(preview);
@@ -166,14 +166,16 @@ static void Complete(Agent* a, Call* c, double secs) {
   c->state = kDone;
   SchedDone(c->id, secs, c->is_error, backoff, 1);
   cJSON_Delete(backoff);
+  CallEnded(a, c, secs);
 }
 
-// Ends a call without a run, with the result `text` (consumed).
-static void EndWithout(Call* c, char* text, int is_error) {
+// Ends a call without a run; see agent.h.
+void CallEndWithout(Agent* a, Call* c, char* text, int is_error) {
   c->text = text;
   c->is_error = is_error;
   c->state = kDone;
   SendEnd(c);
+  CallEnded(a, c, -1);
 }
 
 // Starts a queued call's tool.
@@ -187,7 +189,11 @@ static void Launch(Agent* a, Call* c) {
                      &c->is_error, &c->out_path, c->end);
   free(input);
   c->state = kRunning;
-  if (!c->run) Complete(a, c, 0);
+  if (!c->run) {
+    Complete(a, c, 0);
+  } else {
+    CallRuns(a, c);
+  }
 }
 
 // Runs the before_tool hooks of one call and sends tool.start. Leaves the
@@ -200,10 +206,10 @@ static void Prepare(Agent* a, Call* c, cJSON* raw) {
   cJSON_AddStringToObject(c->end, "id", c->id);
   cJSON_AddStringToObject(c->end, "name", name);
   if (g_interrupted) {
-    EndWithout(c, XStrdup("[interrupted before this tool ran]"), 1);
+    CallEndWithout(a, c, XStrdup("[interrupted before this tool ran]"), 1);
     return;
   }
-  char* preview = Preview(c->args);
+  char* preview = CallPreview(c->args);
   cJSON* start = EventNew("tool.start");
   cJSON_AddStringToObject(start, "id", c->id);
   cJSON_AddStringToObject(start, "name", name);
@@ -215,7 +221,7 @@ static void Prepare(Agent* a, Call* c, cJSON* raw) {
   int is_error = 1;
   char* text = BeforeTool(a, c->call, &is_error);
   if (text) {
-    EndWithout(c, text, is_error);
+    CallEndWithout(a, c, text, is_error);
     return;
   }
   FinalKeys(a, c->model_call, c->call);
@@ -243,8 +249,9 @@ static void StartByKeys(Agent* a) {
   }
 }
 
-// Applies what a scheduler plugin said: the calls to start and the
-// results that end calls without a run. Unknown ids are ignored.
+// Applies what a scheduler plugin said: the calls to start, the results
+// that end calls without a run, and the calls to move to the background
+// or to cancel. Unknown ids are ignored.
 static void StartByPlugin(Agent* a) {
   SchedOut out;
   SchedPoll(&out);
@@ -256,8 +263,13 @@ static void StartByPlugin(Agent* a) {
     cJSON_ArrayForEach(id, out.start) {
       if (c->state == kQueued && !strcmp(id->valuestring, c->id)) Launch(a, c);
     }
-    if (text && c->state == kQueued) EndWithout(c, XStrdup(text), 1);
+    if (text && c->state == kQueued) CallEndWithout(a, c, XStrdup(text), 1);
   }
+  cJSON* id;
+  cJSON_ArrayForEach(id, out.detach) {
+    CallDetach(a, CallFind(a, id->valuestring));
+  }
+  cJSON_ArrayForEach(id, out.cancel) CallCancel(a, id->valuestring);
   SchedOutFree(&out);
 }
 
@@ -267,53 +279,54 @@ int CallsPoll(Agent* a, double wait) {
   // and still get their after_tool hooks.
   for (int i = 0; i < a->call_count && g_interrupted; i++) {
     if (a->calls[i]->state == kQueued) {
-      EndWithout(a->calls[i], XStrdup("[interrupted before this tool ran]"), 1);
       SchedDone(a->calls[i]->id, 0, 1, NULL, 0);
+      CallEndWithout(a, a->calls[i],
+                     XStrdup("[interrupted before this tool ran]"), 1);
     }
   }
   if (SchedActive()) StartByPlugin(a);
   if (!SchedActive()) StartByKeys(a);
   ProcChild** kids = XMalloc((size_t)(a->call_count + 1) * sizeof(*kids));
-  int k = 0, queued = 0;
+  int k = 0, busy = 0;
   for (int i = 0; i < a->call_count; i++) {
-    if (a->calls[i]->state == kRunning) kids[k++] = ToolChild(a->calls[i]->run);
-    queued += a->calls[i]->state == kQueued;
+    Call* c = a->calls[i];
+    // A background call's process is kept, so every round serves it.
+    if (c->state == kRunning && !c->short_id) kids[k++] = ToolChild(c->run);
+    busy += c->state != kDone;
   }
-  if (k || queued) ProcPoll(kids, k, SchedWait(wait));
+  if (busy) ProcPoll(kids, k, SchedWait(wait));
   free(kids);
   for (int i = 0; i < a->call_count; i++) {
     Call* c = a->calls[i];
     if (c->state != kRunning || !ProcDone(ToolChild(c->run))) continue;
-    c->text = ToolFinish(c->run, &c->is_error, c->end);
+    c->text = ToolFinish(c->run, &c->is_error, c->end, c->stop_line);
     c->run = NULL;
     Complete(a, c, JsonNum(c->end, "secs", 0));
   }
-  return k + queued;
+  CallsSweep(a);
+  return busy;
 }
 
-// Adds the tool message of a call that is done to the history and the
-// transcript, and frees the call.
+// Adds the tool message of a call to the history and the transcript: its
+// result, or the placeholder of a background call.
 static void Deliver(Agent* a, Call* c) {
   cJSON* m = cJSON_CreateObject();
   cJSON_AddStringToObject(m, "role", "tool");
   cJSON_AddStringToObject(m, "tool_call_id", c->id);
-  cJSON_AddStringToObject(m, "content", c->text);
-  if (c->out_path) cJSON_AddStringToObject(m, "_out", c->out_path);
+  cJSON_AddStringToObject(m, "content", c->short_id ? c->placeholder : c->text);
+  if (c->out_path && !c->short_id) {
+    cJSON_AddStringToObject(m, "_out", c->out_path);
+  }
   cJSON_AddItemToArray(a->messages, m);
   SessionAppend(&a->session, m);
-  free(c->id);
-  free(c->args);
-  free(c->text);
-  free(c->out_path);
-  cJSON_Delete(c->call);
-  cJSON_Delete(c->model_call);
-  free(c);
+  c->placed = 1;
 }
 
-// True while a call of this reply (`mine`, `n` of them) is not done.
+// True while a call of this reply (`mine`, `n` of them) is neither done
+// nor in the background.
 static int Pending(Call* const* mine, int n) {
   for (int i = 0; i < n; i++) {
-    if (mine[i]->state != kDone) return 1;
+    if (mine[i]->state != kDone && !mine[i]->short_id) return 1;
   }
   return 0;
 }
@@ -342,14 +355,9 @@ void RunToolCalls(Agent* a, cJSON* calls) {
   // One more round reads what a scheduler plugin said about the last calls,
   // as the runtime always did before it returned.
   CallsPoll(a, 0);
-  // This reply's calls leave the table, and their results go in call order.
-  int kept = 0;
-  for (int i = 0; i < a->call_count; i++) {
-    int done = 0;
-    for (int j = 0; j < n && !done; j++) done = a->calls[i] == mine[j];
-    if (!done) a->calls[kept++] = a->calls[i];
-  }
-  a->call_count = kept;
+  // The results go in call order. The calls that are done leave the table;
+  // a background call stays until it ends.
   for (int i = 0; i < n; i++) Deliver(a, mine[i]);
   free(mine);
+  CallsSweep(a);
 }

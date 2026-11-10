@@ -27,7 +27,9 @@ typedef enum CallState { kQueued, kRunning, kDone } CallState;
 
 // One tool call in the session's call table, from its before_tool hooks to
 // its result. It owns copies of the model's id and arguments, so the reply
-// they came from may be freed (by compaction) while it runs.
+// they came from may be freed (by compaction) while it runs. A background
+// call (background.c) stays in the table after its reply's results are in
+// the history, until it ends.
 typedef struct Call {
   char* id;           // the model's tool call id
   char* args;         // the arguments as the model wrote them
@@ -39,6 +41,13 @@ typedef struct Call {
   int is_error;
   char* out_path;  // the full output, or NULL
   cJSON* end;      // the tool.end event, until it is sent
+  // A background call: the model got `placeholder` as the result.
+  char* short_id;         // "c7" once it is in the background, else NULL
+  char* placeholder;      // "started as c7 ...", the result in the reply
+  double detached_at;     // Now() when it moved to the background
+  const char* status;     // "cancelled" or "stopped" when arx ended it
+  const char* stop_line;  // the status line for a run that arx stopped
+  int placed;             // its tool message is in the history
 } Call;
 
 // A running agent.
@@ -97,17 +106,66 @@ int ModelTurn(Agent* a, cJSON** message);
 // queues the allowed calls in the session's call table and runs them by
 // their keys (calls that share a key run one at a time, "*" runs alone, []
 // runs with anything), or as a scheduler plugin says. after_tool runs as
-// each call ends. Adds the results to the history and the transcript in
-// the order of the calls, and removes the calls from the table. Calls after
-// a Ctrl-C still get a result, so the history stays valid.
+// each call ends. Returns when each call is done or in the background, and
+// adds the results (a placeholder for a background call) to the history
+// and the transcript in the order of the calls. Calls after a Ctrl-C still
+// get a result, so the history stays valid.
 void RunToolCalls(Agent* a, cJSON* calls);
 
 // Runs one round of the session's call table: after Ctrl-C, ends the
 // queued calls; reads the scheduler plugin; starts calls (as the plugin
-// says, else by keys); waits up to `wait` seconds (at most 0.1) on the
-// running processes; and finishes each call whose process ended, with its
-// after_tool hooks. Returns the number of calls still queued or running.
+// says, else by keys, and moves to the background or cancels the calls it
+// names); waits up to `wait` seconds (at most 0.1) on the running
+// processes; and finishes each call whose process ended, with its
+// after_tool hooks. Returns the number of calls that were queued or running.
 int CallsPoll(Agent* a, double wait);
+
+// A one-line summary of a call's arguments, for events and notes: the
+// command, path or task when there is one, else the raw text (malloc'd).
+char* CallPreview(const char* args);
+
+// Ends a queued call without a run, with the result `text` (consumed).
+void CallEndWithout(Agent* a, Call* c, char* text, int is_error);
+
+// Background calls (background.c): a scheduler plugin moves a call to the
+// background with {"detach"}. The model gets a placeholder result at once,
+// the call runs on, and its real result reaches the agent later as a
+// `result` line in the session inbox.
+
+// Returns the call in the table with this model id or short id, or NULL.
+Call* CallFind(Agent* a, const char* id);
+
+// Moves a queued or running call to the background: gives it a short id
+// (c1, c2, ...) and its placeholder, drops the key "*", and sends
+// tool.detach. Ignores NULL, a call that ended and a background call.
+void CallDetach(Agent* a, Call* c);
+
+// Tells a background call that its process started.
+void CallRuns(Agent* a, Call* c);
+
+// Cancels the call with this model id or short id: a running call gets
+// SIGTERM (SIGKILL 3 seconds later, without a wait) and ends with its
+// output and "[cancelled]"; a queued call ends at once. Ignores an unknown
+// id and a call that ended.
+void CallCancel(Agent* a, const char* id);
+
+// Delivers a background call that ended, after `secs` seconds (below 0: it
+// never ran): appends its `result` line to the inbox. Does nothing for a
+// foreground call.
+void CallEnded(Agent* a, Call* c, double secs);
+
+// The number of background calls whose result the agent has not seen.
+int CallsInFlight(Agent* a);
+
+// Stops every call in the table before the session ends or the prompt
+// comes back: running calls get SIGTERM, queued ones end, each with its
+// after_tool hooks and a `result` line with the status `stopped`. Waits
+// until they are gone.
+void CallsShutdown(Agent* a);
+
+// Frees the calls that are done and whose tool message is in the history,
+// and takes them out of the table.
+void CallsSweep(Agent* a);
 
 // The scheduler plugin (scheduler.c): one process for each session, an
 // executable `scheduler` at the top of a layer (the first wins).

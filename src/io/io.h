@@ -30,6 +30,8 @@ typedef struct Session {
   FILE* transcript;
   int64_t inbox_offset;
   int tool_seq;  // the number of the last tool-NNNN.out
+  int call_seq;  // the number of the last background call (c1, c2, ...)
+  cJSON* calls;  // background calls whose result the agent has not seen
   int turns;
   int64_t tokens_in;
   int64_t tokens_out;
