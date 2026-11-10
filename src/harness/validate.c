@@ -11,6 +11,7 @@
 
 #include "src/base/base.h"
 #include "src/harness/harness.h"
+#include "src/mcp/mcp.h"
 
 static const char* const kStrategies[] = {"mask", "summarize", "hybrid",
                                           "restart", NULL};
@@ -42,24 +43,6 @@ static int EditDistance(const char* a, const char* b) {
   return d[n][m];
 }
 
-// Appends "file:line: path: message" for the key at `path`.
-static void Problem(const Spec* spec, Buffer* err, const char* path,
-                    const char* fmt, ...) {
-  cJSON* line = cJSON_GetObjectItemCaseSensitive(spec->lines, path);
-  if (cJSON_IsNumber(line)) {
-    BufferPrintf(err, "%s:%d: %s: ", spec->path, line->valueint, path);
-  } else if (cJSON_IsString(line)) {  // from the user's defaults
-    BufferPrintf(err, "%s: %s: ", line->valuestring, path);
-  } else {
-    BufferPrintf(err, "%s: %s: ", spec->path, path);
-  }
-  va_list ap;
-  va_start(ap, fmt);
-  BufferVprintf(err, fmt, ap);
-  va_end(ap);
-  BufferAppendStr(err, "\n");
-}
-
 // Reports an unknown key, suggesting the closest known one.
 static void UnknownKey(const Spec* spec, Buffer* err, const char* path,
                        const char* key, const Field* fields) {
@@ -75,9 +58,10 @@ static void UnknownKey(const Spec* spec, Buffer* err, const char* path,
     BufferPrintf(&known, "%s%s", f == fields ? "" : ", ", f->key);
   }
   if (best) {
-    Problem(spec, err, path, "unknown key (did you mean \"%s\"?)", best->key);
+    SpecProblem(spec, err, path, "unknown key (did you mean \"%s\"?)",
+                best->key);
   } else {
-    Problem(spec, err, path, "unknown key (known: %s)", known.data);
+    SpecProblem(spec, err, path, "unknown key (known: %s)", known.data);
   }
   BufferFree(&known);
 }
@@ -97,7 +81,7 @@ static void ValidateNode(const Spec* spec, cJSON* node, const Field* fields,
     if (!f->key) {
       UnknownKey(spec, err, child_path, c->string, fields);
     } else if (!TypeOk(f->type, c)) {
-      Problem(spec, err, child_path, "must be %s", TypeName(f->type));
+      SpecProblem(spec, err, child_path, "must be %s", TypeName(f->type));
     } else if (f->type == kMap) {
       ValidateNode(spec, c, f->sub, child_path, err);
     } else if (f->type == kDict) {
@@ -115,7 +99,7 @@ static void ValidateDict(const Spec* spec, cJSON* dict, const Field* fields,
     if (cJSON_IsObject(e)) {
       ValidateNode(spec, e, fields, entry, err);
     } else if (!cJSON_IsNull(e)) {
-      Problem(spec, err, entry, "must be a mapping of options (or empty)");
+      SpecProblem(spec, err, entry, "must be a mapping of options (or empty)");
     }
     free(entry);
   }
@@ -143,14 +127,15 @@ static void CheckTemplate(const Spec* spec, const char* where, const char* text,
     while (end > start && end[-1] == ' ') *--end = 0;
     int known = InList(vars, start) || !strncmp(start, "file:", 5);
     if (!known && InList(kTemplateVars, start)) {
-      Problem(spec, err, where,
-              "{{%s}} belongs in the spec's prompt, not a plugin's", start);
+      SpecProblem(spec, err, where,
+                  "{{%s}} belongs in the spec's prompt, not a plugin's", start);
     } else if (!known) {
-      Problem(spec, err, where,
-              "unknown template variable {{%s}} (known: %sdate, cwd, "
-              "session, turn, file:PATH)",
-              start,
-              plugin ? "" : "prompt, harness, skills, plugin_instructions, ");
+      SpecProblem(
+          spec, err, where,
+          "unknown template variable {{%s}} (known: %sdate, cwd, "
+          "session, turn, file:PATH)",
+          start,
+          plugin ? "" : "prompt, harness, skills, plugin_instructions, ");
     }
     free(name);
     p = close + 2;
@@ -175,13 +160,14 @@ static void ValidatePluginText(const Spec* spec, cJSON* node, const char* dir,
     int error = errno;
     size_t n = top ? strlen(top) : 0;
     if (*file == '/') {
-      Problem(spec, err, where, "%s: use a relative path", file);
+      SpecProblem(spec, err, where, "%s: use a relative path", file);
     } else if (!real) {
-      Problem(spec, err, where, "cannot read %s: %s", path, strerror(error));
+      SpecProblem(spec, err, where, "cannot read %s: %s", path,
+                  strerror(error));
     } else if (!top || strncmp(real, top, n) || real[n] != '/') {
-      Problem(spec, err, where, "%s is outside the plugin folder", file);
+      SpecProblem(spec, err, where, "%s is outside the plugin folder", file);
     } else if (!(text = ReadFile(real, NULL))) {
-      Problem(spec, err, where, "cannot read %s", path);
+      SpecProblem(spec, err, where, "cannot read %s", path);
     }
     free(real);
     free(path);
@@ -198,7 +184,7 @@ static void ValidateBuiltFields(const Spec* spec, cJSON* settings,
   for (const char* const* f = kBuiltFields; *f; f++) {
     if (!cJSON_GetObjectItemCaseSensitive(settings, *f)) continue;
     char* path = XAsprintf("%s.%s", where, *f);
-    Problem(spec, err, path, "arx sets this field; a plugin cannot");
+    SpecProblem(spec, err, path, "arx sets this field; a plugin cannot");
     free(path);
   }
 }
@@ -214,14 +200,14 @@ static void ValidatePluginSettings(const Spec* spec, Buffer* err) {
     if (!layer->plugin) continue;
     char* where = XAsprintf("plugins.%s.instructions", layer->plugin);
     if (text && !cJSON_IsNull(text) && !TypeOk(kTextList, text)) {
-      Problem(spec, err, where, "must be %s, or null", TypeName(kTextList));
+      SpecProblem(spec, err, where, "must be %s, or null", TypeName(kTextList));
     } else {
       ValidatePluginText(spec, text, layer->dir, where, err);
     }
     free(where);
     where = XAsprintf("plugins.%s.model_settings", layer->plugin);
     if (settings && !cJSON_IsObject(settings)) {
-      Problem(spec, err, where, "must be a mapping");
+      SpecProblem(spec, err, where, "must be a mapping");
     }
     ValidateBuiltFields(spec, settings, where, err);
     free(where);
@@ -235,22 +221,22 @@ static void ValidateNames(const Spec* spec, Buffer* err) {
     const char* band = JsonStr(c, "band", "normal");
     if (!InList(kBands, band)) {
       char* path = XAsprintf("hooks.%s.band", c->string);
-      Problem(spec, err, path, "must be policy, normal or final");
+      SpecProblem(spec, err, path, "must be policy, normal or final");
       free(path);
     }
     if (InList(kHookPoints, c->string)) continue;
     char* path = XAsprintf("hooks.%s", c->string);
-    Problem(spec, err, path,
-            "unknown hook point (known: session_start, before_model, "
-            "after_model, before_tool, after_tool, stop)");
+    SpecProblem(spec, err, path,
+                "unknown hook point (known: session_start, before_model, "
+                "after_model, before_tool, after_tool, stop)");
     free(path);
   }
   cJSON_ArrayForEach(c, JsonGet(spec->root, "tools")) {
     size_t len = strlen(c->string);
     if (len && len <= 64 && strspn(c->string, kNameChars) == len) continue;
     char* path = XAsprintf("tools.%s", c->string);
-    Problem(spec, err, path,
-            "tool names use letters, digits, _ and - (64 max)");
+    SpecProblem(spec, err, path,
+                "tool names use letters, digits, _ and - (64 max)");
     free(path);
   }
 }
@@ -263,9 +249,9 @@ static void ValidatePrograms(const Spec* spec, const char* key, Buffer* err) {
     char* where = XAsprintf("%s.%s", key, c->string);
     char* path = cJSON_IsString(c) ? PathJoin(spec->dir, c->valuestring) : NULL;
     if (!path) {
-      Problem(spec, err, where, "must be the path of an executable");
+      SpecProblem(spec, err, where, "must be the path of an executable");
     } else if (!IsRunnable(path)) {
-      Problem(spec, err, where, "%s is not executable", path);
+      SpecProblem(spec, err, where, "%s is not executable", path);
     }
     free(path);
     free(where);
@@ -288,8 +274,8 @@ static void ValidateEndpointProgram(const Spec* spec, const char* key,
                                                   name ? name : "");
   char* path = name && !named ? PathJoin(spec->dir, name) : NULL;
   if (path && !IsRunnable(path)) {
-    Problem(spec, err, where, "not a name in %s, and %s is not executable", map,
-            path);
+    SpecProblem(spec, err, where, "not a name in %s, and %s is not executable",
+                map, path);
   }
   free(path);
   free(map);
@@ -305,20 +291,21 @@ static void ValidateHosts(const Spec* spec, Buffer* err) {
     if (len && strspn(host, "abcdefghijklmnopqrstuvwxyz0123456789.-*") == len) {
       continue;
     }
-    Problem(spec, err, "hosts",
-            "\"%s\" is not a host name such as api.openai.com (lower case, "
-            "no scheme, port or path)",
-            host);
+    SpecProblem(spec, err, "hosts",
+                "\"%s\" is not a host name such as api.openai.com (lower case, "
+                "no scheme, port or path)",
+                host);
   }
 }
 
 // Rules the table cannot express: required keys, ranges and templates.
 static void ValidateRules(const Spec* spec, Buffer* err) {
   cJSON* root = spec->root;
-  if (!JsonStr(root, "model", NULL)) Problem(spec, err, "model", "required");
+  if (!JsonStr(root, "model", NULL))
+    SpecProblem(spec, err, "model", "required");
   if (!JsonStr(root, "endpoint.base_url", NULL) &&
       !JsonStr(root, "endpoint.credential", NULL)) {
-    Problem(spec, err, "endpoint.base_url", "required");
+    SpecProblem(spec, err, "endpoint.base_url", "required");
   }
   ValidateAllPrograms(spec, err);
   ValidateEndpointProgram(spec, "credential", err);
@@ -330,14 +317,14 @@ static void ValidateRules(const Spec* spec, Buffer* err) {
   if (strategy && !named && !InList(kStrategies, strategy)) {
     char* path = PathJoin(spec->dir, strategy);
     if (!IsRunnable(path)) {
-      Problem(spec, err, "compaction.strategy",
-              "not a built-in strategy, and %s is not executable", path);
+      SpecProblem(spec, err, "compaction.strategy",
+                  "not a built-in strategy, and %s is not executable", path);
     }
     free(path);
   }
   double trigger = JsonNum(root, "compaction.trigger", 0.7);
   if (trigger <= 0 || trigger > 1) {
-    Problem(spec, err, "compaction.trigger", "must be between 0 and 1");
+    SpecProblem(spec, err, "compaction.trigger", "must be between 0 and 1");
   }
   const char* texts[] = {"instructions", "first_message", "compaction.prompt"};
   for (size_t i = 0; i < sizeof(texts) / sizeof(texts[0]); i++) {
@@ -357,13 +344,14 @@ void SpecValidate(const Spec* spec, Buffer* err) {
   ValidateNames(spec, err);
   ValidateRules(spec, err);
   ValidatePluginSettings(spec, err);
+  McpValidate(spec, 0, err);
 }
 
 // Checks that a plugin or kit names itself with letters, digits, _ and -.
 static void ValidateOwnName(const Spec* spec, Buffer* err) {
   const char* name = JsonStr(spec->root, "name", "x");
   if (!*name || strspn(name, kNameChars) != strlen(name)) {
-    Problem(spec, err, "name", "use letters, digits, _ and -");
+    SpecProblem(spec, err, "name", "use letters, digits, _ and -");
   }
 }
 
@@ -378,6 +366,7 @@ void PluginValidate(const Spec* plugin, Buffer* err) {
   ValidateAllPrograms(plugin, err);
   ValidateHosts(plugin, err);
   ValidateOwnName(plugin, err);
+  McpValidate(plugin, 1, err);
   ValidatePluginText(plugin, JsonGet(plugin->root, "instructions"), plugin->dir,
                      "instructions", err);
   ValidateBuiltFields(plugin, JsonGet(plugin->root, "model_settings"),
@@ -394,6 +383,6 @@ void KitValidate(const Spec* kit, Buffer* err) {
   ValidateOwnName(kit, err);
   if (!JsonStr(kit->root, "extends", NULL) &&
       !cJSON_IsArray(JsonGet(kit->root, "plugins"))) {
-    Problem(kit, err, "plugins", "required (or extends)");
+    SpecProblem(kit, err, "plugins", "required (or extends)");
   }
 }

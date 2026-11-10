@@ -66,6 +66,29 @@ static const Field kPrices[] = {
     {"output", kNumber, NULL, "USD per 1M output tokens"},
     {NULL, 0, NULL, NULL}};
 
+static const Field kServer[] = {
+    {"type", kString, NULL, "stdio or http (default: from command or url)"},
+    {"command", kString, NULL, "stdio: the program; a path is spec-relative"},
+    {"args", kStringList, NULL, "stdio: its arguments"},
+    {"env", kAnyMap, NULL, "stdio: variables added to its environment"},
+    {"cwd", kString, NULL, "stdio: its working folder"},
+    {"url", kString, NULL, "http: the MCP endpoint"},
+    {"headers", kAnyMap, NULL, "http: headers sent on every request"},
+    {"credential", kString, NULL, "A credentials name or a program path"},
+    {"api_key_env", kString, NULL,
+     "stdio: the variable that gets the credential's api_key"},
+    {"description", kString, NULL, "One line in mcp_search's description"},
+    {"include", kStringList, NULL, "Glob patterns: only these tools exist"},
+    {"exclude", kStringList, NULL, "Glob patterns: these tools never exist"},
+    {"preload", kFlagOrList, NULL,
+     "Tools selected from the first turn; true selects all"},
+    {"keys", kStringList, NULL, "The keys of every call (default [\"*\"])"},
+    {"timeout", kDuration, NULL, "Longest call (default 120s)"},
+    {"startup_timeout", kDuration, NULL,
+     "Longest time from start to the first tool list (default 60s)"},
+    {"enabled", kBoolean, NULL, "false turns the server off"},
+    {NULL, 0, NULL, NULL}};
+
 const Field kTopFields[] = {
     {"name", kString, NULL, "Agent name"},
     {"model", kString, NULL, "Model id your endpoint accepts"},
@@ -93,6 +116,7 @@ const Field kTopFields[] = {
     {"adapters", kAnyMap, NULL, "Named request adapters: name -> path"},
     {"hosts", kStringList, NULL,
      "Network hosts the harness's programs reach, besides the endpoint"},
+    {"mcp_servers", kDict, kServer, "MCP servers, by name"},
     {NULL, 0, NULL, NULL}};
 
 const Field kPluginFields[] = {
@@ -111,6 +135,7 @@ const Field kPluginFields[] = {
     {"hosts", kStringList, NULL, "Network hosts its programs reach"},
     {"instructions", kTextList, NULL, "Text added to the system prompt"},
     {"model_settings", kAnyMap, NULL, "Request fields, below the spec's"},
+    {"mcp_servers", kDict, kServer, "MCP servers it adds, by name"},
     {NULL, 0, NULL, NULL}};
 
 const Field kKitFields[] = {
@@ -176,6 +201,8 @@ int TypeOk(FieldType type, const cJSON* v) {
       return AllItems(v, cJSON_IsString);
     case kPluginList:
       return AllItems(v, IsPluginEntry);
+    case kFlagOrList:
+      return cJSON_IsBool(v) || AllItems(v, cJSON_IsString);
     default:
       return cJSON_IsObject(v);
   }
@@ -204,7 +231,27 @@ const char* TypeName(FieldType type) {
       return "a list of strings";
     case kPluginList:
       return "a list of plugin names or {name: {settings}}";
+    case kFlagOrList:
+      return "true, false or a list of strings";
     default:
       return "a mapping";
   }
+}
+
+// Appends one problem line; see harness.h.
+void SpecProblem(const Spec* spec, Buffer* err, const char* path,
+                 const char* fmt, ...) {
+  cJSON* line = cJSON_GetObjectItemCaseSensitive(spec->lines, path);
+  if (cJSON_IsNumber(line)) {
+    BufferPrintf(err, "%s:%d: %s: ", spec->path, line->valueint, path);
+  } else if (cJSON_IsString(line)) {  // from the user's defaults
+    BufferPrintf(err, "%s: %s: ", line->valuestring, path);
+  } else {
+    BufferPrintf(err, "%s: %s: ", spec->path, path);
+  }
+  va_list ap;
+  va_start(ap, fmt);
+  BufferVprintf(err, fmt, ap);
+  va_end(ap);
+  BufferAppendStr(err, "\n");
 }

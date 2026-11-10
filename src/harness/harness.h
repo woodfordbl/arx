@@ -190,6 +190,7 @@ typedef enum FieldType {
   kMap,         // a mapping with the keys in `sub`
   kDict,        // a mapping whose values each have the keys in `sub`
   kPluginList,  // a list of names or {name: {settings}}
+  kFlagOrList,  // true, false or a list of strings
 } FieldType;
 
 // One key of the spec: name, type, sub-fields (kMap, kDict) and a doc line.
@@ -220,6 +221,10 @@ int TypeOk(FieldType type, const cJSON* v);
 
 // Describes `type` for messages, such as "a string" (fields.c).
 const char* TypeName(FieldType type);
+
+// Appends "file:line: path: message" for the key at `path` of `spec`.
+void SpecProblem(const Spec* spec, Buffer* err, const char* path,
+                 const char* fmt, ...);
 
 // Validates the spec and the plugins' settings; appends problems to `err`.
 void SpecValidate(const Spec* spec, Buffer* err);

@@ -13,6 +13,7 @@
 #include "src/base/base.h"
 #include "src/cli/cli.h"
 #include "src/harness/harness.h"
+#include "src/mcp/mcp.h"
 
 static const char* const kBandNames[] = {"policy", "normal", "final"};
 // Bytes of text above which one plugin's instructions get a warning.
@@ -254,6 +255,7 @@ static cJSON* Hosts(const Spec* spec) {
     cJSON_ArrayForEach(c, list) have |= cJSON_Compare(c, h, 1);
     if (!have) cJSON_AddItemToArray(list, cJSON_Duplicate(h, 1));
   }
+  McpHosts(spec, list);
   return list;
 }
 
@@ -286,6 +288,10 @@ static void PrintCheck(Agent* a) {
   for (int i = 0; i < a->tools.count; i++) {
     printf(" %s", a->tools.items[i].name);
   }
+  Buffer mcp = {0}, warnings = {0};
+  McpCheck(spec, &mcp, &warnings);
+  if (mcp.len) printf("\nmcp:%s", mcp.data);
+  BufferFree(&mcp);
   PrintHooks(a);
   PrintPrompt(spec);
   int any = 0;
@@ -293,7 +299,6 @@ static void PrintCheck(Agent* a) {
   if (any) printf("\n");
   PrintPlugins(a);
   if (a->notes.len) printf("problems:\n%s", a->notes.data);
-  Buffer warnings = {0};
   OverlapWarnings(spec, &warnings);
   HiddenWarnings(spec, &warnings);
   if (spec->warnings.len) BufferAppendStr(&warnings, spec->warnings.data);

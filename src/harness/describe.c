@@ -111,6 +111,7 @@ int PluginDescribe(const char* dir, Buffer* out, Buffer* err) {
     char* bytes = text ? XAsprintf("%zu", strlen(text)) : NULL;
     AppendField(out, "instructions", bytes);
     AppendKeys(out, root, "model_settings");
+    AppendKeys(out, root, "mcp_servers");
     free(bytes);
     free(text);
     BufferFree(&requires);

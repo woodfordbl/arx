@@ -12,6 +12,7 @@
 
 #include "src/base/base.h"
 #include "src/harness/harness.h"
+#include "src/mcp/mcp.h"
 
 // plugin.yaml keys that describe the plugin, or that PluginsLoad handles
 // itself, so they are not merged into the spec.
@@ -170,10 +171,10 @@ static void Adopt(Spec* spec, Spec* plugin, const char* dir, const char* name) {
   cJSON* c;
   Layer* layer = AddLayer(spec, dir, name, PathJoin(dir, "skills"));
   cJSON* settings = cJSON_GetObjectItemCaseSensitive(spec->settings, name);
-  // Settings may set the plugin's own tool and hook options and model
-  // settings; PluginKeysAdopt applies them to its instructions.
-  const char* own[] = {"tools", "hooks", "model_settings"};
-  for (int i = 0; i < 3; i++) {
+  // Settings may set the plugin's own tool and hook options, model settings
+  // and MCP servers; PluginKeysAdopt applies them to its instructions.
+  const char* own[] = {"tools", "hooks", "model_settings", "mcp_servers"};
+  for (int i = 0; i < 4; i++) {
     cJSON* over = JsonGet(settings, own[i]);
     if (!cJSON_IsObject(over)) continue;
     cJSON* base = JsonGet(root, own[i]);
@@ -194,6 +195,7 @@ static void Adopt(Spec* spec, Spec* plugin, const char* dir, const char* name) {
   for (int i = 0; i < 3; i++) {
     cJSON_ArrayForEach(c, JsonGet(root, programs[i])) Absolute(c, dir);
   }
+  McpAdopt(JsonGet(root, "mcp_servers"), dir);
   AppendHosts(spec, JsonGet(root, "hosts"));
   cJSON* mine = JsonGet(root, "observers");
   cJSON* all = JsonGet(spec->root, "observers");

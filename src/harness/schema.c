@@ -46,8 +46,12 @@ static cJSON* SchemaType(FieldType type, const Field* sub) {
     cJSON_AddNumberToObject(entry, "minProperties", 1);
     cJSON_AddNumberToObject(entry, "maxProperties", 1);
     cJSON_AddItemToArray(any, entry);
-  } else if (type == kStringList) {
-    cJSON_AddStringToObject(o, "type", "array");
+  } else if (type == kStringList || type == kFlagOrList) {
+    const char* either[] = {"boolean", "array"};
+    cJSON_AddItemToObject(o, "type",
+                          type == kStringList
+                              ? cJSON_CreateString("array")
+                              : cJSON_CreateStringArray(either, 2));
     cJSON* items = cJSON_AddObjectToObject(o, "items");
     cJSON_AddStringToObject(items, "type", "string");
   } else {
