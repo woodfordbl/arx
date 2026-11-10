@@ -213,6 +213,50 @@ sse_text "hi" | reply 1 "200 OK"
 run "go"
 check "observer saw session.end" has obs.jsonl '"type":"session.end"'
 
+# Events hold the visible session: the prompt, a call's arguments, when its
+# process started, and its output.
+begin "events"
+sse_tool bash '{\"command\":\"echo out-text\"}' | reply 1 "200 OK"
+sse_text "done" | reply 2 "200 OK"
+run "the task"
+ev=.arx/sessions/last/events.jsonl
+event() { jq -c "select(.type == \"$1\")" "$ev"; }
+check "prompt.start has the task" test "$(event prompt.start | jq -r .text)" = "the task"
+check "session.start has the window" test "$(event session.start | jq .context_window)" = 128000
+check "session.start has the cwd" test "$(event session.start | jq -r .cwd)" = "$(pwd -P)"
+check "tool.start has the arguments" test "$(event tool.start | jq -r .args.command)" = "echo out-text"
+check "tool.end has the output" test "$(event tool.end | jq -r .output)" = "out-text"
+check "tool.run is between start and end" test \
+  "$(jq -r 'select(.type | startswith("tool.")) | .type' "$ev" | tr '\n' ' ')" = "tool.start tool.run tool.end "
+check "tool.run names the call" test "$(event tool.run | jq -r .id)" = "$(event tool.start | jq -r .id)"
+check "headless has no prompt.end" lacks "$ev" '"type":"prompt.end"'
+
+# Arguments over 16 KB stay out of tool.start; ones that are not JSON go in
+# as the raw string.
+begin "event args"
+big=$(printf 'x%.0s' $(seq 1 17000))
+sse_tool bash "{\\\"command\\\":\\\"true $big\\\"}" | reply 1 "200 OK"
+sse_tool bash 'not json' | reply 2 "200 OK"
+sse_text "done" | reply 3 "200 OK"
+run "go"
+ev=.arx/sessions/last/events.jsonl
+check "big arguments are cut" test \
+  "$(jq -c 'select(.type == "tool.start" and .turn == 1) | [.args, .args_cut]' "$ev")" = "[null,true]"
+check "raw arguments are a string" test \
+  "$(jq -r 'select(.type == "tool.start" and .turn == 2) | .args' "$ev")" = "not json"
+
+# Interactive mode: each line is a prompt with its own start and end.
+begin "interactive events"
+sse_text "first-answer" | reply 1 "200 OK"
+sse_text "second-answer" | reply 2 "200 OK"
+python3 "$ROOT/tests/pty.py" --screen screen.txt \
+  --keys 'one<enter><wait:first-answer>two<enter><wait:second-answer><c-d>' -- "$ARX" >/dev/null 2>err.txt
+ev=.arx/sessions/last/events.jsonl
+check "two prompts start" test "$(jq -r 'select(.type == "prompt.start") | .text' "$ev" | tr '\n' ' ')" = "one two "
+check "each prompt ends with its answer" test \
+  "$(jq -r 'select(.type == "prompt.end") | "\(.status) \(.turns) \(.final_output)"' "$ev" | tr '\n' ',')" = \
+  "done 1 first-answer,done 2 second-answer,"
+
 # Subcommands.
 begin "cli"
 sse_text "hi" | reply 1 "200 OK"

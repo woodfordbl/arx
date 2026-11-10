@@ -184,8 +184,10 @@ and arx's own commands keep theirs in `.arx/<command>/`. See
 
 An event is one JSON object per line that records something that happened,
 with a version field (`"v": 1`). The terminal view, `arx watch`, observers
-and drivers all read the same stream. Within version 1, arx may add fields,
-but it never renames or removes one. The
+and drivers all read the same stream. It holds your prompts, the model's
+text, and each tool call with its arguments and the start of its output, so
+a front-end can draw or replay a session from it. Within version 1, arx may
+add fields, but it never renames or removes one. The
 [event reference](plugins/reference.md#events) lists every type.
 
 ## Subagents

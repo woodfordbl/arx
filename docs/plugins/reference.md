@@ -281,22 +281,30 @@ new `v`.
 
 | `type` | Fields |
 |---|---|
-| `session.start` | `name`, `model`, `spec`, `resumed`, `tools` (a count) |
+| `session.start` | `name`, `model`, `spec`, `resumed`, `tools` (a count), `context_window` (tokens), `cwd` (the working folder) |
+| `prompt.start` | `text`: a prompt from you, cut at 64 KB. Sent for the `-p` task, each interactive line and each `--input jsonl` prompt, not for hook messages or harness notes. |
 | `turn.start` | none |
 | `model.delta` | `text`: streamed model text, batched about every 50 ms |
 | `model.message` | `tokens_in`, `tokens_out`, `cost`, `tool_calls` (a count) |
 | `model.retry` | `attempt`, `status` (HTTP), `curl_exit`, `wait_s`, `error` |
 | `model.credential` | `program`, `reason` (`start`, `expired` or `rejected`), `secs`, and `expires_in` or `error`; never the value |
-| `tool.start` | `id`, `name`, `preview` |
-| `tool.end` | `id`, `name`, `error`, `preview`; process tools add `exit`, `secs`, `bytes` and `path` |
+| `tool.start` | `id`, `name`, `preview`, and `args`: the arguments as the model wrote them, parsed, or the raw string when they are not JSON. Arguments over 16 KB are left out, and `args_cut` is `true`. Sent before the `before_tool` hooks. |
+| `tool.run` | `id`, `name`: the call's process started. A call that a hook answered or denied has none. |
+| `tool.end` | `id`, `name`, `error`, `preview`, and `output`: the first 2 KB of the result, before the `after_tool` hooks; process tools add `exit`, `secs`, `bytes` and `path` |
 | `hook` | `point`, `secs`, `plugin` (for a plugin's hook), `band` (outside `normal`); `changed` (the fields the hook changed), `decision`, `ignored` (a change dropped after a policy result), or `error` |
 | `harness.reload` | `ok`, `ms`, and `tools` (a count) or `errors` |
 | `compact` | `strategy`, `tokens_before`, `tokens_after` |
 | `note` | `text`: harness notes, and caps reached |
 | `error` | `error`; also sent when a scheduler plugin fails |
+| `prompt.end` | `status` (`done`, `cap`, `error`, `auth` or `interrupted`), `turns`, `tokens` and `cost` (the session's totals so far), `final_output` (this prompt's answer, cut at 2000 bytes). Sent when a prompt's turns end in interactive and `--input jsonl` runs. A headless run has only `session.end`. |
 | `session.end` | `status`, `turns`, `tokens`, `cost`, `secs`, `final_output` |
 
 A subagent's events appear in its parent's stream with a higher `depth`.
+
+The stream holds the whole visible session: your prompts, the model's text,
+and each tool call with its arguments and the start of its output. A
+front-end can draw or replay a session from `events.jsonl` alone. The cost
+is at most 18 KB per tool call.
 
 ## Session files
 

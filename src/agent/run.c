@@ -79,6 +79,10 @@ static int Start(Agent* a) {
   cJSON_AddStringToObject(e, "spec", a->spec.path);
   cJSON_AddBoolToObject(e, "resumed", a->resume != NULL);
   cJSON_AddNumberToObject(e, "tools", a->tools.count);
+  cJSON_AddNumberToObject(e, "context_window",
+                          JsonNum(a->spec.root, "context_window", 128000));
+  char cwd[4096];
+  cJSON_AddStringToObject(e, "cwd", getcwd(cwd, sizeof(cwd)) ? cwd : "");
   EventSend(e);
   return 0;
 }
@@ -102,12 +106,33 @@ static void Begin(Agent* a, const char* prompt) {
   cJSON_Delete(out);
 }
 
+// Takes a prompt from the user into the session: sends prompt.start, then
+// starts the conversation with it (`first`) or adds it as a user message.
+static void Prompt(Agent* a, const char* text, int first) {
+  cJSON* e = EventNew("prompt.start");
+  JsonAddTruncated(e, "text", text, 65536);
+  EventSend(e);
+  if (first) {
+    Begin(a, text);
+  } else {
+    AgentAddMessage(a, "user", text);
+  }
+}
+
+// Adds what session.end and prompt.end share: the status for `code` and the
+// session's totals.
+static void AddTotals(Agent* a, cJSON* e, int code) {
+  cJSON_AddStringToObject(e, "status", StatusName(code));
+  cJSON_AddNumberToObject(e, "turns", a->session.turns);
+  cJSON_AddNumberToObject(
+      e, "tokens", (double)(a->session.tokens_in + a->session.tokens_out));
+  cJSON_AddNumberToObject(e, "cost", a->session.cost);
+}
+
 // Headless: one task, run until the agent stops.
 static int Headless(Agent* a) {
-  if (!a->resume) {
-    Begin(a, a->prompt ? a->prompt : "");
-  } else if (a->prompt && *a->prompt) {
-    AgentAddMessage(a, "user", a->prompt);
+  if (!a->resume || (a->prompt && *a->prompt)) {
+    Prompt(a, a->prompt ? a->prompt : "", !a->resume);
   }
   return RunTurns(a);
 }
@@ -128,12 +153,17 @@ static int Interactive(Agent* a) {
     if (!started) {
       first_prompt = XStrdup(line);
       a->prompt = first_prompt;  // kept for {{prompt}} after a restart
-      Begin(a, line);
-      started = 1;
-    } else {
-      AgentAddMessage(a, "user", line);
     }
+    Prompt(a, line, !started);
+    started = 1;
+    // The answer of this prompt, not of the one before.
+    free(a->final_output);
+    a->final_output = NULL;
     code = RunTurns(a);
+    cJSON* e = EventNew("prompt.end");
+    AddTotals(a, e, code);
+    JsonAddTruncated(e, "final_output", a->final_output, 2000);
+    EventSend(e);
     if (code == kExitInterrupted) {
       fputs("\n(interrupted)\n", stderr);
       code = kExitDone;
@@ -173,11 +203,7 @@ static void PrintResult(Agent* a, int code) {
 // Ends the session: final event, meta.json, result.
 static void Finish(Agent* a, int code) {
   cJSON* e = EventNew("session.end");
-  cJSON_AddStringToObject(e, "status", StatusName(code));
-  cJSON_AddNumberToObject(e, "turns", a->session.turns);
-  cJSON_AddNumberToObject(
-      e, "tokens", (double)(a->session.tokens_in + a->session.tokens_out));
-  cJSON_AddNumberToObject(e, "cost", a->session.cost);
+  AddTotals(a, e, code);
   cJSON_AddNumberToObject(e, "secs", Now() - a->start);
   JsonAddTruncated(e, "final_output", a->final_output, 2000);
   EventSend(e);
