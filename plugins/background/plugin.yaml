@@ -1,0 +1,25 @@
+name: background
+version: 0.1.0
+description: Runs subagents and chosen tools in the background, so the agent keeps working.
+arx: ">=0.2.0"
+requires: [python3]
+# The scheduler is the policy: which calls go to the background, and how
+# many run at once. arx runs them and delivers their results. Settings come
+# from the active list, such as
+# `- background: {agents: true, tools: [long_build], after: 30s, max: 4}`:
+#   agents  true (the default) moves every subagent call to the background
+#           at once; false leaves subagents in the foreground.
+#   tools   also move calls to these tools at once. The default is [].
+#   after   move any other call to the background when it still runs after
+#           this long (30s, 5m, or a number of seconds). No default.
+#   max     the most background calls that run at once; more wait, queued.
+#           The default is 4. It is the guard on cost for subagents.
+tools: {cancel_call: {timeout: 10s}}
+# The model reads this once, so the placeholder result can stay short.
+instructions: |
+  Some tool calls run in the background. Such a call returns "started as c7"
+  (or "queued as c7") at once, and its real result comes later in a
+  [harness] note. Keep working on other things until then. When you have
+  nothing else to do, reply without a tool call: you are woken with the next
+  result. Do not sleep or poll to wait. To stop a background call, call
+  cancel_call with its id.
