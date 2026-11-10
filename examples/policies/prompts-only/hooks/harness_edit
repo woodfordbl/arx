@@ -1,0 +1,12 @@
+#!/bin/sh
+# hooks/harness_edit: accept prompts and skills; reject the rest.
+#
+# arx runs this before it loads a changed harness. Stdin is one JSON object
+# with every changed harness file in `changes`. A spec edit passes when it
+# only changes `instructions` or `first_message`. Each rejected file gets
+# its accepted version back, and the agent gets the reason.
+jq -c '{reject: [.changes[]
+  | select(.kind != "prompt" and .kind != "skill"
+      and (.kind != "spec" or (.keys - ["instructions", "first_message"] != [])))
+  | {key: .path, value: "only prompts and skills may change in this run"}]
+  | from_entries}'

@@ -256,4 +256,15 @@ bash_then_done "echo new >prompts/system.md"
 run "go" --policy pol/p
 check "it never runs" test ! -e spec-gate-ran -a -e gate-in.jsonl
 
+fresh "the prompts-only example policy"
+check "it checks as a plugin" "$ARX" check --plugin "$ROOT/examples/policies/prompts-only"
+bash_then_done "echo new prompt >prompts/system.md; echo x >>tools/look; echo 'limits: {max_turns: 3}' >>agent.yaml"
+cp -p tools/look look.orig
+cp agent.yaml agent.orig
+run "go" --policy "$ROOT/examples/policies/prompts-only"
+check "it accepts a prompt edit" has prompts/system.md 'new prompt'
+check "it rejects a tool edit" cmp -s tools/look look.orig
+check "and a spec edit to another key" cmp -s agent.yaml agent.orig
+check "with its reason" event harness.edit '.policy == "prompts-only" and .reason == "only prompts and skills may change in this run"'
+
 summary

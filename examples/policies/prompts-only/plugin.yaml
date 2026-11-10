@@ -1,0 +1,7 @@
+name: prompts-only
+version: 0.1.0
+description: A policy folder. The agent may edit prompts and skills, and nothing else in its harness.
+arx: ">=0.2"
+requires: [jq]
+hooks:
+  harness_edit: {timeout: 10s}
