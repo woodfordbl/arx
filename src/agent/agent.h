@@ -90,9 +90,9 @@ int CapsParse(Caps* c, const char* key_value);
 // Returns an ExitCode.
 int AgentMain(Agent* a);
 
-// Runs model turns until the agent stops (no tool calls and the stop hook
-// does not continue), a cap is reached, or an error or interrupt happens.
-// Returns an ExitCode.
+// Runs model turns until the agent stops (no tool calls, no background
+// call in flight, and the stop hook does not continue), a cap is reached,
+// or an error or interrupt happens. Returns an ExitCode.
 int RunTurns(Agent* a);
 
 // Calls the model once for the next turn, through the before_model and
@@ -153,6 +153,11 @@ void CallCancel(Agent* a, const char* id);
 // never ran): appends its `result` line to the inbox and writes meta.json.
 // Does nothing for a foreground call.
 void CallEnded(Agent* a, Call* c, double secs);
+
+// Queues the inbox `result` line `r` as one paragraph of the agent's next
+// note, such as "c7 (reviewer: Review a.c) finished after 42s:" and the
+// text. The agent has seen the call then: it leaves the session's `calls`.
+void CallNote(Agent* a, cJSON* r);
 
 // The number of background calls whose result the agent has not seen.
 int CallsInFlight(Agent* a);

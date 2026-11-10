@@ -167,10 +167,14 @@ void SessionWriteMeta(Session* s, const char* status) {
 // Reads complete new lines from the inbox; a partial line waits for later.
 cJSON* SessionReadInbox(Session* s) {
   char* path = XAsprintf("%s/inbox", s->dir);
-  size_t n;
-  char* text = ReadFile(path, &n);
-  free(path);
   cJSON* commands = cJSON_CreateArray();
+  // Nothing new is the common case, and a wait asks ten times a second.
+  struct stat st;
+  size_t n;
+  char* text = stat(path, &st) == 0 && (int64_t)st.st_size > s->inbox_offset
+                   ? ReadFile(path, &n)
+                   : NULL;
+  free(path);
   if (!text) return commands;
   size_t off = (size_t)s->inbox_offset;
   while (off < n) {

@@ -40,9 +40,8 @@ Call* CallFind(Agent* a, const char* id) {
   return NULL;
 }
 
-// Queues the result line `r` as one paragraph of the agent's next note,
-// and takes the call out of the session's `calls`: the agent has seen it.
-static void Note(Agent* a, cJSON* r) {
+// Queues a result line as a note paragraph; see agent.h.
+void CallNote(Agent* a, cJSON* r) {
   const char* status = JsonStr(r, "status", "ok");
   const char* how = !strcmp(status, "ok")          ? "finished"
                     : !strcmp(status, "cancelled") ? "was cancelled"
@@ -53,7 +52,9 @@ static void Note(Agent* a, cJSON* r) {
             JsonStr(r, "preview", ""), how, JsonNum(r, "secs", 0),
             JsonStr(r, "text", ""));
   cJSON* e = Entry(a, call);
-  if (e) cJSON_Delete(cJSON_DetachItemViaPointer(a->session.calls, e));
+  if (!e) return;
+  cJSON_Delete(cJSON_DetachItemViaPointer(a->session.calls, e));
+  SessionWriteMeta(&a->session, "running");
 }
 
 // The result a background call's slot in the reply gets.
@@ -162,7 +163,7 @@ void CallEnded(Agent* a, Call* c, double secs) {
     cJSON_AddStringToObject(e, "error", why);
     EventSend(e);
     free(why);
-    Note(a, r);
+    CallNote(a, r);
   }
   cJSON_Delete(r);
   SessionWriteMeta(&a->session, "running");
@@ -203,7 +204,7 @@ void CallsResume(Agent* a) {
     const char* out = JsonStr(e, "out", NULL);
     cJSON* r = SessionInboxFind(&a->session, call);
     if (r) {
-      Note(a, r);
+      CallNote(a, r);
     } else {
       // arx was killed: the call left no result, and it is not restarted.
       AgentNote(a,
