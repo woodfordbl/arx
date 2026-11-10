@@ -211,4 +211,13 @@ check "the folders are not in the prompt" lacks fake/req-01.json "$WS/pol/guard"
 "$ARX" help >help.txt 2>&1
 check "help lists --policy" has help.txt '--policy DIR'
 
+fresh "arx plugin list and arx doctor with ARX_POLICY"
+mkplugin pol/p </dev/null
+ARX_POLICY=$WS/pol/p "$ARX" plugin list >list.txt 2>&1
+check "plugin list shows the policy row first, with the scope policy" \
+  test "$(sed -n 2p list.txt | awk '{print $1, $3, $4, $5}')" = "p policy - policy"
+ARX_POLICY=$WS/pol/p:$WS/gone "$ARX" doctor >doctor.txt 2>&1
+check "doctor names a policy folder that is there" has doctor.txt "policy folder $WS/pol/p (from ARX_POLICY)"
+check "doctor warns about a missing one" has doctor.txt "ARX_POLICY names $WS/gone, which is missing"
+
 summary

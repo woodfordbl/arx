@@ -31,7 +31,8 @@ REF is one of:
   --yes       do not ask before a change
   --no-enable do not add it to `enable:` when a kit or list would leave it off
 enable and disable write ./agent.yaml, or config.yaml with --global. list
-shows each plugin in the order a run here uses it, and why it is on or off.
+shows each plugin in the order a run here uses it, and why it is on or off;
+the folders of ARX_POLICY come first, with the scope and state `policy`.
 fetch puts the folder for REF (kits/NAME with --kits) in DIR, for arx kit.
 EOF
 }
@@ -296,6 +297,7 @@ list_row() {
   if [ -n "$dir" ]; then
     if describe_quiet "$dir"; then version=${p_version:--}; else version="(broken)"; fi
     case "$dir" in "$PWD"/plugins/* | "$(pwd -P)"/plugins/*) scope=project ;; *) scope=user ;; esac
+    [ "$state" != policy ] || scope=policy # a folder of --policy or ARX_POLICY
     local link=$(dirname "$dir")/$name
     if [ -L "$link" ]; then
       from="link to $(pretty "$(cd "$link" && pwd -P)")"
