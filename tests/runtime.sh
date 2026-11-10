@@ -3,8 +3,8 @@
 # call ([] runs in parallel, one key runs one at a time, "*" runs alone),
 # results in call order, keys from a before_tool hook, a timeout and Ctrl-C
 # while calls run in parallel, parallel subagents, and a scheduler plugin
-# (start, result, wake_at and tick, backoff) with its fallback to the
-# built-in scheduler. Run with `make test`.
+# (start, result, wake_at and tick, backoff, the fields of ready and done)
+# with its fallback to the built-in scheduler. Run with `make test`.
 set -u
 . "$(dirname "$0")/lib.sh"
 
@@ -294,7 +294,7 @@ sse_calls nap '{\"x\":\"a\",\"secs\":0,\"url\":\"http://api.example.com/\"}' \
 sse_text "done" | reply 2 "200 OK"
 run "go"
 check "exits 0" exited 0
-check "ready has name and keys" has sched.log '{"ready": {"id": "call_1", "name": "nap", "keys": ["host:api.example.com"]}}'
+check "ready has name, keys, kind and args" has sched.log '{"ready": {"id": "call_1", "name": "nap", "keys": ["host:api.example.com"], "kind": "tool", "args": {"x": "a", "secs": 0, "url": "http://api.example.com/"}}}'
 check "the started call ran" has fake/req-02.json 'napped-a'
 check "a result ends a call without a run" has fake/req-02.json 'budget used up'
 check "it did not run" lacks log.txt 'start-b'
@@ -302,6 +302,7 @@ check "a tick at wake_at" has sched.log '"tick"'
 check "started on the tick" has fake/req-02.json 'napped-c'
 check "done has the backoff" has sched.log '"backoff": {"key": "host:api.example.com", "secs": 30}'
 check "done has secs and is_error" grep -q '"done": {"id": "call_1", "secs": [0-9.e-]*, "is_error": false' sched.log
+check "done says the call ran" grep -q '"done": {"id": "call_1", .*"ran": true}' sched.log
 check "results in call order" test "$(result_ids 2)" = "call_1 call_2 call_3"
 check "no error" lacks "$EVENTS" '"type":"error"'
 
@@ -317,6 +318,36 @@ run "go"
 check "exits 0" exited 0
 check "an error event" has "$EVENTS" 'printed a bad line: not json; using the built-in scheduler'
 check "the calls still ran" has fake/req-02.json 'napped-b'
+
+begin "scheduler plugin: a bad detach or cancel value falls back"
+nap '[]'
+sched <<'EOF'
+    if "ready" in m:
+        send(detach="call_1")
+EOF
+sse_calls nap '{\"x\":\"a\",\"secs\":0}' | reply 1 "200 OK"
+sse_text "done" | reply 2 "200 OK"
+run "go"
+check "an error event" has "$EVENTS" 'printed a bad line: {\"detach\": \"call_1\"}'
+check "the call still ran" has fake/req-02.json 'napped-a'
+
+begin "scheduler plugin: Ctrl-C ends a held call"
+nap '[]'
+sched <<'EOF'
+    if "ready" in m and m["ready"]["id"] == "call_1":
+        send(start=["call_1"])
+EOF
+spec >sub.yaml
+echo 'tools: {helper: {agent: sub.yaml}}' >>agent.yaml
+sse_calls nap '{\"x\":\"a\",\"secs\":5}' helper '{\"task\":\"t\"}' |
+  reply 1 "200 OK"
+"$ARX" -p go --quiet >out.txt 2>err.txt &
+pid=$!
+for _ in $(seq 1 100); do [ -e started-a ] && break; sleep 0.05; done
+kill -INT "$pid"
+wait "$pid"
+check "ready says a subagent is an agent" has sched.log '"kind": "agent", "args": {"task": "t"}'
+check "done for the call that never ran" has sched.log '{"done": {"id": "call_2", "secs": 0, "is_error": true, "backoff": null, "ran": false}}'
 
 begin "scheduler plugin: exit falls back"
 nap '[]'

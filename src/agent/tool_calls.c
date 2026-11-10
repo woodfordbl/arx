@@ -164,7 +164,7 @@ static void Complete(Agent* a, Call* c, double secs) {
     c->text = joined;
   }
   c->state = kDone;
-  SchedDone(c->id, secs, c->is_error, backoff);
+  SchedDone(c->id, secs, c->is_error, backoff, 1);
   cJSON_Delete(backoff);
 }
 
@@ -246,21 +246,19 @@ static void StartByKeys(Agent* a) {
 // Applies what a scheduler plugin said: the calls to start and the
 // results that end calls without a run. Unknown ids are ignored.
 static void StartByPlugin(Agent* a) {
-  cJSON* start = cJSON_CreateArray();
-  cJSON* results = cJSON_CreateObject();
-  SchedPoll(start, results);
+  SchedOut out;
+  SchedPoll(&out);
   for (int i = 0; i < a->call_count; i++) {
     Call* c = a->calls[i];
     if (c->state != kQueued) continue;
-    const char* text = JsonStr(results, c->id, NULL);
+    const char* text = JsonStr(out.results, c->id, NULL);
     cJSON* id;
-    cJSON_ArrayForEach(id, start) {
+    cJSON_ArrayForEach(id, out.start) {
       if (c->state == kQueued && !strcmp(id->valuestring, c->id)) Launch(a, c);
     }
     if (text && c->state == kQueued) EndWithout(c, XStrdup(text), 1);
   }
-  cJSON_Delete(start);
-  cJSON_Delete(results);
+  SchedOutFree(&out);
 }
 
 // One round of the call table; see agent.h.
@@ -270,6 +268,7 @@ int CallsPoll(Agent* a, double wait) {
   for (int i = 0; i < a->call_count && g_interrupted; i++) {
     if (a->calls[i]->state == kQueued) {
       EndWithout(a->calls[i], XStrdup("[interrupted before this tool ran]"), 1);
+      SchedDone(a->calls[i]->id, 0, 1, NULL, 0);
     }
   }
   if (SchedActive()) StartByPlugin(a);
@@ -332,8 +331,11 @@ void RunToolCalls(Agent* a, cJSON* calls) {
     mine[i] = a->calls[a->call_count++] = c;
     Prepare(a, c, cJSON_GetArrayItem(calls, i));
     if (plugin && c->state == kQueued) {
-      SchedReady(c->id, JsonStr(c->call, "name", ""),
-                 cJSON_GetObjectItem(c->call, "keys"));
+      const char* name = JsonStr(c->call, "name", "");
+      Tool* t = ToolFind(a, name);
+      SchedReady(c->id, name, cJSON_GetObjectItem(c->call, "keys"),
+                 t && t->kind == kToolAgent ? "agent" : "tool",
+                 cJSON_GetObjectItem(c->call, "args"));
     }
   }
   while (Pending(mine, n)) CallsPoll(a, 0.1);

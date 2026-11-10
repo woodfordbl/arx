@@ -121,21 +121,36 @@ int SchedOpen(Agent* a);
 // line (with an error event), and then the built-in scheduler takes over.
 int SchedActive(void);
 
-// Sends {"ready": {id, name, keys}}: a call is in the queue.
-void SchedReady(const char* id, const char* name, cJSON* keys);
+// Sends {"ready": {id, name, keys, kind, args}}: a call is in the queue.
+// `kind` is "tool", or "agent" for a subagent; `args` are the arguments
+// after the before_tool hooks.
+void SchedReady(const char* id, const char* name, cJSON* keys, const char* kind,
+                cJSON* args);
 
-// Sends {"done": {id, secs, is_error, backoff}}: a call ended. `backoff`
-// may be NULL.
-void SchedDone(const char* id, double secs, int is_error, cJSON* backoff);
+// Sends {"done": {id, secs, is_error, backoff, ran}}: a call ended.
+// `backoff` may be NULL. `ran` is 0 for a call whose process never started
+// (a queued call that was cancelled or stopped).
+void SchedDone(const char* id, double secs, int is_error, cJSON* backoff,
+               int ran);
 
 // Returns the seconds until the plugin's tick is due, at most `max`.
 double SchedWait(double max);
 
-// Reads what the plugin printed: adds the ids of {"start": [...]} to the
-// array `start` and each {"result": {id, text}} to the object `results`
-// (id -> text), and keeps {"wake_at"}. Sends {"tick": <unix secs>} when it
-// is due.
-void SchedPoll(cJSON* start, cJSON* results);
+// What a scheduler plugin said since the last SchedPoll.
+typedef struct SchedOut {
+  cJSON* start;    // ids to start now
+  cJSON* results;  // {id: text}: calls to end without a run, as an error
+  cJSON* detach;   // ids to move to the background
+  cJSON* cancel;   // model ids or short ids (c7) to cancel
+} SchedOut;
+
+// Reads what the plugin printed into new arrays (and one object) in `out`,
+// which the caller frees with SchedOutFree, and keeps {"wake_at"}. Sends
+// {"tick": <unix secs>} when it is due.
+void SchedPoll(SchedOut* out);
+
+// Frees what SchedPoll put in `out`.
+void SchedOutFree(SchedOut* out);
 
 // Expands {{vars}} in `tmpl`: prompt, harness, skills, date, cwd, session,
 // turn, and file:PATH[:tail=N|:max=SIZE]. Returns a malloc'd string.
