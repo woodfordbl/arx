@@ -57,6 +57,23 @@ void CallNote(Agent* a, cJSON* r) {
   SessionWriteMeta(&a->session, "running");
 }
 
+// The key rule with background calls; see agent.h.
+int CallsConflict(const Call* a, const Call* b) {
+  cJSON* mine = cJSON_GetObjectItem(a->call, "keys");
+  cJSON* theirs = cJSON_GetObjectItem(b->call, "keys");
+  if (!a->short_id && !b->short_id) return KeysConflict(mine, theirs);
+  cJSON *x, *y;
+  cJSON_ArrayForEach(x, mine) {
+    if (!cJSON_IsString(x) || !strcmp(x->valuestring, "*")) continue;
+    cJSON_ArrayForEach(y, theirs) {
+      if (cJSON_IsString(y) && !strcmp(x->valuestring, y->valuestring)) {
+        return 1;
+      }
+    }
+  }
+  return 0;
+}
+
 // The result a background call's slot in the reply gets.
 static char* Placeholder(Agent* a, const Call* c) {
   Tool* t = ToolFind(a, JsonStr(c->call, "name", ""));
@@ -79,7 +96,7 @@ void CallDetach(Agent* a, Call* c) {
   c->detached_at = Now();
   c->placeholder = Placeholder(a, c);
   // "*" would make every later call wait for this one. The model was told
-  // that it runs on, so only the named keys still hold.
+  // that it runs on, so only the named keys still hold (CallsConflict).
   cJSON* keys = cJSON_GetObjectItem(c->call, "keys");
   for (int i = cJSON_GetArraySize(keys) - 1; i >= 0; i--) {
     const char* key = cJSON_GetStringValue(cJSON_GetArrayItem(keys, i));

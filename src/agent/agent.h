@@ -136,9 +136,14 @@ void CallEndWithout(Agent* a, Call* c, char* text, int is_error);
 Call* CallFind(Agent* a, const char* id);
 
 // Moves a queued or running call to the background: gives it a short id
-// (c1, c2, ...) and its placeholder, drops the key "*", and sends
-// tool.detach. Ignores NULL, a call that ended and a background call.
+// (c1, c2, ...) and its placeholder, drops the key "*" (see CallsConflict),
+// and sends tool.detach. Ignores NULL, a call that ended and a background call.
 void CallDetach(Agent* a, Call* c);
+
+// True when two calls may not run at the same time: they share a key, or
+// one has "*". A background call holds only its named keys, so "*" on
+// either side does not count: `bash` runs beside a background call.
+int CallsConflict(const Call* a, const Call* b);
 
 // Tells a background call that its process started.
 void CallRuns(Agent* a, Call* c);

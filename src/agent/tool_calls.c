@@ -240,13 +240,11 @@ static void StartByKeys(Agent* a) {
   Call** calls = a->calls;
   for (int i = 0; i < a->call_count; i++) {
     if (calls[i]->state != kQueued) continue;
-    cJSON* keys = cJSON_GetObjectItem(calls[i]->call, "keys");
     int free_to_run = 1;
     for (int j = 0; j < a->call_count && free_to_run; j++) {
       int before =
           calls[j]->state == kRunning || (calls[j]->state == kQueued && j < i);
-      if (j != i && before &&
-          KeysConflict(keys, cJSON_GetObjectItem(calls[j]->call, "keys"))) {
+      if (j != i && before && CallsConflict(calls[i], calls[j])) {
         free_to_run = 0;
       }
     }

@@ -160,7 +160,8 @@ check "an error event" has "$EVENTS" 'it exited; using the built-in scheduler'
 check "the result still arrives" has fake/req-03.json 'finished after'
 
 # After a fallback the built-in scheduler holds a background call's named
-# keys, but not "*". a had "*" and b has file:x; c is free and d waits for b.
+# keys, but "*" does not count against it. a had "*" and b has file:x: e,
+# with "*", and c are free to run, and d waits for b.
 begin "keys"
 nap '["{k}"]'
 sched <<'EOF'
@@ -171,12 +172,15 @@ sched <<'EOF'
 EOF
 sse_calls nap '{\"x\":\"a\",\"secs\":1.5,\"k\":\"*\"}' \
   nap '{\"x\":\"b\",\"secs\":1.5,\"k\":\"file:x\"}' | reply 1 "200 OK"
-CALL_BASE=2 sse_calls nap '{\"x\":\"c\",\"secs\":0,\"k\":\"file:y\"}' \
+CALL_BASE=2 sse_calls nap '{\"x\":\"e\",\"secs\":0,\"k\":\"*\"}' \
+  nap '{\"x\":\"c\",\"secs\":0,\"k\":\"file:y\"}' \
   nap '{\"x\":\"d\",\"secs\":0,\"k\":\"file:x\"}' | reply 2 "200 OK"
 sse_text "done" | reply 3 "200 OK"
 run "go"
 line() { grep -n -x -- "$1" log.txt | cut -d: -f1; }
 check "a background * call does not block" test "$(line start-c)" -lt "$(line end-a)"
+check "a later * call does not wait for it" test "$(line start-e)" -lt "$(line end-a)"
+check "but runs alone among foreground calls" test "$(line end-e)" -lt "$(line start-c)"
 check "a background file:x call blocks file:x" test "$(line start-d)" -gt "$(line end-b)"
 
 # The model call takes a second. A background tool that prints 1 MB fills
