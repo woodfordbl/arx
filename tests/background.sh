@@ -2,7 +2,8 @@
 # background.sh: tests calls that do not block, against tests/fake-curl. A
 # test scheduler plugin moves a call to the background with `detach`: the
 # model gets a placeholder at once, and the result arrives in the session
-# inbox when the call ends. Run with `make test`.
+# inbox when the call ends, and reaches the model as a note. Also: cancel,
+# Ctrl-C, the end of the session and --resume. Run with `make test`.
 set -u
 . "$(dirname "$0")/lib.sh"
 . "$(dirname "$0")/runtime-lib.sh"
@@ -219,5 +220,78 @@ check "two calls get c1 and c2" has fake/req-02.json 'started as c2'
 check "meta.json keeps the counter" grep -q '"call_seq":[[:space:]]*2' .arx/sessions/last/meta.json
 check "and the calls in flight" grep -q '"call":[[:space:]]*"c1"' .arx/sessions/last/meta.json
 check "with the output file" grep -q '"out":[[:space:]]*".*/tool-0001.out"' .arx/sessions/last/meta.json
+CALL_BASE=3 sse_calls nap '{\"x\":\"c\",\"secs\":0}' | reply 3 "200 OK"
+sse_text "waiting" | reply 4 "200 OK"
+sse_text "done" | reply 5 "200 OK"
+run "more" --resume last
+check "after --resume the next one is c3" has fake/req-04.json 'started as c3'
+
+begin "Ctrl-C"
+nap '[]'
+hook hooks/after_tool <<'EOF'
+pass
+EOF
+bg_sched </dev/null
+sse_calls nap '{\"x\":\"a\",\"secs\":5}' | reply 1 "200 OK"
+sse_text "waiting" | reply 2 "200 OK"
+"$ARX" -p go --quiet >out.txt 2>err.txt &
+pid=$!
+for _ in $(seq 1 100); do [ -e fake/req-02.json ] && break; sleep 0.05; done
+sleep 0.3
+kill -INT "$pid"
+wait "$pid"
+code=$?
+check "exits 130" exited 130
+check "the call was stopped" lacks log.txt 'end-a'
+check "its result line says stopped" has $INBOX '"status":"stopped"'
+check "after_tool ran" has hooks/after_tool.in '[interrupted]'
+check "meta.json still lists c1" grep -q '"call":[[:space:]]*"c1"' .arx/sessions/last/meta.json
+
+begin "session end by a cap, then resume"
+nap '[]'
+bg_sched </dev/null
+sse_calls nap '{\"x\":\"a\",\"secs\":5}' | reply 1 "200 OK"
+CALL_BASE=1 sse_calls bash '{\"command\":\"true\"}' | reply 2 "200 OK"
+t0=$(now)
+run "go" --cap turns=2
+t1=$(now)
+check "the cap exits 3" exited 3
+check "the call was stopped" lacks log.txt 'end-a'
+check "without waiting for it" within "$t0" "$t1" 4
+check "the inbox has a stopped line" grep -q '"status":"stopped".*\[stopped: the session ended\]' $INBOX
+sse_text "done" | reply 3 "200 OK"
+run "more" --resume last
+check "resume exits 0" exited 0
+check "the note says it was stopped" grep -q 'c1 (nap: .*) was stopped after' fake/req-03.json
+check "nothing is left in flight" grep -q '"calls":[[:space:]]*\[\]' .arx/sessions/last/meta.json
+
+begin "resume after a crash"
+nap '[]'
+bg_sched </dev/null
+sse_calls nap '{\"x\":\"a\",\"secs\":2}' | reply 1 "200 OK"
+sse_text "waiting" | reply 2 "200 OK"
+"$ARX" -p go --quiet >out.txt 2>err.txt &
+pid=$!
+for _ in $(seq 1 100); do [ -e fake/req-02.json ] && break; sleep 0.05; done
+sleep 0.3
+kill -9 "$pid"
+wait "$pid" 2>/dev/null
+sse_text "done" | reply 3 "200 OK"
+run "more" --resume last
+check "resume exits 0" exited 0
+check "the note says it did not finish" grep -q 'c1 (nap: .*) did not finish: the session stopped while it ran. Output so far: .*tool-0001.out' fake/req-03.json
+check "nothing is left in flight" grep -q '"calls":[[:space:]]*\[\]' .arx/sessions/last/meta.json
+
+begin "wall cap"
+nap '[]'
+bg_sched </dev/null
+sse_calls nap '{\"x\":\"a\",\"secs\":5}' | reply 1 "200 OK"
+sse_text "waiting" | reply 2 "200 OK"
+t0=$(now)
+run "go" --cap wall=1s
+t1=$(now)
+check "exits 3" exited 3
+check "while it waited" within "$t0" "$t1" 3
+check "the call was stopped" lacks log.txt 'end-a'
 
 summary
