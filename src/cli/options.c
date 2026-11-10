@@ -97,6 +97,6 @@ void PrintOptions(FILE* out) {
       "  --events PATH|-|fd:N  also write the event stream there\n"
       "  --quiet               no terminal view\n"
       "\nexit codes: 0 done, 1 error, 2 usage, 3 cap reached, 4 auth, "
-      "130 interrupted\n",
+      "5 policy, 130 interrupted\n",
       out);
 }

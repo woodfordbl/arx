@@ -22,6 +22,8 @@ static const char* StatusName(int code) {
       return "cap";
     case kExitAuth:
       return "auth";
+    case kExitPolicy:
+      return "policy";
     case kExitInterrupted:
       return "interrupted";
     default:

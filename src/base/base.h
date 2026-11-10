@@ -34,6 +34,7 @@ typedef enum ExitCode {
   kExitUsage = 2,
   kExitCap = 3,
   kExitAuth = 4,
+  kExitPolicy = 5,
   kExitInterrupted = 130,
 } ExitCode;
 
@@ -112,8 +113,7 @@ char* ReadFile(const char* path, size_t* len);
 // Writes all `n` bytes to `fd`, retrying on EINTR. Returns 0 or -1.
 int WriteAll(int fd, const void* p, size_t n);
 
-// Replaces `path` atomically (temp file + rename), keeping its file mode.
-// Returns 0 or -1.
+// Replaces `path` atomically (temp file + rename), keeping its mode. 0 or -1.
 int WriteFileAtomic(const char* path, const char* data, size_t len);
 
 // Appends to `path`, creating it if needed. Returns 0 or -1.
