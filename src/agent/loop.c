@@ -11,6 +11,7 @@
 #include "src/agent/agent.h"
 #include "src/base/base.h"
 #include "src/harness/harness.h"
+#include "src/harness/trust.h"
 #include "src/io/io.h"
 
 // Returns kExitCap when a cap or limit is reached, else -1.

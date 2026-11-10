@@ -13,6 +13,7 @@
 
 #include "src/base/base.h"
 #include "src/harness/harness.h"
+#include "src/harness/trust.h"
 
 // Deeper YAML than this is rejected, which also stops alias bombs.
 static const int kMaxYamlDepth = 64;

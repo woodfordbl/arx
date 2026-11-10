@@ -6,7 +6,7 @@
 //   plugins.c    the layers (spec folder, plugins, config folder); plugin.yaml
 //   plugin_keys.c  a plugin's instructions and model_settings
 //   describe.c   `arx check --plugin`: one plugin, without loading it
-//   signature.c  fingerprints every layer with stat() for hot reload
+//   signature.c  walks the harness files; the fingerprint (trust.h)
 //   fields.c     the field tables of agent.yaml, plugin.yaml and kit.yaml
 //   validate.c, schema.c  validation and `arx schema`, from those tables
 //   tools.c      finds tools: tools/<name> in every layer, and subagents
@@ -168,13 +168,6 @@ int ListNames(const char* dir, char*** names);
 // Checks the plugin in `dir` without loading it, for `arx check --plugin`,
 // and appends key=value lines to `out`: fields, parts, hosts. Returns 0 or -1.
 int PluginDescribe(const char* dir, Buffer* out, Buffer* err);
-
-// ---- signature.c ----
-
-// Fingerprints every harness file with stat() only, so it costs microseconds
-// before each model call: the spec, the prompt files of the spec and each
-// plugin, tools/, hooks/ and skills in every layer, plugin.yaml and kit.yaml.
-uint64_t SpecSignature(const Spec* spec);
 
 // ---- validate.c ----
 
