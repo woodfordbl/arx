@@ -134,7 +134,9 @@ static void AddChange(void* ctx, const ManifestFile* old,
     }
   }
   static const char* const kYaml[] = {"spec", "config", "plugin", "kit"};
-  for (int i = 0; i < 4 && !f->policy; i++) {
+  // Without the accepted version there is nothing to compare with.
+  int known = !old || !old->exists || cJSON_GetObjectItem(c, "old");
+  for (int i = 0; i < 4 && known && !f->policy; i++) {
     if (!strcmp(f->kind, kYaml[i])) EditKeys(c, copy, now, r->a->sets);
   }
   free(copy);

@@ -132,6 +132,12 @@ check "pinned names the keys that --set overrides" test "$(change .pinned)" = '[
 check "path is absolute" test "$(change .path)" = "\"$WS/agent.yaml\""
 check "the kind is spec" test "$(change .kind)" = '"spec"'
 
+fresh "a spec edit that does not parse"
+policy pol/p 'empty'
+bash_then_done "echo 'name: twice' >>agent.yaml"
+run "go" --policy pol/p
+check "it gets no keys, so a policy that reads them fails closed" test "$(change '| has("keys")')" = false
+
 fresh "a kit edit under --kit"
 policy pol/p 'empty'
 mkdir -p "$ARX_CONFIG_DIR/kits/k"

@@ -129,7 +129,7 @@ void EditKeys(cJSON* change, const char* old, const ManifestFile* now,
   Buffer err = {0};
   int ok = !old || SpecParse(old, &before, &err) == 0;
   if (now && now->exists) ok = ok && SpecParse(now->path, &after, &err) == 0;
-  if (ok) {
+  if (ok && !err.len) {  // a duplicate key is a problem too
     cJSON* empty = cJSON_CreateObject();
     cJSON* keys = cJSON_AddArrayToObject(change, "keys");
     DiffKeys(cJSON_IsObject(before.root) ? before.root : empty,
