@@ -5,7 +5,8 @@
 #   make test       run the src/base unit tests (tests/base_test.c), then
 #                   tests/run.sh, plugins.sh, layers.sh, cli.sh, shell.sh,
 #                   hooks.sh, runtime.sh, background.sh, kits.sh,
-#                   credentials.sh, state.sh, climb.sh, climb-run.sh and ui.sh
+#                   credentials.sh, chatgpt.sh, state.sh, climb.sh,
+#                   climb-run.sh and ui.sh
 #                   against ./arx-debug
 #   make bench      check the performance budgets against ./arx
 #   make lint       style checks (scripts/lint.sh)
@@ -101,6 +102,7 @@ test: arx-debug build/dbg/base_test $(PICK)
 	ARX=./arx-debug tests/background.sh
 	ARX=./arx-debug tests/kits.sh
 	ARX=./arx-debug tests/credentials.sh
+	ARX=./arx-debug tests/chatgpt.sh
 	ARX=./arx-debug tests/state.sh
 	ARX=./arx-debug tests/climb.sh
 	ARX=./arx-debug tests/climb-run.sh

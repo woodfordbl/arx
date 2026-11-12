@@ -147,7 +147,7 @@ def to_responses(request):
     `input` goes last. The history only grows between turns, so each
     request then starts with the exact bytes of the one before it, up to
     the end of its `input` list: the stable prefix that the prompt cache
-    needs shows in the bytes, and tests/credentials.sh checks it."""
+    needs shows in the bytes, and tests/chatgpt.sh checks it."""
     instructions, items = to_input(request.get("messages", []))
     out = {"model": request.get("model")}
     if instructions:

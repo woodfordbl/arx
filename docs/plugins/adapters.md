@@ -144,7 +144,7 @@ tools into one `namespace`. It leaves out the settings that the ChatGPT plan
 route rejects, such as `temperature` and `max_tokens`.
 
 Check it with a run against a fake `curl`, the way
-[`tests/credentials.sh`](../../tests/credentials.sh) does, before you point
+[`tests/chatgpt.sh`](../../tests/chatgpt.sh) does, before you point
 it at a real endpoint.
 
 ## Common mistakes

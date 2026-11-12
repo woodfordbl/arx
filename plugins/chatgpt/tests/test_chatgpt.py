@@ -1,6 +1,6 @@
 """Tests for the chatgpt plugin: sign-in, refresh, ID tokens, the adapter.
 
-Run with `python3 plugins/chatgpt/tests/test_chatgpt.py`; tests/credentials.sh
+Run with `python3 plugins/chatgpt/tests/test_chatgpt.py`; tests/chatgpt.sh
 does. Nothing here reaches the network: `call` is replaced by fakes, and the
 ID tokens are signed with a throwaway RSA key made here.
 """
