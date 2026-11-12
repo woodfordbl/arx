@@ -1,0 +1,13 @@
+name: mcp-oauth
+version: 0.1.0
+description: Sign in to HTTP MCP servers with OAuth, so their calls carry a bearer token.
+arx: ">=0.2"
+requires: [python3]
+# `arx mcp-oauth login SERVER` signs in. Then name the program in the
+# server's entry in agent.yaml:
+#   mcp_servers:
+#     linear: {url: "https://mcp.linear.app/mcp", credential: mcp-oauth}
+# Sign-in and token refresh go to the authorization server that the MCP
+# server names. Add its host to `hosts:` in your spec when it is not the
+# server's own.
+credentials: {mcp-oauth: credentials/mcp-oauth}

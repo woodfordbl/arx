@@ -140,4 +140,39 @@ check "a 404 with a session id starts a new session" [ "$(cat fake/count-initial
 check "  and repeats the request once" [ "$(result 1) $(cat fake/count-tools-call)" = "found 3 2" ]
 check "the bridge ends the session with DELETE" has fake/mcp-delete.hdr "Mcp-Session-Id: sess-1"
 
+begin "the mcp-oauth plugin"
+ln -s "$ROOT/plugins/mcp-oauth" "$ARX_CONFIG_DIR/plugins/mcp-oauth"
+export ARX_MCP_OAUTH_DIR="$WS/tokens"
+linear_spec 'credential: mcp-oauth' >agent.yaml
+modern
+calls linear__find '{\"q\":\"a\"}'
+run "go"
+check "without a sign-in the model gets the login line" grep -q 'not signed in to linear: run `arx mcp-oauth login linear`' fake/req-02.json
+mkdir -p tokens
+cat >tokens/linear.json <<EOF
+{"server": "linear", "url": "https://mcp.linear.example/mcp", "issuer": "https://as.example",
+ "resource": "https://mcp.linear.example/mcp", "client_id": "c", "token_endpoint": "https://as.example/token",
+ "access_token": "at-123", "refresh_token": "rt", "expires_at": $(($(date +%s) + 3600)), "scopes": ["read"]}
+EOF
+rm -rf .arx/mcp
+calls linear__find '{\"q\":\"a\"}'
+run "go"
+check "a signed-in server's requests carry the token" has fake/mcp-tools-call-01.hdr "Authorization: Bearer at-123"
+check "  and the call works" [ "$(result 1)" = "found 3" ]
+check "the token is in no event and no transcript" sh -c "! grep -rq at-123 .arx/sessions/*/events.jsonl .arx/sessions/*/transcript.jsonl"
+"$ARX" mcp-oauth status >status.txt 2>&1
+check "arx mcp-oauth status lists the server" grep -q "^linear	https://mcp.linear.example/mcp	token for 5[89] min	read" status.txt
+check "  and prints no token" lacks status.txt "at-123"
+"$ARX" mcp-oauth logout linear >out.txt 2>&1
+check "arx mcp-oauth logout drops the tokens" [ ! -e tokens/linear.json ]
+"$ARX" mcp-oauth login notes >out.txt 2>&1
+code=$?
+check "login for an unknown server names the servers" has out.txt "no server called notes in mcp_servers (linear)"
+
+begin "mcp-oauth plugin unit tests"
+python3 "$ROOT/plugins/mcp-oauth/tests/test_mcp_oauth.py" >unit.txt 2>&1
+code=$?
+check "discovery, iss, PKCE, refresh and exit codes" exited 0
+[ "$code" -eq 0 ] || tail -20 unit.txt
+
 summary

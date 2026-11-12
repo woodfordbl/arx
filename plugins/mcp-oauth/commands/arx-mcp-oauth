@@ -1,0 +1,120 @@
+#!/usr/bin/env python3
+"""arx-mcp-oauth: sign in to an HTTP MCP server with OAuth.
+
+`arx mcp-oauth login SERVER` opens the browser at the authorization server
+that the MCP server names, and saves the tokens. The credential program
+then keeps the access token fresh. This command never prints a token.
+"""
+import os
+import shutil
+import subprocess
+import sys
+import time
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)),
+                                "..", "lib"))
+import mcp_oauth as oauth  # noqa: E402
+
+USAGE = """usage: arx mcp-oauth login SERVER [--scope S] [--no-browser] [--client-id ID]
+       arx mcp-oauth logout SERVER
+       arx mcp-oauth status
+  login    sign in to a server of mcp_servers that has a url
+           --scope S       ask for these scopes too
+           --no-browser    print the link instead of opening it
+           --client-id ID  a client id you registered with the server
+  logout   drop the server's tokens
+  status   the servers you are signed in to
+The tokens are saved in %s (set ARX_MCP_OAUTH_DIR to move it).
+Use it in agent.yaml:
+  mcp_servers:
+    SERVER: {url: "https://...", credential: mcp-oauth}
+"""
+
+
+def opener(no_browser):
+    """Returns a function that opens or prints the sign-in URL."""
+    def show(url):
+        browser = None if no_browser else (
+            shutil.which("open") or shutil.which("xdg-open"))
+        if browser and subprocess.call(
+                [browser, url], stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL) == 0:
+            print("Your browser opened the sign-in page. Waiting...")
+        else:
+            print("Open this link in a browser on this machine:\n\n  %s\n"
+                  % url)
+        sys.stdout.flush()
+    return show
+
+
+def option(args, name):
+    """The value after `name` in args, or None."""
+    if name in args and args.index(name) + 1 < len(args):
+        return args[args.index(name) + 1]
+    return None
+
+
+def login(args):
+    """`arx mcp-oauth login SERVER`."""
+    if not args or args[0].startswith("-"):
+        sys.stderr.write(USAGE % oauth.state_dir())
+        return 2
+    server = args[0]
+    preset = option(args, "--client-id") or os.environ.get(
+        "ARX_MCP_OAUTH_CLIENT_ID")
+    record = oauth.login(server, oauth.server_url(server),
+                         opener("--no-browser" in args),
+                         scope=option(args, "--scope") or "", preset=preset)
+    print("Signed in to %s at %s." % (server, record["issuer"]))
+    print("Use it with `credential: mcp-oauth` in the server's entry.")
+    return 0
+
+
+def status():
+    """`arx mcp-oauth status`."""
+    found = oauth.records()
+    if not found:
+        print("Not signed in to any server. Run `arx mcp-oauth login "
+              "SERVER`.")
+        return 0
+    for _, record in found:
+        left = (record.get("expires_at") or 0) - time.time()
+        state = ("no token; sign in again" if not record.get("access_token")
+                 else "token for %d min" % (left / 60) if left > 0
+                 else "token is refreshed on the next call")
+        print("%s\t%s\t%s\t%s" % (record.get("server"), record.get("url"),
+                                  state, " ".join(record.get("scopes", []))))
+    return 0
+
+
+def main(argv):
+    """Runs one subcommand; returns the exit code."""
+    command = argv[1] if len(argv) > 1 else "--help"
+    if command in ("-h", "--help", "help"):
+        sys.stdout.write(USAGE % oauth.state_dir())
+        return 0
+    try:
+        if command == "login":
+            return login(argv[2:])
+        if command == "status":
+            return status()
+        if command == "logout" and len(argv) > 2:
+            gone = oauth.logout(argv[2])
+            print("Signed out of %s." % argv[2] if gone else
+                  "Not signed in to %s." % argv[2])
+            return 0
+    except oauth.TryLater as e:
+        print("arx mcp-oauth: %s; try again" % e, file=sys.stderr)
+        return 75
+    except oauth.AuthError as e:
+        print("arx mcp-oauth: %s" % e, file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        return 130
+    sys.stderr.write(USAGE % oauth.state_dir())
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
