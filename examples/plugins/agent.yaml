@@ -8,3 +8,9 @@ endpoint: {base_url: "https://openrouter.ai/api/v1", api_key_env: OPENROUTER_API
 
 # keep_last comes from the keep-last plugin.
 compaction: {strategy: keep_last, trigger: 0.7}
+
+# The background plugin's scheduler starts the calls here. With its default
+# (agents: true) the reviewer would run in the background; this demo keeps
+# it in the foreground, so each step shows its result at once.
+enable:
+  - background: {agents: false}

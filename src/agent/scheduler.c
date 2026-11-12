@@ -139,17 +139,22 @@ static void Send(cJSON* message) {
 }
 
 // Tells the plugin that a call is queued; see agent.h.
-void SchedReady(const char* id, const char* name, cJSON* keys) {
+void SchedReady(const char* id, const char* name, cJSON* keys, const char* kind,
+                cJSON* args) {
   cJSON* m = cJSON_CreateObject();
   cJSON* r = cJSON_AddObjectToObject(m, "ready");
   cJSON_AddStringToObject(r, "id", id);
   cJSON_AddStringToObject(r, "name", name);
   cJSON_AddItemToObject(r, "keys", cJSON_Duplicate(keys, 1));
+  cJSON_AddStringToObject(r, "kind", kind);
+  cJSON_AddItemToObject(r, "args",
+                        args ? cJSON_Duplicate(args, 1) : cJSON_CreateObject());
   Send(m);
 }
 
 // Tells the plugin that a call ended; see agent.h.
-void SchedDone(const char* id, double secs, int is_error, cJSON* backoff) {
+void SchedDone(const char* id, double secs, int is_error, cJSON* backoff,
+               int ran) {
   cJSON* m = cJSON_CreateObject();
   cJSON* d = cJSON_AddObjectToObject(m, "done");
   cJSON_AddStringToObject(d, "id", id);
@@ -157,6 +162,7 @@ void SchedDone(const char* id, double secs, int is_error, cJSON* backoff) {
   cJSON_AddBoolToObject(d, "is_error", is_error);
   cJSON_AddItemToObject(
       d, "backoff", backoff ? cJSON_Duplicate(backoff, 1) : cJSON_CreateNull());
+  cJSON_AddBoolToObject(d, "ran", ran);
   Send(m);
 }
 
@@ -167,33 +173,58 @@ double SchedWait(double max) {
   return wait < 0 ? 0 : wait < max ? wait : max;
 }
 
-// Reads one line from the plugin into `start` and `results`. Returns 0, or
-// -1 when the line is not a message arx knows.
-static int Read(const char* line, cJSON* start, cJSON* results) {
+// Adds copies of the strings in `ids` to the array `to`.
+static void AddIds(cJSON* to, cJSON* ids) {
+  cJSON* s;
+  cJSON_ArrayForEach(s, ids) {
+    cJSON_AddItemToArray(to, cJSON_CreateString(s->valuestring));
+  }
+}
+
+// Reads one line from the plugin into `out`. Returns 0, or -1 when the
+// line is not a message arx knows.
+static int Read(const char* line, SchedOut* out) {
   cJSON* m = cJSON_Parse(line);
-  cJSON* ids = cJSON_GetObjectItem(m, "start");
+  cJSON* start = cJSON_GetObjectItem(m, "start");
+  cJSON* detach = cJSON_GetObjectItem(m, "detach");
+  cJSON* cancel = cJSON_GetObjectItem(m, "cancel");
   cJSON* wake = cJSON_GetObjectItem(m, "wake_at");
   cJSON* result = cJSON_GetObjectItem(m, "result");
-  int ok = cJSON_IsObject(m) && (ids || wake || result);
-  if (ids && !KeysValid(ids)) ok = 0;  // a list of strings, as keys are
+  int ok = cJSON_IsObject(m) && (start || detach || cancel || wake || result);
+  // Each id list is a list of strings, as keys are.
+  if (start && !KeysValid(start)) ok = 0;
+  if (detach && !KeysValid(detach)) ok = 0;
+  if (cancel && !KeysValid(cancel)) ok = 0;
   if (wake && !cJSON_IsNumber(wake)) ok = 0;
   const char* id = JsonStr(result, "id", NULL);
   const char* text = JsonStr(result, "text", NULL);
   if (result && (!id || !text)) ok = 0;
   if (ok) {
-    cJSON* s;
-    cJSON_ArrayForEach(s, ids) {
-      cJSON_AddItemToArray(start, cJSON_CreateString(s->valuestring));
-    }
+    AddIds(out->start, start);
+    AddIds(out->detach, detach);
+    AddIds(out->cancel, cancel);
     if (wake) g_sched.wake_at = wake->valuedouble;
-    if (result) cJSON_AddStringToObject(results, id, text);
+    if (result) cJSON_AddStringToObject(out->results, id, text);
   }
   cJSON_Delete(m);
   return ok ? 0 : -1;
 }
 
+// Frees one round of answers; see agent.h.
+void SchedOutFree(SchedOut* out) {
+  cJSON_Delete(out->start);
+  cJSON_Delete(out->results);
+  cJSON_Delete(out->detach);
+  cJSON_Delete(out->cancel);
+  memset(out, 0, sizeof(*out));
+}
+
 // Handles what the plugin printed and sends a due tick; see agent.h.
-void SchedPoll(cJSON* start, cJSON* results) {
+void SchedPoll(SchedOut* out) {
+  out->start = cJSON_CreateArray();
+  out->results = cJSON_CreateObject();
+  out->detach = cJSON_CreateArray();
+  out->cancel = cJSON_CreateArray();
   if (!g_sched.child) return;
   char* nl;
   while (g_sched.out.len &&
@@ -201,7 +232,7 @@ void SchedPoll(cJSON* start, cJSON* results) {
     *nl = 0;
     size_t len = (size_t)(nl - g_sched.out.data) + 1;
     int blank = !g_sched.out.data[strspn(g_sched.out.data, " \t\r")];
-    if (!blank && Read(g_sched.out.data, start, results)) {
+    if (!blank && Read(g_sched.out.data, out)) {
       char* why = XAsprintf("printed a bad line: %.200s", g_sched.out.data);
       Fail(why);
       free(why);

@@ -261,4 +261,46 @@ unset ARX_PLUGIN_MIRROR
 check "--project installs next to agent.yaml" test -f plugins/demo/plugin.yaml
 rm -rf "$plugins"
 
+# `ui:` hands an interactive run on a terminal to arx-NAME, and only that.
+begin "ui key"
+mkdir -p "$ARX_CONFIG_DIR/commands"
+script "$ARX_CONFIG_DIR/commands/arx-fake" <<'EOF'
+#!/bin/sh
+echo "$* bin=$ARX_BIN" >ran.txt
+EOF
+echo "ui: fake" >>agent.yaml
+# term KEYS ARGS...: runs arx on a pty, with stdin and stdout on it.
+term() {
+  local keys=$1
+  shift
+  rm -f ran.txt
+  python3 "$ROOT/tests/pty.py" --out tty --screen screen.txt --keys "$keys" -- "$ARX" "$@"
+}
+term '' --cap turns=3
+check "bare arx on a terminal runs the command" has ran.txt "--cap turns=3 bin=$ARX"
+sse_text "Hello" | reply 1 "200 OK"
+term '' -p hi
+check "not with -p" test ! -e ran.txt
+term '<c-d>' --json
+check "not with --json" test ! -e ran.txt
+term '<c-d>' --events ev.jsonl
+check "not with --events" test ! -e ran.txt
+term '<c-d>' --set ui=none
+check "not with --set ui=none" test ! -e ran.txt
+rm -f ran.txt
+python3 "$ROOT/tests/pty.py" --out out.txt --screen screen.txt --keys '<c-d>' -- "$ARX"
+check "not when stdout is no terminal" test ! -e ran.txt
+python3 "$ROOT/tests/pty.py" --stdin /dev/null --out tty --screen screen.txt -- "$ARX"
+check "not with a piped stdin" test ! -e ran.txt
+sed -i.bak 's/^ui: fake/ui: missing/' agent.yaml
+term '<c-d>'
+check "a missing command is a warning" has screen.txt 'arx: ui: no command arx-missing; using the built-in view'
+check "and the built-in view runs" has screen.txt '● done'
+"$ARX" schema >schema.json
+check "schema lists ui" test "$(jq -r '.properties.ui.type' schema.json)" = string
+"$ARX" check >check.txt 2>&1
+code=$?
+check "check accepts ui" exited 0
+rm -f "$ARX_CONFIG_DIR/commands/arx-fake"
+
 summary

@@ -1,7 +1,7 @@
 // base_test.c: unit tests for src/base that the end-to-end suites can't
 // reach yet: the JSON-RPC peer (rpc.c), LineSink and LinePop, and the
 // process helpers that later items build on (Proc.dir, ProcClose, ProcKeep,
-// ProcStop). `make test` builds it with the sanitizers and runs it first.
+// ProcStop, ProcPollWith). `make test` builds it with the sanitizers and runs it first.
 
 #include "src/base/base.h"
 
@@ -322,6 +322,38 @@ static void TestProc(void) {
   ProcFinish(helper, &r);
   Check("ProcStop stops a kept child without a wait of its own",
         r.code == 128 + 15 && Now() - t < 2);
+  int fds[2];
+  if (pipe(fds)) return;
+  struct pollfd extra = {.fd = fds[0], .events = POLLIN, .revents = POLLIN};
+  t = Now();
+  ProcPollWith(NULL, 0, &extra, 1, 0.3);
+  Check("ProcPollWith waits the whole time when nothing is ready",
+        !extra.revents && Now() - t >= 0.25);
+  char* slow[] = {"sh", "-c", "sleep 0.3; echo late", NULL};
+  Proc s = {.argv = slow, .on_out = BufferSink, .out_ctx = &out};
+  out.len = 0;
+  c = ProcStart(&s);
+  t = Now();
+  ProcPollWith(&c, 1, &extra, 1, 5);
+  Check("it returns when a child has output, not at 0.1 s",
+        out.len && !extra.revents && Now() - t >= 0.25 && Now() - t < 2);
+  if (write(fds[1], "x", 1) != 1) return;
+  t = Now();
+  ProcPollWith(&c, 1, &extra, 1, 5);
+  Check("it returns at once when an extra entry is ready",
+        (extra.revents & POLLIN) && Now() - t < 1);
+  ProcFinish(c, &r);
+  char* nap3[] = {"sleep", "30", NULL};
+  Proc timed = {.argv = nap3, .timeout = 0.2};
+  c = ProcStart(&timed);
+  t = Now();
+  extra.fd = fds[1];  // never readable
+  while (!ProcDone(c)) ProcPollWith(&c, 1, &extra, 1, 30);
+  ProcFinish(c, &r);
+  Check("a child's timeout still ends it during a long wait",
+        r.timed_out && Now() - t < 5);
+  close(fds[0]);
+  close(fds[1]);
   BufferFree(&out);
   BufferFree(&kept);
   rmdir(dir);

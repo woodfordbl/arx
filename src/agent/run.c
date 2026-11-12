@@ -1,8 +1,11 @@
 // run.c: the session lifecycle around the loop: load the spec, open
 // or resume the session, start the event stream and observers, run headless
-// or interactively, and report the result.
+// or interactively, and report the result. No background call outlives the
+// session, or in interactive mode the turn: they are stopped first.
 
+#include <errno.h>
 #include <inttypes.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -84,6 +87,10 @@ static int Start(Agent* a) {
   cJSON_AddStringToObject(e, "spec", a->spec.path);
   cJSON_AddBoolToObject(e, "resumed", a->resume != NULL);
   cJSON_AddNumberToObject(e, "tools", a->tools.count);
+  cJSON_AddNumberToObject(e, "context_window",
+                          JsonNum(a->spec.root, "context_window", 128000));
+  char cwd[4096];
+  cJSON_AddStringToObject(e, "cwd", getcwd(cwd, sizeof(cwd)) ? cwd : "");
   cJSON* names = a->spec.policy ? cJSON_AddArrayToObject(e, "policy") : NULL;
   for (int l = 0; names && l < a->spec.layer_count; l++) {
     const Layer* layer = &a->spec.layers[l];
@@ -91,6 +98,8 @@ static int Start(Agent* a) {
     cJSON_AddItemToArray(names, cJSON_CreateString(layer->plugin));
   }
   EventSend(e);
+  // The calls a stopped session left in flight become notes.
+  if (a->resume) CallsResume(a);
   return 0;
 }
 
@@ -113,46 +122,128 @@ static void Begin(Agent* a, const char* prompt) {
   cJSON_Delete(out);
 }
 
+// Takes a prompt from the user into the session: sends prompt.start, then
+// starts the conversation with it (`first`) or adds it as a user message.
+static void Prompt(Agent* a, const char* text, int first) {
+  cJSON* e = EventNew("prompt.start");
+  JsonAddTruncated(e, "text", text, 65536);
+  EventSend(e);
+  if (first) {
+    Begin(a, text);
+  } else {
+    AgentAddMessage(a, "user", text);
+  }
+}
+
+// Adds what session.end and prompt.end share: the status for `code` and the
+// session's totals.
+static void AddTotals(Agent* a, cJSON* e, int code) {
+  cJSON_AddStringToObject(e, "status", StatusName(code));
+  cJSON_AddNumberToObject(e, "turns", a->session.turns);
+  cJSON_AddNumberToObject(
+      e, "tokens", (double)(a->session.tokens_in + a->session.tokens_out));
+  cJSON_AddNumberToObject(e, "cost", a->session.cost);
+}
+
 // Headless: one task, run until the agent stops.
 static int Headless(Agent* a) {
-  if (!a->resume) {
-    Begin(a, a->prompt ? a->prompt : "");
-  } else if (a->prompt && *a->prompt) {
-    AgentAddMessage(a, "user", a->prompt);
+  if (!a->resume || (a->prompt && *a->prompt)) {
+    Prompt(a, a->prompt ? a->prompt : "", !a->resume);
   }
   return RunTurns(a);
 }
 
-// Interactive: one line per message. Ctrl-C stops the current turn; Ctrl-D,
-// /exit or Ctrl-C at the prompt ends the session.
-static int Interactive(Agent* a) {
-  char *line = NULL, *first_prompt = NULL;
-  size_t cap = 0;
-  int code = kExitDone, started = a->resume != NULL;
+// Reads the next line of stdin through `in` (malloc'd, no newline), or NULL
+// at the end of input. With `retry`, a signal is not the end: Ctrl-C only
+// ends a prompt, so one that lands after the prompt ended is dropped and
+// the read goes on. SIGTERM still ends the input.
+static char* ReadLine(Buffer* in, int retry) {
   for (;;) {
-    fputs(g_events.color ? "\n\033[1m› \033[0m" : "\n› ", stderr);
-    g_interrupted = 0;
-    if (getline(&line, &cap, stdin) < 0) break;
-    line[strcspn(line, "\n")] = 0;
-    if (!*line) continue;
-    if (!strcmp(line, "/exit") || !strcmp(line, "/quit")) break;
+    if (retry && g_interrupted == SIGTERM) return NULL;
+    if (retry) g_interrupted = 0;
+    char* line = LinePop(in);
+    if (line) return line;
+    char chunk[4096];
+    ssize_t n = read(0, chunk, sizeof(chunk));
+    if (n > 0) {
+      BufferAppend(in, chunk, (size_t)n);
+    } else if (n == 0 || errno != EINTR || !retry) {
+      return n == 0 && in->len ? BufferTake(in) : NULL;  // a last line
+    }
+  }
+}
+
+// The prompt of one --input jsonl line (consumed): {"prompt": "TEXT"}, with
+// other keys ignored. Returns NULL for a blank line, and for any other line
+// after an error event.
+static char* JsonlPrompt(char* line) {
+  cJSON* o = cJSON_Parse(line);
+  const char* text = cJSON_IsObject(o) ? JsonStr(o, "prompt", NULL) : NULL;
+  char* prompt = text && *text ? XStrdup(text) : NULL;
+  if (!prompt && line[strspn(line, " \t\r")]) {
+    char* clean = Utf8Clean(line, strlen(line));
+    char* why = XAsprintf("bad input line: %s", clean);
+    cJSON* e = EventNew("error");
+    JsonAddTruncated(e, "error", why, 300);
+    EventSend(e);
+    free(why);
+    free(clean);
+  }
+  cJSON_Delete(o);
+  free(line);
+  return prompt;
+}
+
+// Interactive: one prompt per line, from the terminal or as --input jsonl.
+// Ctrl-C stops the current prompt. At the terminal, Ctrl-D, /exit or Ctrl-C
+// at the prompt ends the session; with --input jsonl, the end of stdin does.
+static int Interactive(Agent* a) {
+  Buffer in = {0};
+  char* first_prompt = NULL;
+  int code = kExitDone, started = a->resume != NULL, jsonl = a->input_jsonl;
+  for (;;) {
+    if (!jsonl) {
+      fputs(g_events.color ? "\n\033[1m› \033[0m" : "\n› ", stderr);
+      g_interrupted = 0;
+    }
+    char* line = ReadLine(&in, jsonl);
+    if (!line) break;
+    if (jsonl) line = JsonlPrompt(line);
+    int quit = !jsonl && (!strcmp(line, "/exit") || !strcmp(line, "/quit"));
+    if (!line || !*line || quit) {
+      free(line);
+      if (quit) break;
+      continue;
+    }
     if (!started) {
       first_prompt = XStrdup(line);
       a->prompt = first_prompt;  // kept for {{prompt}} after a restart
-      Begin(a, line);
-      started = 1;
-    } else {
-      AgentAddMessage(a, "user", line);
     }
+    Prompt(a, line, !started);
+    free(line);
+    started = 1;
+    // This prompt's answer and its own `arx ctl stop`, not the last one's.
+    free(a->final_output);
+    a->final_output = NULL;
+    a->stop_requested = 0;
     code = RunTurns(a);
+    // The prompt cannot poll, so nothing runs on behind it: the calls in
+    // flight end `stopped` before prompt.end, and their results reach the
+    // agent with the next message.
+    CallsShutdown(a);
+    cJSON* e = EventNew("prompt.end");
+    AddTotals(a, e, code);
+    JsonAddTruncated(e, "final_output", a->final_output, 2000);
+    EventSend(e);
     if (code == kExitInterrupted) {
-      fputs("\n(interrupted)\n", stderr);
+      if (!jsonl) fputs("\n(interrupted)\n", stderr);
       code = kExitDone;
     } else if (code == kExitAuth) {
       break;
     }
   }
-  free(line);
+  if (jsonl && g_interrupted == SIGTERM) code = kExitInterrupted;
+  BufferFree(&in);
   a->prompt = NULL;
   free(first_prompt);
   return code;
@@ -181,14 +272,12 @@ static void PrintResult(Agent* a, int code) {
   }
 }
 
-// Ends the session: final event, meta.json, result.
+// Ends the session: stops the calls in flight, then the final event,
+// meta.json and the result.
 static void Finish(Agent* a, int code) {
+  CallsShutdown(a);
   cJSON* e = EventNew("session.end");
-  cJSON_AddStringToObject(e, "status", StatusName(code));
-  cJSON_AddNumberToObject(e, "turns", a->session.turns);
-  cJSON_AddNumberToObject(
-      e, "tokens", (double)(a->session.tokens_in + a->session.tokens_out));
-  cJSON_AddNumberToObject(e, "cost", a->session.cost);
+  AddTotals(a, e, code);
   cJSON_AddNumberToObject(e, "secs", Now() - a->start);
   JsonAddTruncated(e, "final_output", a->final_output, 2000);
   EventSend(e);

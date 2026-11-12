@@ -204,15 +204,12 @@ typedef struct Field {
 
 // The top-level keys of agent.yaml, ending with a zeroed Field.
 extern const Field kTopFields[];
-
 // The keys of plugin.yaml, ending with a zeroed Field.
 extern const Field kPluginFields[];
-
 // The keys of kit.yaml, ending with a zeroed Field.
 extern const Field kKitFields[];
 
-// The hook points, NULL-terminated: session_start, before_model, after_model,
-// before_tool, after_tool, stop, harness_edit (policy folders only: gate.c).
+// The seven hook points, session_start to harness_edit, NULL-terminated.
 extern const char* const kHookPoints[];
 
 // The characters allowed in tool names (OpenAI function names).
@@ -288,9 +285,8 @@ typedef struct ToolRun ToolRun;
 Tool* ToolFind(struct Agent* a, const char* name);
 
 // Starts tool `name` with JSON `args` and returns at once; ProcPoll on
-// ToolChild() runs it, and ToolFinish ends it. Stores the full-output path
-// in `*output_path` (malloc'd, or NULL). Returns NULL when the call ends at
-// once (unknown tool, bad arguments, no start), with `*text` and `*is_error`.
+// ToolChild() runs it, and ToolFinish ends it. Sets `*output_path` (malloc'd,
+// or NULL). Returns NULL when the call ended at once: `*text`, `*is_error`.
 ToolRun* ToolStart(struct Agent* a, const char* name, const char* args,
                    char** text, int* is_error, char** output_path,
                    cJSON* end_event);
@@ -298,15 +294,19 @@ ToolRun* ToolStart(struct Agent* a, const char* name, const char* args,
 // The process of a started call, for ProcPoll.
 ProcChild* ToolChild(ToolRun* run);
 
-// Ends a call (stopping its process if it still runs) and frees `run`.
-// Returns the text for the model (malloc'd), sets `*is_error`, and adds
-// exit, secs, bytes and path to `end_event`.
-char* ToolFinish(ToolRun* run, int* is_error, cJSON* end_event);
+// The call runs in the background now: a subagent's events are not drawn.
+void ToolQuiet(ToolRun* run);
 
-// Returns the ARX_* environment for tools and hooks, NULL-terminated:
-// ARX_SESSION, _SESSION_DIR, _TURN, _CWD, _SPEC, _SPEC_DIR, _DEPTH, _BIN;
-// ARX_PLUGIN_DIR for `plugin_dir`; and for a plugin's name, ARX_STATE_DIR
-// (<session>/plugins/<name>) and ARX_DATA_DIR (<cwd>/.arx/data/<name>).
+// Ends a call (stopping its process if it runs) and frees `run`. Returns
+// the text for the model (malloc'd), sets `*is_error`, and adds exit, secs,
+// bytes and path to `end_event`. `stopped` is the status line of a call
+// that arx stopped, such as "[cancelled]", or NULL.
+char* ToolFinish(ToolRun* run, int* is_error, cJSON* end_event,
+                 const char* stopped);
+
+// Returns the ARX_* environment for tools and hooks, NULL-terminated: the
+// session, turn, cwd, spec, depth and binary; ARX_PLUGIN_DIR for
+// `plugin_dir`; and for a plugin's name, ARX_STATE_DIR and ARX_DATA_DIR.
 char** ToolEnv(struct Agent* a, const char* plugin_dir, const char* plugin);
 
 // ToolEnv for a program of `layer`, plus ARX_PLUGIN_SETTINGS for a plugin's.

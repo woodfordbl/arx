@@ -12,15 +12,15 @@ contracts can still change.
 Most of the plugin redesign is already built and documented: hooks on raw
 objects ([Hooks](hooks.md)), the `shell` plugin
 ([Tools](tools.md#bash-and-edit)), keys and the tool runtime
-([Keys](tools.md#keys), [Schedulers](schedulers.md)), and kits, the active
-list and hook bands ([Kits](kits.md), [Bands](hooks.md#bands)), and policy
-folders with the `harness_edit` gate ([Policies](policies.md)). These parts
-are not built:
+([Keys](tools.md#keys), [Schedulers](schedulers.md)), calls in the
+background ([Schedulers](schedulers.md#run-calls-in-the-background)),
+kits, the active list and hook bands ([Kits](kits.md),
+[Bands](hooks.md#bands)), and policy folders with the `harness_edit` gate
+([Policies](policies.md)). These parts are not built:
 
 | Part | What it would add | Section |
 |---|---|---|
 | Sandboxes | a `sandbox:` value that sandbox plugins read | [Sandboxes](#sandboxes) |
-| Calls that do not block | a result now, the real result later | [Calls that do not block](#calls-that-do-not-block) |
 | Long-lived and concurrent hooks | hooks that keep state, and `before_tool` hooks that run at the same time | [Long-lived and concurrent hooks](#long-lived-and-concurrent-hooks) |
 | Front-ends | an ACP server and a terminal UI | [Front-ends](#front-ends) |
 | MCP client | MCP servers as tools | [MCP client](#mcp-client) |
@@ -37,12 +37,6 @@ in a layer above the `shell` plugin, with `replaces: [bash, edit]`. The rule
 Only a sandbox that cannot write the harness files and the policy folders
 would make a [policy](policies.md#what-a-policy-needs-from-a-sandbox) a
 boundary. Today a policy stops mistakes, not a hostile agent.
-
-## Calls that do not block
-
-A scheduler plugin would give the model the result `started as c7` at once,
-and send the real result later as a note in the inbox. Then a subagent could
-start without a wait, and the agent would go on working.
 
 ## Long-lived and concurrent hooks
 

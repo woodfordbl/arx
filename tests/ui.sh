@@ -267,7 +267,7 @@ check "Model, pick another, Quit" exited 0
 check "the model changed" has "$ARX_CONFIG_DIR/config.yaml" 'model: "test-model"'
 check "nothing else did" test "$(diff before.yaml "$ARX_CONFIG_DIR/config.yaml" | grep '^[<>]' |
   grep -vcE '^[<>] (model|context_window|prices):')" -eq 0
-setup_pty --keys '<wait:Settings><down><down><down><enter><wait:? Plugins><down><enter><wait:? Add plugins><down><space><enter><wait:Add 1?><enter><wait:Added><wait:Settings><esc>' \
+setup_pty --keys '<wait:Settings><down><down><down><enter><wait:? Plugins><down><enter><wait:? Add plugins><down><down><space><enter><wait:Add 1?><enter><wait:Added><wait:Settings><esc>' \
   -- "$ARX" setup
 check "Plugins, Add plugins adds a shipped one" test -L "$ARX_CONFIG_DIR/plugins/clock"
 setup_pty --keys '<wait:Settings><down><down><down><enter><wait:? Plugins><enter><wait:? Plugins on><space><enter><wait:Settings><esc>' \

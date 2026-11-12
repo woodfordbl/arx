@@ -3,89 +3,11 @@
 # call ([] runs in parallel, one key runs one at a time, "*" runs alone),
 # results in call order, keys from a before_tool hook, a timeout and Ctrl-C
 # while calls run in parallel, parallel subagents, and a scheduler plugin
-# (start, result, wake_at and tick, backoff) with its fallback to the
-# built-in scheduler. Run with `make test`.
+# (start, result, wake_at and tick, backoff, the fields of ready and done)
+# with its fallback to the built-in scheduler. Run with `make test`.
 set -u
 . "$(dirname "$0")/lib.sh"
-
-EVENTS=.arx/sessions/last/events.jsonl
-TRANSCRIPT=.arx/sessions/last/transcript.jsonl
-
-# A streamed reply with several tool calls: sse_calls NAME ARGS [NAME ARGS
-# ...]. ARGS is JSON escaped for a JSON string. The ids are call_1, call_2...
-sse_calls() {
-  local i=0 sep=""
-  printf 'data: {"choices":[{"index":0,"delta":{"role":"assistant",'
-  printf '"tool_calls":['
-  while [ $# -gt 0 ]; do
-    printf '%s{"index":%d,"id":"call_%d","type":"function",' "$sep" "$i" \
-      $((i + 1))
-    printf '"function":{"name":"%s","arguments":"%s"}}' "$1" "$2"
-    sep=","
-    i=$((i + 1))
-    shift 2
-  done
-  printf ']}}]}\n\n'
-  printf 'data: {"choices":[{"index":0,"delta":{},'
-  printf '"finish_reason":"tool_calls"}]}\n\n'
-  sse_end
-}
-
-# nap KEYS: a tool tools/nap with the keys KEYS (JSON, or "" for none). A
-# call {"x", "secs"} writes start-x and end-x around a sleep to log.txt.
-nap() {
-  script tools/nap <<'EOF'
-#!/usr/bin/env python3
-import json, sys, time
-args = json.load(sys.stdin)
-x = args.get("x", "?")
-open("log.txt", "a").write("start-%s\n" % x)
-open("started-%s" % x, "w").close()
-time.sleep(float(args.get("secs", 1)))
-open("log.txt", "a").write("end-%s\n" % x)
-print("napped-%s" % x)
-EOF
-  local keys=""
-  [ -n "$1" ] && keys=", \"keys\": $1"
-  cat >tools/nap.json <<EOF
-{"description": "Sleeps.", "parameters": {"type": "object",
- "properties": {"x": {"type": "string"}, "secs": {"type": "number"}}}$keys}
-EOF
-}
-
-# The wall clock in seconds, with a fraction.
-now() { python3 -c 'import time; print(time.time())'; }
-
-# True when $2 - $1 is below $3 seconds.
-within() { awk -v a="$1" -v b="$2" -v l="$3" 'BEGIN { exit !(b - a < l) }'; }
-
-# True when log.txt has the lines in this order, one after another.
-in_order() { [ "$(tr '\n' ' ' <log.txt)" = "$* " ]; }
-
-# The tool_call_ids of the tool messages in request N, in order.
-result_ids() {
-  python3 -c '
-import json, sys
-req = json.load(open(sys.argv[1]))
-print(" ".join(m["tool_call_id"] for m in req["messages"] if m["role"] == "tool"))
-' "fake/req-$(printf %02d "$1").json"
-}
-
-# hook PATH < PYTHON: a hook written in Python; `obj` is the input and
-# out(...) prints fields. Each input is appended to PATH.in.
-hook() {
-  local path=$1
-  script "$path" <<EOF
-#!/usr/bin/env python3
-import json, sys
-obj = json.load(sys.stdin)
-with open("$WS/$path.in", "a") as f:
-    f.write(json.dumps(obj) + "\n")
-def out(**fields):
-    print(json.dumps(fields))
-$(cat)
-EOF
-}
+. "$(dirname "$0")/runtime-lib.sh"
 
 begin "keys []: calls run in parallel"
 nap '[]'
@@ -253,24 +175,6 @@ check "event lines stay whole" python3 -c "
 import json
 for line in open('$EVENTS'): json.loads(line)"
 
-# sched PYTHON: a scheduler plugin at the top of the spec folder. `send`
-# prints a message; every message from arx is appended to sched.log.
-sched() {
-  script scheduler <<EOF
-#!/usr/bin/env python3
-import json, sys, time
-def send(**m):
-    print(json.dumps(m), flush=True)
-while True:
-    line = sys.stdin.readline()
-    if not line:
-        break
-    m = json.loads(line)
-    open("sched.log", "a").write(json.dumps(m) + "\n")
-$(cat)
-EOF
-}
-
 begin "scheduler plugin: start, result, wake_at and backoff"
 nap '["host:{url}"]'
 sched <<'EOF'
@@ -294,7 +198,7 @@ sse_calls nap '{\"x\":\"a\",\"secs\":0,\"url\":\"http://api.example.com/\"}' \
 sse_text "done" | reply 2 "200 OK"
 run "go"
 check "exits 0" exited 0
-check "ready has name and keys" has sched.log '{"ready": {"id": "call_1", "name": "nap", "keys": ["host:api.example.com"]}}'
+check "ready has name, keys, kind and args" has sched.log '{"ready": {"id": "call_1", "name": "nap", "keys": ["host:api.example.com"], "kind": "tool", "args": {"x": "a", "secs": 0, "url": "http://api.example.com/"}}}'
 check "the started call ran" has fake/req-02.json 'napped-a'
 check "a result ends a call without a run" has fake/req-02.json 'budget used up'
 check "it did not run" lacks log.txt 'start-b'
@@ -302,6 +206,7 @@ check "a tick at wake_at" has sched.log '"tick"'
 check "started on the tick" has fake/req-02.json 'napped-c'
 check "done has the backoff" has sched.log '"backoff": {"key": "host:api.example.com", "secs": 30}'
 check "done has secs and is_error" grep -q '"done": {"id": "call_1", "secs": [0-9.e-]*, "is_error": false' sched.log
+check "done says the call ran" grep -q '"done": {"id": "call_1", .*"ran": true}' sched.log
 check "results in call order" test "$(result_ids 2)" = "call_1 call_2 call_3"
 check "no error" lacks "$EVENTS" '"type":"error"'
 
@@ -317,6 +222,36 @@ run "go"
 check "exits 0" exited 0
 check "an error event" has "$EVENTS" 'printed a bad line: not json; using the built-in scheduler'
 check "the calls still ran" has fake/req-02.json 'napped-b'
+
+begin "scheduler plugin: a bad detach or cancel value falls back"
+nap '[]'
+sched <<'EOF'
+    if "ready" in m:
+        send(detach="call_1")
+EOF
+sse_calls nap '{\"x\":\"a\",\"secs\":0}' | reply 1 "200 OK"
+sse_text "done" | reply 2 "200 OK"
+run "go"
+check "an error event" has "$EVENTS" 'printed a bad line: {\"detach\": \"call_1\"}'
+check "the call still ran" has fake/req-02.json 'napped-a'
+
+begin "scheduler plugin: Ctrl-C ends a held call"
+nap '[]'
+sched <<'EOF'
+    if "ready" in m and m["ready"]["id"] == "call_1":
+        send(start=["call_1"])
+EOF
+spec >sub.yaml
+echo 'tools: {helper: {agent: sub.yaml}}' >>agent.yaml
+sse_calls nap '{\"x\":\"a\",\"secs\":5}' helper '{\"task\":\"t\"}' |
+  reply 1 "200 OK"
+"$ARX" -p go --quiet >out.txt 2>err.txt &
+pid=$!
+for _ in $(seq 1 100); do [ -e started-a ] && break; sleep 0.05; done
+kill -INT "$pid"
+wait "$pid"
+check "ready says a subagent is an agent" has sched.log '"kind": "agent", "args": {"task": "t"}'
+check "done for the call that never ran" has sched.log '{"done": {"id": "call_2", "secs": 0, "is_error": true, "backoff": null, "ran": false}}'
 
 begin "scheduler plugin: exit falls back"
 nap '[]'

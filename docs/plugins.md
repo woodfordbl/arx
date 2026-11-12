@@ -78,4 +78,4 @@ arx plugin add --link DIR    # use a plugin from where it is, while you work on 
   [`examples/plugins/`](../examples/plugins) is a harness that uses all of
   them, and `make test` runs it.
 - [Planned changes](plugins/planned.md): see what is designed but not built:
-  sandboxes, calls that do not block, and a marketplace index.
+  sandboxes and a marketplace index.

@@ -1,0 +1,119 @@
+#!/usr/bin/env python3
+# scheduler: the policy for calls that do not block. It starts calls by
+# their keys, as arx's built-in scheduler does, and moves some of them to
+# the background with `detach`: every subagent (`agents`), the tools named
+# in `tools`, and any call that still runs after `after`. At most `max`
+# background calls run at once; the rest wait, queued. arx gives the model a
+# placeholder result for each and delivers the real result later.
+#
+# Protocol: one JSON object per line on stdin and stdout; see
+# docs/plugins/schedulers.md.
+import json
+import os
+import sys
+import time
+
+UNITS = {"s": 1, "m": 60, "h": 3600}
+
+
+def seconds(value):
+    """30, "30", "30s", "5m" or "1h" as seconds; None when missing or bad."""
+    if value is None or isinstance(value, bool):
+        return None
+    text = str(value).strip().lower()
+    scale = UNITS.get(text[-1:], None)
+    try:
+        return float(text[:-1]) * scale if scale else float(text)
+    except ValueError:
+        return None
+
+
+settings = json.loads(os.environ.get("ARX_PLUGIN_SETTINGS") or "{}")
+AGENTS = settings.get("agents", True) is not False
+TOOLS = set(settings.get("tools") or [])
+AFTER = seconds(settings.get("after"))
+try:
+    MAX = max(1, int(settings.get("max", 4)))
+except (TypeError, ValueError):
+    MAX = 4
+
+queue = []    # calls that wait, in the order they came
+running = {}  # id -> call
+wake = None   # the wake_at that arx holds for us
+
+
+def send(message):
+    print(json.dumps(message), flush=True)
+
+
+def conflict(a, b):
+    """True when two calls may not run at the same time. A background call
+    holds only its named keys: "*" does not count on either side."""
+    shared = set(a["keys"]) & set(b["keys"])
+    if a["background"] or b["background"]:
+        return bool(shared - {"*"})
+    return "*" in a["keys"] or "*" in b["keys"] or bool(shared)
+
+
+def schedule(ticked):
+    """Starts what can start, and moves to the background what should."""
+    global wake
+    now = time.time()
+    start, detach = [], []
+    for call in running.values():
+        late = AFTER is not None and now - call["since"] >= AFTER
+        if late and not call["background"]:
+            call["background"] = True
+            detach.append(call["id"])
+    in_background = sum(1 for c in running.values() if c["background"])
+    waiting = []
+    for call in queue:
+        if call["background"] and not call["detached"]:
+            call["detached"] = True
+            detach.append(call["id"])
+        others = list(running.values()) + waiting
+        free = not any(conflict(call, o) for o in others)
+        if free and call["background"] and in_background >= MAX:
+            free = False
+        if not free:
+            waiting.append(call)
+            continue
+        call["since"] = now
+        running[call["id"]] = call
+        in_background += call["background"]
+        start.append(call["id"])
+    queue[:] = waiting
+    message = {}
+    if start:
+        message["start"] = start
+    if detach:
+        message["detach"] = detach
+    # One tick for the next foreground call that reaches `after`.
+    due = [c["since"] + AFTER for c in running.values()
+           if AFTER is not None and not c["background"]]
+    if due and (ticked or wake is None or min(due) < wake):
+        wake = message["wake_at"] = min(due)
+    elif not due:
+        wake = None
+    if message:
+        send(message)
+
+
+for line in sys.stdin:
+    try:
+        m = json.loads(line)
+    except ValueError:
+        continue
+    if "ready" in m:
+        r = m["ready"]
+        background = (r.get("kind") == "agent" and AGENTS) or \
+            r.get("name") in TOOLS
+        queue.append({"id": r["id"], "keys": r.get("keys") or [],
+                      "background": background, "detached": False})
+    if "done" in m:
+        # A call that never ran (cancelled, Ctrl-C) is still in the queue.
+        running.pop(m["done"]["id"], None)
+        queue[:] = [c for c in queue if c["id"] != m["done"]["id"]]
+    if "tick" in m:
+        wake = None
+    schedule("tick" in m)

@@ -95,6 +95,12 @@ char* FindCommand(const char* name);
 // kExitError if it could not be started.
 int RunExternal(const char* name, int argc, char** argv);
 
+// Runs `arx-<name>`, the `ui:` command, in place of an interactive run, with
+// every argument arx got (argv[1..]) and the variables RunExternal sets.
+// Does not return on success. When there is no such command or it does not
+// start, says so on stderr and returns, and the built-in view draws the run.
+void RunUi(const char* name, int argc, char** argv);
+
 // `arx help [COMMAND]`: everything, or one command (an external command
 // prints its own help with --help).
 int HelpCommand(int argc, char** argv, Agent* a);

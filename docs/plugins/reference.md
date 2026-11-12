@@ -304,23 +304,32 @@ new `v`.
 
 | `type` | Fields |
 |---|---|
-| `session.start` | `name`, `model`, `spec`, `resumed`, `tools` (a count), and `policy` (the names of the policy folders) when there are any |
+| `session.start` | `name`, `model`, `spec`, `resumed`, `tools` (a count), `context_window` (tokens), `cwd` (the working folder), and `policy` (the names of the policy folders) when there are any |
+| `prompt.start` | `text`: a prompt from you, cut at 64 KB. Sent for the `-p` task, each interactive line and each `--input jsonl` prompt, not for hook messages or harness notes. |
 | `turn.start` | none |
 | `model.delta` | `text`: streamed model text, batched about every 50 ms |
 | `model.message` | `tokens_in`, `tokens_out`, `cost`, `tool_calls` (a count) |
 | `model.retry` | `attempt`, `status` (HTTP), `curl_exit`, `wait_s`, `error` |
 | `model.credential` | `program`, `reason` (`start`, `expired` or `rejected`), `secs`, and `expires_in` or `error`; never the value |
-| `tool.start` | `id`, `name`, `preview` |
-| `tool.end` | `id`, `name`, `error`, `preview`; process tools add `exit`, `secs`, `bytes` and `path` |
+| `tool.start` | `id`, `name`, `preview`, and `args`: the arguments as the model wrote them, parsed, or the raw string when they are not JSON. Arguments over 16 KB are left out, and `args_cut` is `true`. Sent before the `before_tool` hooks. |
+| `tool.run` | `id`, `name`: the call's process started. A call that a hook answered or denied has none. |
+| `tool.detach` | `id`, `name`, `call` (the short id, such as `"c7"`), `queued` (true when the scheduler holds it): the call moved to the [background](schedulers.md#run-calls-in-the-background) and the model got the placeholder |
+| `tool.end` | `id`, `name`, `error`, `preview`, and `output`: the first 2 KB of the result, before the `after_tool` hooks; process tools add `exit`, `secs`, `bytes` and `path`; a background call adds `call` and `detached: true`, and its event can come turns later |
 | `hook` | `point`, `secs`, `plugin` (for a plugin's hook), `policy` (true for a policy folder's hook), `band` (outside `normal`); `changed` (the fields the hook changed), `decision`, `ignored` (a change dropped after a policy result, or a `harness_edit` reject of a path arx did not send), or `error` |
 | `harness.reload` | `ok`, `ms`, and `tools` (a count) or `errors`; `rejected` (a count) when the policy rejected changes |
 | `harness.edit` | one for each changed harness file in a run with a `harness_edit` hook: `path`, `layer`, `kind`, `change`, `decision` (`accept`, `reject` or `stop`), and `reason` and `policy` (the policy's name) for a reject |
 | `compact` | `strategy`, `tokens_before`, `tokens_after` |
 | `note` | `text`: harness notes, caps reached, and a stop by the policy |
 | `error` | `error`; also sent when a scheduler plugin fails |
+| `prompt.end` | `status` (`done`, `cap`, `error`, `auth` or `interrupted`), `turns`, `tokens` and `cost` (the session's totals so far), `final_output` (this prompt's answer, cut at 2000 bytes). Sent when a prompt's turns end in interactive and `--input jsonl` runs. A headless run has only `session.end`. |
 | `session.end` | `status`, `turns`, `tokens`, `cost`, `secs`, `final_output` |
 
 A subagent's events appear in its parent's stream with a higher `depth`.
+
+The stream holds the whole visible session: your prompts, the model's text,
+and each tool call with its arguments and the start of its output. A
+front-end can draw or replay a session from `events.jsonl` alone. The cost
+is at most 18 KB per tool call.
 
 ## Session files
 
@@ -331,13 +340,45 @@ Each session has a folder `.arx/sessions/<id>/` in the working directory.
 |---|---|
 | `transcript.jsonl` | every message; a `{"_reset":true}` line starts the history over, after compaction |
 | `events.jsonl` | the event stream |
-| `meta.json` | turns, tokens, cost and status, for `--resume` |
+| `meta.json` | turns, tokens, cost and status, for `--resume`; `call_seq` and `calls` for background calls |
 | `tool-NNNN.out` | the full output of each process tool call |
-| `inbox` | commands from `arx ctl` |
+| `inbox` | commands from `arx ctl`, and the results of background calls; see [Inbox lines](#inbox-lines) |
 | `plugins/<name>/` | a plugin's `ARX_STATE_DIR`, when the plugin made it |
 | `harness/rejected/<turn>-<rel>` | the agent's version of each harness edit that a [policy](policies.md#what-a-reject-does) rejected; each `/` of `rel` is `__` |
 
 With a kit that pins versions, arx also writes `kit.lock` next to the spec.
+
+### Background calls in meta.json
+
+`meta.json` holds two fields for
+[background calls](schedulers.md#run-calls-in-the-background):
+
+| Field | Contents |
+|---|---|
+| `call_seq` | the number of the last short id, so `c7` is never used twice in a session |
+| `calls` | the calls whose result the agent has not seen: `[{"call", "id", "name", "preview", "at", "out"}]`. `at` is the unix time the call moved to the background, and `out` is its output file once it runs |
+
+A call leaves `calls` when its note is in the history, not when it ends.
+`arx ctl ID cancel` and `--resume` read this list.
+
+### Inbox lines
+
+The `inbox` file has one JSON object per line. arx reads the new lines
+before each model call. Writers append whole lines with `O_APPEND`, so
+anything that can write a file can steer a run.
+
+| Line | Written by | Effect |
+|---|---|---|
+| `{"cmd": "note", "text"}` | `arx ctl ID note TEXT` | the agent sees the text as a `[harness]` note |
+| `{"cmd": "stop"}` | `arx ctl ID stop` | the run ends after the current turn |
+| `{"cmd": "cancel", "call"}` | `arx ctl ID cancel CALL` | arx cancels that background call |
+| `{"cmd": "result", "call", "id", "name", "preview", "status", "secs", "text"}` | arx, when a background call ends | the agent sees the result as a paragraph of a `[harness]` note |
+
+In a `result` line, `call` is the short id, `id` is the model's id,
+`preview` is the call's arguments cut to 60 bytes, and `status` is `ok`,
+`error`, `cancelled` or `stopped`. After `--resume`, arx skips the `note`,
+`stop` and `cancel` lines from before the resume. It still delivers the
+`result` of each call listed in `calls`.
 
 ## arx tool
 

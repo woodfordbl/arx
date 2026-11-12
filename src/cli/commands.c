@@ -82,20 +82,59 @@ static int WatchCommand(int argc, char** argv, Agent* a) {
   return WatchMain(ref, json, from_start);
 }
 
-// `arx ctl ID|last stop|note TEXT`: appends a command to the inbox.
+// The short id (malloc'd) of the background call `id` (a short id such as
+// c7, or the model's id) that meta.json in `dir` lists as in flight. When
+// there is none, says which calls are in flight and returns NULL.
+static char* CallInFlight(const char* dir, const char* id) {
+  char* path = XAsprintf("%s/meta.json", dir);
+  char* text = ReadFile(path, NULL);
+  cJSON* meta = text ? cJSON_Parse(text) : NULL;
+  char* found = NULL;
+  Buffer list = {0};
+  cJSON* e;
+  cJSON_ArrayForEach(e, cJSON_GetObjectItem(meta, "calls")) {
+    const char* call = JsonStr(e, "call", "");
+    if (!found && (!strcmp(call, id) || !strcmp(JsonStr(e, "id", ""), id))) {
+      found = XStrdup(call);
+    }
+    BufferPrintf(&list, "%s%s", list.len ? ", " : "", call);
+  }
+  if (!found) {
+    fprintf(stderr, "arx: no call %s in flight (in flight: %s)\n", id,
+            list.len ? list.data : "none");
+  }
+  BufferFree(&list);
+  cJSON_Delete(meta);
+  free(text);
+  free(path);
+  return found;
+}
+
+// `arx ctl ID|last stop | note TEXT | cancel CALL`: appends a command to
+// the inbox. cancel first checks that the call is in flight.
 static int CtlCommand(int argc, char** argv, Agent* a) {
   (void)a;
   if (argc < 4) return UsageError("ctl needs a session and a command", NULL);
-  int note = !strcmp(argv[3], "note");
-  if (!note && strcmp(argv[3], "stop")) {
+  int note = !strcmp(argv[3], "note"), cancel = !strcmp(argv[3], "cancel");
+  if (!note && !cancel && strcmp(argv[3], "stop")) {
     return UsageError("unknown ctl command", argv[3]);
   }
   if (note && argc < 5) return UsageError("ctl note needs text", NULL);
+  if (cancel && argc < 5) {
+    return UsageError("ctl cancel needs a call id such as c7", NULL);
+  }
   char* dir = SessionDir(argv[2]);
   if (!dir) return UsageError("no such session", argv[2]);
+  char* call = cancel ? CallInFlight(dir, argv[4]) : NULL;
+  if (cancel && !call) {
+    free(dir);
+    return kExitUsage;
+  }
   cJSON* c = cJSON_CreateObject();
   cJSON_AddStringToObject(c, "cmd", argv[3]);
   if (note) cJSON_AddStringToObject(c, "text", argv[4]);
+  if (cancel) cJSON_AddStringToObject(c, "call", call);
+  free(call);
   char* line = cJSON_PrintUnformatted(c);
   char* path = XAsprintf("%s/inbox", dir);
   char* text = XAsprintf("%s\n", line);
@@ -220,7 +259,8 @@ const Command kCommands[] = {
      "run a tool of the shell plugin (JSON arguments on stdin)", ToolCommand},
     {"watch", "[ID|last] [--json] [--from start|now]",
      "follow a session's events", WatchCommand},
-    {"ctl", "ID|last stop|note TEXT", "steer a running session", CtlCommand},
+    {"ctl", "ID|last stop | note TEXT | cancel CALL",
+     "steer a running session, or cancel a background call (c7)", CtlCommand},
     {"request", "[-X METHOD] [--data JSON|-] [--auth-source] PATH",
      "call your endpoint with your key, e.g. /models", RequestCommand},
     {"version", "", "print the version", VersionCommand},
