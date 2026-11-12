@@ -379,7 +379,7 @@ void McpHttpLegacyEnd(Bridge* b);
 
 // ---- command.c ----
 
-// `arx mcp http`: the HTTP bridge, which arx starts for a `url` server.
+// `arx mcp list | search | call | http`; command.c has the usage.
 // Returns an ExitCode.
 int McpCommand(int argc, char** argv, struct Agent* a);
 

@@ -40,6 +40,15 @@ else
   bad "the spec has problems:"
   echo "$check" | sed 's/^/      /'
 fi
+# MCP servers: start each one and list its tools again.
+if echo "${check:-}" | grep -q '^mcp:'; then
+  "$arx" mcp list --refresh 2>&1 | while IFS=$(printf '\t') read -r name kind rest; do
+    case "$rest" in
+      failed:*) warn "MCP server $name ($kind) $rest" ;;
+      *) ok "MCP server $name ($kind): ${rest%%$(printf '\t')*}" ;;
+    esac
+  done
+fi
 # Plugin data (ARX_DATA_DIR) stays when a plugin goes; name what is left.
 if [ -d .arx/data ]; then
   names=$("$arx" check --list 2>/dev/null | cut -f2)

@@ -136,7 +136,9 @@ ProcChild* McpLaunch(struct Agent* a, McpServer* s, Buffer* err) {
   free(log_dir);
   const char* command = JsonStr(e, "command", NULL);
   cJSON* args = cJSON_GetObjectItemCaseSensitive(e, "args");
-  char** env = ToolEnv(a, NULL, NULL);
+  // `arx mcp` runs servers without a session, so without its variables.
+  char** env = a->session.dir ? ToolEnv(a, NULL, NULL) : XMalloc(sizeof(*env));
+  if (!a->session.dir) env[0] = NULL;
   char** argv = XMalloc((size_t)(cJSON_GetArraySize(args) + 4) * sizeof(*argv));
   char* program = command && strchr(command, '/')
                       ? PathJoin(a->spec.dir, command)

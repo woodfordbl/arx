@@ -221,7 +221,11 @@ const Command kCommands[] = {
     {"watch", "[ID|last] [--json] [--from start|now]",
      "follow a session's events", WatchCommand},
     {"ctl", "ID|last stop|note TEXT", "steer a running session", CtlCommand},
-    {"mcp", "http", "the HTTP bridge for an MCP server; arx starts it",
+    {"mcp",
+     "list [--refresh] [--json] | search QUERY [--server S] | call SERVER "
+     "TOOL | http",
+     "MCP servers: list them, search their tools as the model does, make "
+     "one call (JSON arguments on stdin), or run the HTTP bridge",
      McpCommand},
     {"request", "[-X METHOD] [--data JSON|-] [--auth-source] PATH",
      "call your endpoint with your key, e.g. /models", RequestCommand},

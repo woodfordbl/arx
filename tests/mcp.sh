@@ -258,4 +258,39 @@ calls mcp_search '{\"query\":\"issue\"}'
 FAKE_MCP_MODE=pages run "go"
 check "a list in pages is followed" result_has 1 "of 5 tools match"
 
+begin "arx mcp"
+mcp_spec >agent.yaml <<EOF2
+gh: {command: $FAKE_MCP, args: [gh], description: Issues}
+dead: {command: $FAKE_MCP, args: [dead], env: {FAKE_MCP_MODE: dies}}
+EOF2
+"$ARX" mcp list >list.txt 2>&1
+check "list shows each server, not listed" [ "$(tr '\t' ' ' <list.txt)" = "gh stdio not listed
+dead stdio not listed" ]
+check "  and starts nothing" [ "$(starts gh)" = 0 ]
+"$ARX" mcp list --refresh >list.txt 2>err.txt
+code=$?
+check "list --refresh lists the tools" grep -q "^gh	stdio	5 tools	modern	listed 0 min ago" list.txt
+check "  says which server failed, with its log" grep -q "^dead	stdio	failed: it exited 3 times in 5 minutes (last code 4) (log: .arx/mcp/dead.log)" list.txt
+check "  and exits 1" exited 1
+"$ARX" mcp list --json >list.json
+check "list --json has the cached tools" [ "$(jq -c '.[0] | [.name, .transport, .tools, .era]' list.json)" = '["gh","stdio",5,"modern"]' ]
+"$ARX" mcp search "create issue" --server gh >search.txt 2>&1
+calls mcp_search '{\"query\":\"create issue\",\"server\":\"gh\"}'
+run "go"
+check "arx mcp search prints what mcp_search prints" [ "$(cat search.txt)" = "$(result 1)" ]
+echo '{"text": "from the cli"}' | "$ARX" mcp call gh echo >call.txt 2>&1
+code=$?
+check "arx mcp call makes one call" [ "$(cat call.txt) $code" = "echo: from the cli 0" ]
+echo '{"kind": "error"}' | "$ARX" mcp call gh echo >call.txt 2>&1
+code=$?
+check "  and exits 1 for an error result" [ "$(cat call.txt) $code" = "it broke 1" ]
+"$ARX" mcp call gh nope </dev/null >call.txt 2>&1
+code=$?
+check "  an unknown tool is a usage error" exited 2
+"$ARX" doctor >doctor.txt 2>&1
+check "arx doctor lists each server again" grep -q "MCP server gh (stdio): 5 tools" doctor.txt
+check "  and warns about one that fails" grep -q "! MCP server dead (stdio) failed: it exited 3 times" doctor.txt
+"$ARX" help mcp >help.txt 2>&1
+check "arx help has the command" has help.txt "search QUERY [--server S]"
+
 summary
