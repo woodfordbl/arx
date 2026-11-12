@@ -1,6 +1,7 @@
 // run.c: the session lifecycle around the loop: load the spec, open
 // or resume the session, start the event stream and observers, run headless
-// or interactively, and report the result.
+// or interactively, and report the result. No background call outlives the
+// session, or in interactive mode the turn: they are stopped first.
 
 #include <errno.h>
 #include <inttypes.h>
@@ -86,6 +87,8 @@ static int Start(Agent* a) {
   char cwd[4096];
   cJSON_AddStringToObject(e, "cwd", getcwd(cwd, sizeof(cwd)) ? cwd : "");
   EventSend(e);
+  // The calls a stopped session left in flight become notes.
+  if (a->resume) CallsResume(a);
   return 0;
 }
 
@@ -213,6 +216,10 @@ static int Interactive(Agent* a) {
     a->final_output = NULL;
     a->stop_requested = 0;
     code = RunTurns(a);
+    // The prompt cannot poll, so nothing runs on behind it: the calls in
+    // flight end `stopped` before prompt.end, and their results reach the
+    // agent with the next message.
+    CallsShutdown(a);
     cJSON* e = EventNew("prompt.end");
     AddTotals(a, e, code);
     JsonAddTruncated(e, "final_output", a->final_output, 2000);
@@ -254,8 +261,10 @@ static void PrintResult(Agent* a, int code) {
   }
 }
 
-// Ends the session: final event, meta.json, result.
+// Ends the session: stops the calls in flight, then the final event,
+// meta.json and the result.
 static void Finish(Agent* a, int code) {
+  CallsShutdown(a);
   cJSON* e = EventNew("session.end");
   AddTotals(a, e, code);
   cJSON_AddNumberToObject(e, "secs", Now() - a->start);

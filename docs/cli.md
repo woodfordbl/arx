@@ -253,16 +253,25 @@ arx watch last --json                       # raw events, one JSON object per li
 
 ```sh
 arx ctl last note "the eval is flaky above 5000 cities; ignore those"
+arx ctl last cancel c7      # stop one background call
 arx ctl last stop
 ```
 
 - **`note TEXT`**: the agent sees the note as a `[harness]` message before
   its next model call.
+- **`cancel CALL`**: cancels one
+  [background call](plugins/schedulers.md#cancel-a-call), by its short id
+  (`c7`) or the model's id. arx stops the call's process group at the start
+  of the next turn, or at once while it waits for the call. If the call is
+  not in flight, the command exits 2 and prints the ones that are:
+  `no call c9 in flight (in flight: c7, c8)`.
 - **`stop`**: the agent stops after its current turn, with exit code 0. In an
   interactive or `--input jsonl` session, it ends the current prompt only.
+  Background calls in flight are stopped first.
 
-Both append a line to the session's `inbox` file, so anything that can write
-a file can steer a run.
+Each one appends a line to the session's `inbox` file, so anything that can
+write a file can steer a run. See
+[Inbox lines](plugins/reference.md#inbox-lines).
 
 ## Climbing a score
 

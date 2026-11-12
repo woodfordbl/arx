@@ -118,6 +118,11 @@ in the "May print" column.
 `after_tool` runs for every call that `before_tool` let through, also after
 an error, a timeout or Ctrl-C.
 
+For a [background call](schedulers.md#run-calls-in-the-background),
+`after_tool` runs once, when the call ends, on the real result. It never
+sees the placeholder. `turn` and `ARX_TURN` are the turn the call ended in,
+which can be later than the turn that made the call.
+
 #### Older outputs
 
 These outputs come from before the raw objects. They still work:

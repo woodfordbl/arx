@@ -12,15 +12,15 @@ contracts can still change.
 Most of the plugin redesign is already built and documented: hooks on raw
 objects ([Hooks](hooks.md)), the `shell` plugin
 ([Tools](tools.md#bash-and-edit)), keys and the tool runtime
-([Keys](tools.md#keys), [Schedulers](schedulers.md)), and kits, the active
-list and hook bands ([Kits](kits.md), [Bands](hooks.md#bands)). These parts
-are not built:
+([Keys](tools.md#keys), [Schedulers](schedulers.md)), calls in the
+background ([Schedulers](schedulers.md#run-calls-in-the-background)), and
+kits, the active list and hook bands ([Kits](kits.md),
+[Bands](hooks.md#bands)). These parts are not built:
 
 | Part | What it would add | Section |
 |---|---|---|
 | Trust | a policy folder that the spec cannot remove, and a `harness_edit` hook point | [Trust](#trust) |
 | Sandboxes | a `sandbox:` value that sandbox plugins read | [Sandboxes](#sandboxes) |
-| Calls that do not block | a result now, the real result later | [Calls that do not block](#calls-that-do-not-block) |
 | Long-lived and concurrent hooks | hooks that keep state, and `before_tool` hooks that run at the same time | [Long-lived and concurrent hooks](#long-lived-and-concurrent-hooks) |
 | Front-ends | an ACP server and a terminal UI | [Front-ends](#front-ends) |
 | MCP client | MCP servers as tools | [MCP client](#mcp-client) |
@@ -49,12 +49,6 @@ in a layer above the `shell` plugin, with `replaces: [bash, edit]`. The rule
 "the first tool with a name wins" would do the rest.
 
 Only a sandbox that cannot reach the harness files would make a policy safe.
-
-## Calls that do not block
-
-A scheduler plugin would give the model the result `started as c7` at once,
-and send the real result later as a note in the inbox. Then a subagent could
-start without a wait, and the agent would go on working.
 
 ## Long-lived and concurrent hooks
 

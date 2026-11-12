@@ -103,19 +103,6 @@ void FreeEnv(char** env) {
   free(env);
 }
 
-// DataFn for a subagent's fd 3: forwards each complete event line.
-static void ForwardSink(void* ctx, const char* data, size_t n) {
-  Buffer* b = ctx;
-  BufferAppend(b, data, n);
-  char* nl;
-  while (b->len && (nl = memchr(b->data, '\n', b->len))) {
-    size_t len = (size_t)(nl - b->data) + 1;
-    EventForward(b->data, len);
-    memmove(b->data, b->data + len, b->len - len);
-    b->len -= len;
-  }
-}
-
 // A tool call that runs: its process and what it collects.
 struct ToolRun {
   ToolKind kind;
@@ -126,7 +113,22 @@ struct ToolRun {
   char* input;  // stdin, kept until the process ends
   char* path;   // the full output
   ProcChild* child;
+  int quiet;  // in the background: a subagent's events are not drawn
 };
+
+// DataFn for a subagent's fd 3: forwards each complete event line.
+static void ForwardSink(void* ctx, const char* data, size_t n) {
+  ToolRun* run = ctx;
+  Buffer* b = &run->forward;
+  BufferAppend(b, data, n);
+  char* nl;
+  while (b->len && (nl = memchr(b->data, '\n', b->len))) {
+    size_t len = (size_t)(nl - b->data) + 1;
+    EventForward(b->data, len, !run->quiet);
+    memmove(b->data, b->data + len, b->len - len);
+    b->len -= len;
+  }
+}
 
 // Starts a subagent: `arx -p - --spec <path> --json --events fd:3`, with our
 // caps and one more level of depth. Each subagent forwards its own events,
@@ -156,19 +158,22 @@ static ProcChild* StartSubagent(Agent* a, Tool* t, ToolRun* run) {
             .on_err = CaptureSink,
             .err_ctx = &run->cap,
             .on_fd3 = ForwardSink,
-            .fd3_ctx = &run->forward};
+            .fd3_ctx = run};
   ProcChild* child = ProcStart(&p);
   free(argv);
   return child;
 }
 
 // Turns a subagent's --json output and exit code into the tool result.
+// `stopped` is the status line when arx stopped it, or NULL.
 static char* SubagentResult(const Buffer* out, const Capture* cap,
-                            const char* path, int code) {
+                            const char* path, int code, const char* stopped) {
   cJSON* result = cJSON_Parse(out->data ? out->data : "");
   const char* answer = JsonStr(result, "final_output", "");
   char* text;
-  if (code == kExitDone) {
+  if (stopped) {
+    text = XAsprintf("%s%s%s", answer, *answer ? "\n" : "", stopped);
+  } else if (code == kExitDone) {
     text = XStrdup(answer);
   } else if (code == kExitCap) {
     text = XAsprintf("[the subagent stopped at a cap]\n%s", answer);
@@ -182,9 +187,11 @@ static char* SubagentResult(const Buffer* out, const Capture* cap,
   return text;
 }
 
-// Output plus a status line for timeouts, interrupts and non-zero exits.
+// Output plus a status line for timeouts, interrupts, a stop by arx
+// (`stopped`, or NULL) and non-zero exits.
 static char* ProcessResult(const Capture* cap, const char* path,
-                           const ProcResult* r, double timeout) {
+                           const ProcResult* r, double timeout,
+                           const char* stopped) {
   char* body = CaptureText(cap, path);
   Buffer b = {0};
   BufferAppendStr(&b, *body || r->code ? body : "(no output)");
@@ -195,6 +202,8 @@ static char* ProcessResult(const Capture* cap, const char* path,
                  timeout);
   } else if (r->interrupted) {
     BufferAppendStr(&b, "\n[interrupted]");
+  } else if (stopped) {
+    BufferPrintf(&b, "\n%s", stopped);
   } else if (r->code) {
     BufferPrintf(&b, "\n[exit code %d]", r->code);
   }
@@ -254,8 +263,12 @@ static ToolRun* StartProcessTool(Agent* a, Tool* t, cJSON* args,
 // The process of a started call; see harness.h.
 ProcChild* ToolChild(ToolRun* run) { return run->child; }
 
+// Marks a started call as in the background; see harness.h.
+void ToolQuiet(ToolRun* run) { run->quiet = 1; }
+
 // Ends a started call and frees it; see harness.h.
-char* ToolFinish(ToolRun* run, int* is_error, cJSON* end_event) {
+char* ToolFinish(ToolRun* run, int* is_error, cJSON* end_event,
+                 const char* stopped) {
   ProcResult r = {.code = -1, .spawn_failed = 1};
   int saved = errno;
   if (run->child) ProcFinish(run->child, &r);
@@ -263,12 +276,12 @@ char* ToolFinish(ToolRun* run, int* is_error, cJSON* end_event) {
   if (r.spawn_failed) {
     text = XAsprintf("could not start the tool: %s", strerror(saved));
   } else if (run->kind == kToolAgent) {
-    text = SubagentResult(&run->out, &run->cap, run->path, r.code);
+    text = SubagentResult(&run->out, &run->cap, run->path, r.code, stopped);
   } else {
-    text = ProcessResult(&run->cap, run->path, &r, run->timeout);
+    text = ProcessResult(&run->cap, run->path, &r, run->timeout, stopped);
   }
   if (run->cap.fd >= 0) close(run->cap.fd);
-  *is_error = r.spawn_failed || r.code != 0 || r.timed_out;
+  *is_error = r.spawn_failed || r.code != 0 || r.timed_out || stopped;
   cJSON_AddNumberToObject(end_event, "exit", r.code);
   cJSON_AddNumberToObject(end_event, "secs", r.secs);
   cJSON_AddNumberToObject(end_event, "bytes", (double)run->cap.total);
@@ -309,7 +322,7 @@ ToolRun* ToolStart(Agent* a, const char* name, const char* args, char** text,
     *output_path = SessionOutputPath(&a->session);
     run = StartProcessTool(a, t, parsed, raw, *output_path);
     if (!run->child) {  // report it at once, with the end fields
-      *text = ToolFinish(run, is_error, end_event);
+      *text = ToolFinish(run, is_error, end_event, NULL);
       run = NULL;
     }
   }

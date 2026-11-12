@@ -1,0 +1,265 @@
+// background.c: calls that do not block. A scheduler plugin moves a call to
+// the background with {"detach"}: the model gets the placeholder result
+// "started as c7 ..." at once and works on, and the call stays in the
+// session's call table. When it ends, arx appends its real result to the
+// session inbox as a `result` line, which reaches the agent as a [harness]
+// note before its next model call. The inbox is a file, so --resume, a
+// driver and a front-end can read the results too. The policy (which calls,
+// how many at once) is the plugin's; arx only runs, tracks and delivers.
+
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+#include "src/agent/agent.h"
+#include "src/base/base.h"
+#include "src/harness/harness.h"
+#include "src/io/io.h"
+
+// The preview in a result line is cut to this, so a note stays short.
+static const size_t kPreviewMax = 60;
+
+// The entry of background call `short_id` in the session's `calls` (the
+// calls whose result the agent has not seen), or NULL.
+static cJSON* Entry(Agent* a, const char* short_id) {
+  cJSON* e;
+  cJSON_ArrayForEach(e, a->session.calls) {
+    if (!strcmp(JsonStr(e, "call", ""), short_id)) return e;
+  }
+  return NULL;
+}
+
+// Finds a call by either id; see agent.h.
+Call* CallFind(Agent* a, const char* id) {
+  for (int i = 0; i < a->call_count; i++) {
+    Call* c = a->calls[i];
+    if (!strcmp(c->id, id) || (c->short_id && !strcmp(c->short_id, id))) {
+      return c;
+    }
+  }
+  return NULL;
+}
+
+// Queues a result line as a note paragraph; see agent.h.
+void CallNote(Agent* a, cJSON* r) {
+  const char* status = JsonStr(r, "status", "ok");
+  const char* how = !strcmp(status, "ok")          ? "finished"
+                    : !strcmp(status, "cancelled") ? "was cancelled"
+                    : !strcmp(status, "stopped")   ? "was stopped"
+                                                   : "failed";
+  const char* call = JsonStr(r, "call", "");
+  AgentNote(a, "%s (%s: %s) %s after %.0fs:\n%s", call, JsonStr(r, "name", ""),
+            JsonStr(r, "preview", ""), how, JsonNum(r, "secs", 0),
+            JsonStr(r, "text", ""));
+  cJSON* e = Entry(a, call);
+  if (!e) return;
+  cJSON_Delete(cJSON_DetachItemViaPointer(a->session.calls, e));
+  SessionWriteMeta(&a->session, "running");
+}
+
+// The key rule with background calls; see agent.h.
+int CallsConflict(const Call* a, const Call* b) {
+  cJSON* mine = cJSON_GetObjectItem(a->call, "keys");
+  cJSON* theirs = cJSON_GetObjectItem(b->call, "keys");
+  if (!a->short_id && !b->short_id) return KeysConflict(mine, theirs);
+  cJSON *x, *y;
+  cJSON_ArrayForEach(x, mine) {
+    if (!cJSON_IsString(x) || !strcmp(x->valuestring, "*")) continue;
+    cJSON_ArrayForEach(y, theirs) {
+      if (cJSON_IsString(y) && !strcmp(x->valuestring, y->valuestring)) {
+        return 1;
+      }
+    }
+  }
+  return 0;
+}
+
+// The result a background call's slot in the reply gets.
+static char* Placeholder(Agent* a, const Call* c) {
+  Tool* t = ToolFind(a, JsonStr(c->call, "name", ""));
+  int shows_output = c->out_path && !(t && t->kind == kToolAgent);
+  char* output =
+      shows_output ? XAsprintf("\nOutput so far: %s", c->out_path) : NULL;
+  char* text = XAsprintf(
+      "%s as %s in the background. Its result comes later in a [harness] "
+      "note.%s",
+      c->state == kQueued ? "queued" : "started", c->short_id,
+      output ? output : "");
+  free(output);
+  return text;
+}
+
+// Moves a call to the background; see agent.h.
+void CallDetach(Agent* a, Call* c) {
+  if (!c || c->short_id || c->state == kDone) return;
+  c->short_id = XAsprintf("c%d", ++a->session.call_seq);
+  c->detached_at = Now();
+  c->placeholder = Placeholder(a, c);
+  // "*" would make every later call wait for this one. The model was told
+  // that it runs on, so only the named keys still hold (CallsConflict).
+  cJSON* keys = cJSON_GetObjectItem(c->call, "keys");
+  for (int i = cJSON_GetArraySize(keys) - 1; i >= 0; i--) {
+    const char* key = cJSON_GetStringValue(cJSON_GetArrayItem(keys, i));
+    if (key && !strcmp(key, "*")) cJSON_DeleteItemFromArray(keys, i);
+  }
+  const char* name = JsonStr(c->call, "name", "");
+  char* preview = CallPreview(c->args);
+  if (!a->session.calls) a->session.calls = cJSON_CreateArray();
+  cJSON* entry = cJSON_CreateObject();
+  cJSON_AddStringToObject(entry, "call", c->short_id);
+  cJSON_AddStringToObject(entry, "id", c->id);
+  cJSON_AddStringToObject(entry, "name", name);
+  JsonAddTruncated(entry, "preview", preview, kPreviewMax);
+  cJSON_AddNumberToObject(entry, "at", (double)time(NULL));
+  cJSON_AddItemToArray(a->session.calls, entry);
+  free(preview);
+  cJSON_AddStringToObject(c->end, "call", c->short_id);
+  cJSON_AddTrueToObject(c->end, "detached");
+  cJSON* e = EventNew("tool.detach");
+  cJSON_AddStringToObject(e, "id", c->id);
+  cJSON_AddStringToObject(e, "name", name);
+  cJSON_AddStringToObject(e, "call", c->short_id);
+  cJSON_AddBoolToObject(e, "queued", c->state == kQueued);
+  EventSend(e);
+  CallRuns(a, c);
+  // `arx ctl ID cancel` and --resume read the calls in flight from here.
+  SessionWriteMeta(&a->session, "running");
+}
+
+// A background call's process runs: keeps it for the session, so every
+// ProcPoll round serves its pipes, and records where its output goes.
+void CallRuns(Agent* a, Call* c) {
+  if (!c->short_id || !c->run) return;
+  ToolQuiet(c->run);
+  ProcKeep(ToolChild(c->run));
+  cJSON* e = Entry(a, c->short_id);
+  if (e && c->out_path && !cJSON_GetObjectItem(e, "out")) {
+    cJSON_AddStringToObject(e, "out", c->out_path);
+  }
+}
+
+// Cancels a call; see agent.h.
+void CallCancel(Agent* a, const char* id) {
+  Call* c = CallFind(a, id);
+  if (!c || c->state == kDone || c->status) return;
+  c->status = "cancelled";
+  if (c->state == kRunning) {
+    c->stop_line = "[cancelled]";
+    ProcStop(ToolChild(c->run));
+  } else {
+    SchedDone(c->id, 0, 1, NULL, 0);
+    CallEndWithout(a, c, XStrdup("[cancelled before it started]"), 1);
+  }
+}
+
+// Delivers a background call that ended; see agent.h.
+void CallEnded(Agent* a, Call* c, double secs) {
+  if (!c->short_id) return;
+  const char* status = c->status                      ? c->status
+                       : g_interrupted && c->is_error ? "stopped"
+                       : c->is_error                  ? "error"
+                                                      : "ok";
+  char* preview = CallPreview(c->args);
+  cJSON* r = cJSON_CreateObject();
+  cJSON_AddStringToObject(r, "cmd", "result");
+  cJSON_AddStringToObject(r, "call", c->short_id);
+  cJSON_AddStringToObject(r, "id", c->id);
+  cJSON_AddStringToObject(r, "name", JsonStr(c->call, "name", ""));
+  JsonAddTruncated(r, "preview", preview, kPreviewMax);
+  cJSON_AddStringToObject(r, "status", status);
+  cJSON_AddNumberToObject(r, "secs", secs < 0 ? Now() - c->detached_at : secs);
+  cJSON_AddStringToObject(r, "text", c->text);
+  free(preview);
+  if (SessionInboxAppend(&a->session, r)) {
+    // Without the file the result still reaches the agent, from memory.
+    cJSON* e = EventNew("error");
+    char* why = XAsprintf(
+        "cannot append to the inbox of %s; the result of %s goes to the "
+        "agent's notes",
+        a->session.id, c->short_id);
+    cJSON_AddStringToObject(e, "error", why);
+    EventSend(e);
+    free(why);
+    CallNote(a, r);
+  }
+  cJSON_Delete(r);
+  SessionWriteMeta(&a->session, "running");
+}
+
+// The calls whose result the agent has not seen; see agent.h.
+int CallsInFlight(Agent* a) { return cJSON_GetArraySize(a->session.calls); }
+
+// Stops every call in the table; see agent.h.
+void CallsShutdown(Agent* a) {
+  for (int i = 0; i < a->call_count; i++) {
+    Call* c = a->calls[i];
+    if (c->state == kDone || c->status) continue;
+    c->status = "stopped";
+    if (c->state == kRunning) {
+      c->stop_line = "[stopped: the session ended]";
+      ProcStop(ToolChild(c->run));
+    } else {
+      SchedDone(c->id, 0, 1, NULL, 0);
+      CallEndWithout(
+          a, c, XStrdup("[stopped before it started: the session ended]"), 1);
+    }
+  }
+  while (CallsPoll(a, 0.1)) continue;
+}
+
+// Notes for the calls a stopped session left; see agent.h.
+void CallsResume(Agent* a) {
+  cJSON* left = a->session.calls;
+  a->session.calls = cJSON_CreateArray();
+  if (!cJSON_GetArraySize(left)) {
+    cJSON_Delete(left);
+    return;
+  }
+  cJSON* e;
+  cJSON_ArrayForEach(e, left) {
+    const char* call = JsonStr(e, "call", "");
+    const char* out = JsonStr(e, "out", NULL);
+    cJSON* r = SessionInboxFind(&a->session, call);
+    if (r) {
+      CallNote(a, r);
+    } else {
+      // arx was killed: the call left no result, and it is not restarted.
+      AgentNote(a,
+                "%s (%s: %s) did not finish: the session stopped while it "
+                "ran.%s%s%s",
+                call, JsonStr(e, "name", ""), JsonStr(e, "preview", ""),
+                out ? " Output so far: " : "", out ? out : "", out ? "." : "");
+    }
+    cJSON_Delete(r);
+  }
+  cJSON_Delete(left);
+  SessionWriteMeta(&a->session, "running");
+}
+
+// Frees a call that left the table.
+static void Free(Call* c) {
+  free(c->id);
+  free(c->args);
+  free(c->text);
+  free(c->out_path);
+  free(c->short_id);
+  free(c->placeholder);
+  cJSON_Delete(c->call);
+  cJSON_Delete(c->model_call);
+  cJSON_Delete(c->end);
+  free(c);
+}
+
+// Frees the calls that are done and delivered; see agent.h.
+void CallsSweep(Agent* a) {
+  int kept = 0;
+  for (int i = 0; i < a->call_count; i++) {
+    Call* c = a->calls[i];
+    if (c->state == kDone && c->placed) {
+      Free(c);
+    } else {
+      a->calls[kept++] = c;
+    }
+  }
+  a->call_count = kept;
+}
