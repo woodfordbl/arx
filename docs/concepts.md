@@ -46,16 +46,19 @@ context ready. After it, arx runs the tools the model asked for.
 flowchart TD
   accTitle: The turn loop
   caps["<b>1 · Check caps</b><br>--cap, limits.max_turns"]
-  ready["<b>Get ready</b><br>2 · reload the harness if a file changed<br>3 · read the inbox<br>4 · hand on [harness] notes<br>5 · compact if past the trigger"]
+  ready["<b>Get ready</b><br>2 · reload the harness if a file changed<br>3 · read the inbox: notes, results<br>4 · hand on [harness] notes<br>5 · compact if past the trigger"]
   model["<b>6 · Call the model</b><br>streamed, with retries"]
   tools["<b>Run the tools</b><br>before_tool → run → after_tool"]
+  wait["<b>Wait</b><br>for a background call"]
   stop["<b>Stop hook</b><br>hooks/stop"]
   exit3(["exit 3"])
   done(["done, exit 0"])
   caps -->|cap reached| exit3
   caps --> ready --> model
   model -->|tool calls| tools
-  model -->|no tool calls| stop
+  model -->|no tool calls,<br>nothing in flight| stop
+  model -->|no tool calls,<br>calls in flight| wait
+  wait -->|a result arrives| caps
   tools -->|next turn| caps
   stop -->|continue / restart| caps
   stop -->|nothing| done
@@ -70,10 +73,13 @@ Each turn goes through six steps:
    changed, it reloads the spec, the tools and the system prompt. The check
    costs about 0.1 ms when nothing changed. arx checks linked plugins the
    same way.
-3. **Inbox**: arx applies the commands from `arx ctl`: a note for the agent,
-   or a request to stop.
+3. **Inbox**: arx applies the commands from `arx ctl` (a note for the
+   agent, a cancel, or a request to stop) and picks up the results of
+   [background calls](plugins/schedulers.md#run-calls-in-the-background)
+   that ended.
 4. **Notes**: problems arx found (a rejected spec edit, a broken tool, an
-   operator note) reach the agent as one `[harness]` message.
+   operator note) and the results of background calls reach the agent as
+   one `[harness]` message.
 5. **Compaction**: if the prompt passed `compaction.trigger × context_window`,
    arx makes the context smaller with the spec's strategy.
 6. **Model call**: arx sends the request through `curl`. It retries network
@@ -82,12 +88,19 @@ Each turn goes through six steps:
 
 After the call, what arx does depends on the reply:
 
-- **Tool calls**: arx runs them one after the other. Each goes through the
-  `before_tool` hook (which can deny it), runs, and goes through the
-  `after_tool` hook (which can add a note to the result).
+- **Tool calls**: each goes through the `before_tool` hook (which can deny
+  it), runs, and goes through the `after_tool` hook (which can add a note
+  to the result). Calls run at the same time when their
+  [keys](plugins/tools.md#keys) allow it: edits to different files run
+  together, and each `bash` call runs alone. The results go into the
+  history in call order.
 - **No tool calls**: the agent thinks it is done, and the `stop` hook
   decides. It can send a message and `continue`, `restart` from a fresh
   context, or say nothing, which ends the run.
+- **No tool calls, with a background call in flight**: arx skips the `stop`
+  hook and waits for a result. The next turn starts when one arrives. A
+  call runs in the background only when a scheduler plugin, such as
+  `background`, moves it there.
 
 ## The harness edits itself
 
@@ -168,9 +181,9 @@ working directory. `.arx/sessions/last` points at the newest one.
 |---|---|
 | `transcript.jsonl` | every message; `--resume` replays it |
 | `events.jsonl` | the event stream |
-| `meta.json` | turns, tokens, cost and status |
+| `meta.json` | turns, tokens, cost and status, and the background calls in flight |
 | `tool-NNNN.out` | full tool outputs |
-| `inbox` | commands from `arx ctl` |
+| `inbox` | commands from `arx ctl`, and the results of background calls |
 | `plugins/<name>/` | a plugin's state for this session (`ARX_STATE_DIR`), when the plugin made it |
 
 arx flushes the transcript after every message, so a crash loses at most the
@@ -184,8 +197,10 @@ and arx's own commands keep theirs in `.arx/<command>/`. See
 
 An event is one JSON object per line that records something that happened,
 with a version field (`"v": 1`). The terminal view, `arx watch`, observers
-and drivers all read the same stream. Within version 1, arx may add fields,
-but it never renames or removes one. The
+and drivers all read the same stream. It holds your prompts, the model's
+text, and each tool call with its arguments and the start of its output, so
+a front-end can draw or replay a session from it. Within version 1, arx may
+add fields, but it never renames or removes one. The
 [event reference](plugins/reference.md#events) lists every type.
 
 ## Subagents

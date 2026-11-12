@@ -45,6 +45,10 @@ int ParseOptions(int argc, char** argv, int first, Agent* a) {
       a->resume = value;
     } else if (!strcmp(arg, "--events")) {
       a->events = value;
+    } else if (!strcmp(arg, "--input")) {
+      // jsonl is the only value now; the option leaves room for others.
+      if (strcmp(value, "jsonl")) return UsageError("unknown --input", value);
+      a->input_jsonl = 1;
     } else if (!strcmp(arg, "--kit")) {
       // The same as --set kit=NAME, so it stays in force after a reload.
       cJSON_DeleteItemFromObjectCaseSensitive(a->sets, "kit");
@@ -93,6 +97,8 @@ void PrintOptions(FILE* out) {
       "  --set KEY=VALUE       override a spec value, e.g. model=...\n"
       "  --cap KEY=VALUE       hard limit: turns, tokens, usd, wall, depth\n"
       "  --resume ID|last      continue a session\n"
+      "  --input jsonl         read prompts as JSON lines on stdin and keep\n"
+      "                        running: {\"prompt\": \"TEXT\"}\n"
       "  --json                print the result as JSON\n"
       "  --events PATH|-|fd:N  also write the event stream there\n"
       "  --quiet               no terminal view\n"

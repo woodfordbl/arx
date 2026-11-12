@@ -18,6 +18,7 @@ you get the version that CI tested with it.
 | [notify](notify) | an observer that reports when a session ends |
 | [keep-last](keep-last) | a `keep_last` compactor |
 | [reviewer](reviewer) | a `reviewer` subagent |
+| [background](background) | a scheduler that runs subagents and chosen tools in the background, and a `cancel_call` tool |
 | [plugin-authoring](plugin-authoring) | a skill about changing your own harness, and one line in the prompt that points to it |
 | [never-stop](never-stop) | a `stop` hook for experiment loops, turned on by its settings |
 | [op-key](op-key) | a credential program that reads the API key from 1Password |

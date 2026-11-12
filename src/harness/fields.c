@@ -117,6 +117,8 @@ const Field kTopFields[] = {
     {"hosts", kStringList, NULL,
      "Network hosts the harness's programs reach, besides the endpoint"},
     {"mcp_servers", kDict, kServer, "MCP servers, by name"},
+    {"ui", kString, NULL,
+     "Command that draws interactive runs (arx-NAME), or none"},
     {NULL, 0, NULL, NULL}};
 
 const Field kPluginFields[] = {

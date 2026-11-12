@@ -96,6 +96,8 @@ static void LoadMeta(Session* s) {
   cJSON* meta = text ? cJSON_Parse(text) : NULL;
   s->turns = (int)JsonNum(meta, "turns", 0);
   s->tool_seq = (int)JsonNum(meta, "tool_seq", 0);
+  s->call_seq = (int)JsonNum(meta, "call_seq", 0);
+  s->calls = cJSON_DetachItemFromObject(meta, "calls");
   s->tokens_in = (int64_t)JsonNum(meta, "tokens_in", 0);
   s->tokens_out = (int64_t)JsonNum(meta, "tokens_out", 0);
   s->cost = JsonNum(meta, "cost", 0);
@@ -147,6 +149,10 @@ void SessionWriteMeta(Session* s, const char* status) {
   cJSON_AddStringToObject(m, "status", status);
   cJSON_AddNumberToObject(m, "turns", s->turns);
   cJSON_AddNumberToObject(m, "tool_seq", s->tool_seq);
+  cJSON_AddNumberToObject(m, "call_seq", s->call_seq);
+  cJSON_AddItemToObject(
+      m, "calls",
+      s->calls ? cJSON_Duplicate(s->calls, 1) : cJSON_CreateArray());
   cJSON_AddNumberToObject(m, "tokens_in", (double)s->tokens_in);
   cJSON_AddNumberToObject(m, "tokens_out", (double)s->tokens_out);
   cJSON_AddNumberToObject(m, "cost", s->cost);
@@ -161,10 +167,14 @@ void SessionWriteMeta(Session* s, const char* status) {
 // Reads complete new lines from the inbox; a partial line waits for later.
 cJSON* SessionReadInbox(Session* s) {
   char* path = XAsprintf("%s/inbox", s->dir);
-  size_t n;
-  char* text = ReadFile(path, &n);
-  free(path);
   cJSON* commands = cJSON_CreateArray();
+  // Nothing new is the common case, and a wait asks ten times a second.
+  struct stat st;
+  size_t n;
+  char* text = stat(path, &st) == 0 && (int64_t)st.st_size > s->inbox_offset
+                   ? ReadFile(path, &n)
+                   : NULL;
+  free(path);
   if (!text) return commands;
   size_t off = (size_t)s->inbox_offset;
   while (off < n) {
@@ -180,6 +190,41 @@ cJSON* SessionReadInbox(Session* s) {
   return commands;
 }
 
+// One line per command or result; O_APPEND keeps concurrent writers whole.
+int SessionInboxAppend(Session* s, const cJSON* line) {
+  char* json = cJSON_PrintUnformatted(line);
+  char* text = XAsprintf("%s\n", json);
+  char* path = XAsprintf("%s/inbox", s->dir);
+  int failed = AppendFile(path, text, strlen(text));
+  free(path);
+  free(text);
+  free(json);
+  return failed ? -1 : 0;
+}
+
+// Scans every line, since a resume skips the ones written before it.
+cJSON* SessionInboxFind(Session* s, const char* call) {
+  char* path = XAsprintf("%s/inbox", s->dir);
+  char* text = ReadFile(path, NULL);
+  free(path);
+  cJSON* found = NULL;
+  for (char* line = text; line && *line;) {
+    char* nl = strchr(line, '\n');
+    if (nl) *nl = 0;
+    cJSON* c = cJSON_Parse(line);
+    if (!strcmp(JsonStr(c, "cmd", ""), "result") &&
+        !strcmp(JsonStr(c, "call", ""), call)) {
+      cJSON_Delete(found);
+      found = c;
+    } else {
+      cJSON_Delete(c);
+    }
+    line = nl ? nl + 1 : NULL;
+  }
+  free(text);
+  return found;
+}
+
 // tool-0001.out, tool-0002.out, ...
 char* SessionOutputPath(Session* s) {
   return XAsprintf("%s/tool-%04d.out", s->dir, ++s->tool_seq);
@@ -188,6 +233,7 @@ char* SessionOutputPath(Session* s) {
 // Closes the transcript and frees the strings.
 void SessionClose(Session* s) {
   if (s->transcript) fclose(s->transcript);
+  cJSON_Delete(s->calls);
   free(s->id);
   free(s->dir);
   memset(s, 0, sizeof(*s));

@@ -9,17 +9,45 @@
 #include "src/agent/agent.h"
 #include "src/base/base.h"
 #include "src/cli/cli.h"
+#include "src/harness/harness.h"
 
-// Runs the agent: headless with -p or piped stdin, else interactive.
+// The `ui:` command of this run (malloc'd), or NULL for the built-in view.
+// Only an interactive run on a terminal has one: no -p, --input, --json or
+// --events, and both stdin and stdout are terminals. `none` turns it off. A
+// spec that does not load gives NULL here, and the run reports the error.
+static char* UiCommand(Agent* a) {
+  if (a->prompt || a->input_jsonl || a->json || a->events) return NULL;
+  if (!isatty(0) || !isatty(1)) return NULL;
+  Spec spec;
+  Buffer err = {0};
+  char* name = NULL;
+  if (!SpecLoad(a->spec_path, a->sets, &spec, &err)) {
+    const char* ui = JsonStr(spec.root, "ui", "");
+    if (*ui && strcmp(ui, "none")) name = XStrdup(ui);
+    SpecFree(&spec);
+  }
+  BufferFree(&err);
+  return name;
+}
+
+// Runs the agent: headless with -p or piped stdin, else interactive. With
+// --input jsonl a piped stdin carries the prompts, so the run is interactive.
 static int RunAgent(int argc, char** argv, Agent* a) {
   int code = ParseOptions(argc, argv, 1, a);
   if (code) return code;
+  if (a->input_jsonl && a->prompt) {
+    return UsageError("--input jsonl does not take -p", NULL);
+  }
   ResolveSpec(a);
+  char* ui = UiCommand(a);
+  if (ui) RunUi(ui, argc, argv);  // returns only when the command did not run
+  free(ui);
   char* stdin_prompt = NULL;
-  if ((a->prompt && !strcmp(a->prompt, "-")) || (!a->prompt && !isatty(0))) {
+  int piped = !a->prompt && !a->input_jsonl && !isatty(0);
+  if ((a->prompt && !strcmp(a->prompt, "-")) || piped) {
     a->prompt = stdin_prompt = ReadStdin();
   }
-  a->interactive = !a->prompt && isatty(0);
+  a->interactive = a->input_jsonl || (!a->prompt && isatty(0));
   if (!a->interactive && !a->resume && (!a->prompt || !*a->prompt)) {
     code = UsageError("no task: use -p TASK, or pipe one on stdin", NULL);
   } else {

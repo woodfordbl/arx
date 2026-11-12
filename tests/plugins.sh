@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # plugins.sh: checks every plugin in the arx marketplace (plugins/), then
 # runs them together in the demo harness in examples/plugins/ against
-# fake-curl, so the plugin guide (docs/plugins.md) stays true. Run with
-# `make test`.
+# fake-curl, so the plugin guide (docs/plugins.md) stays true. The
+# background plugin gets its own harness at the end: subagents in the
+# background, `max`, `after` and cancel_call. Run with `make test`.
 set -u
 . "$(dirname "$0")/lib.sh"
+. "$(dirname "$0")/runtime-lib.sh"
 
 # Starts a test in a temp workspace holding a copy of the demo harness, with
 # the marketplace copied in as its plugins/.
@@ -27,7 +29,7 @@ check "python tool found" has check.txt 'word_count'
 check "shell tool found" has check.txt ' now'
 check "subagent found" has check.txt 'reviewer'
 check "all four hooks found" has check.txt 'session_start(git-context) before_tool(guard) after_tool(fail-hint) stop'
-check "every plugin loads" has check.txt 'plugins: chatgpt clock fail-hint git-context guard keep-last mcp-oauth never-stop notify op-key plugin-authoring reviewer shell word-count'
+check "every plugin loads" has check.txt 'plugins: background chatgpt clock fail-hint git-context guard keep-last mcp-oauth never-stop notify op-key plugin-authoring reviewer shell word-count'
 
 # Tools, every hook, and the observer in one session.
 begin_examples "tools, hooks, observer"
@@ -91,5 +93,68 @@ sse_tool bash '{\"command\":\"touch DONE\"}' | reply 2 "200 OK"
 sse_text "done" | reply 3 "200 OK"
 ARX="$ARX" sh drivers/resume_on_cap.sh "go" 3 1 >driver.txt 2>&1
 check "driver resumed until done" has driver.txt 'finished with exit 0 after 3 round(s)'
+
+# bg_plugin SETTINGS: a harness whose active list is shell and the
+# background plugin with SETTINGS (a YAML mapping).
+bg_plugin() {
+  mkdir -p plugins
+  ln -s "$ROOT/plugins/background" plugins/background
+  echo "plugins: [shell, {background: $1}]" >>agent.yaml
+}
+
+# Two subagents with max 1: the first starts, the second waits. The parent
+# and the subagents race for the scripted replies, so replies 2 to 6 are the
+# same text: three parent turns and one answer for each subagent.
+begin "background: subagents run in the background"
+bg_plugin '{max: 1}'
+spec >sub.yaml
+echo 'tools: {helper: {agent: sub.yaml}}' >>agent.yaml
+sse_calls helper '{\"task\":\"one\"}' helper '{\"task\":\"two\"}' |
+  reply 1 "200 OK"
+for i in 2 3 4 5 6; do sse_text "fine" | reply "$i" "200 OK"; done
+"$ARX" -p go >out.txt 2>err.txt
+code=$?
+cat fake/req-*.json >all.txt
+check "exits 0" exited 0
+check "the prompt explains background calls" has fake/req-01.json 'Some tool calls run in the background.'
+check "the first subagent starts" has all.txt 'started as c1 in the background'
+check "max 1 queues the second" has all.txt 'queued as c2 in the background'
+check "the first answer arrives as a note" grep -q 'c1 (helper: one) finished after [0-9]*s:\\nfine' all.txt
+check "then the second" grep -q 'c2 (helper: two) finished after' all.txt
+check "the second started when the first ended" test "$(grep -o '"type":"tool.[a-z]*","id":"call_[12]"' "$EVENTS" | cut -d'"' -f4,8 | tr '\n"' ' :' | sed 's/.*tool.end:call_1 //')" = "tool.run:call_2 tool.end:call_2 "
+check "their events are forwarded" has "$EVENTS" '"depth":1'
+check "but the view does not draw them" lacks err.txt '│'
+
+begin "background: after, and cancel_call"
+bg_plugin '{after: 0.3s}'
+nap '[]'
+sse_calls nap '{\"x\":\"a\",\"secs\":5}' | reply 1 "200 OK"
+CALL_BASE=1 sse_calls cancel_call '{\"id\":\"c9\"}' cancel_call '{\"id\":\"c1\"}' |
+  reply 2 "200 OK"
+sse_text "waiting" | reply 3 "200 OK"
+sse_text "done" | reply 4 "200 OK"
+t0=$(now)
+run "go"
+t1=$(now)
+check "exits 0" exited 0
+check "a long call moves to the background" has fake/req-02.json 'started as c1 in the background'
+check "an unknown id fails" has fake/req-03.json 'No call c9 is in flight.'
+check "and lists the calls in flight" has fake/req-03.json 'In flight: c1 (nap, started '
+check "cancel_call cancels" has fake/req-03.json 'Cancel sent to c1.'
+check "the note confirms it" grep -q 'c1 (nap: .*) was cancelled after' fake/req-04.json
+check "the call did not run to its end" within "$t0" "$t1" 4
+
+begin "background: a named tool"
+bg_plugin '{tools: [nap]}'
+nap '[]'
+sse_calls nap '{\"x\":\"a\",\"secs\":2}' bash '{\"command\":\"echo hi-there\"}' |
+  reply 1 "200 OK"
+sse_text "waiting" | reply 2 "200 OK"
+sse_text "done" | reply 3 "200 OK"
+run "go"
+check "exits 0" exited 0
+check "the named tool goes to the background at once" has fake/req-02.json 'started as c1 in the background'
+check "other tools stay in the foreground" has fake/req-02.json 'hi-there'
+check "its result arrives" has fake/req-03.json 'napped-a'
 
 summary

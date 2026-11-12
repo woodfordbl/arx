@@ -1,0 +1,32 @@
+#!/bin/sh
+# cancel_call: cancels a background call. The arguments are {"id": "c7"} on
+# stdin: the short id from the placeholder result. It asks arx with `arx ctl
+# SESSION cancel ID`; for an id that is not in flight it exits 1 and lists
+# the calls that are, from `calls` in the session's meta.json.
+args=$(cat)
+id=$(printf '%s' "$args" |
+  sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+case "$id" in
+  "" | *[!A-Za-z0-9_.:-]*)
+    echo "cancel_call needs the id of a background call, such as c7"
+    exit 1
+    ;;
+esac
+if "$ARX_BIN" ctl "$ARX_SESSION_DIR" cancel "$id" 2>/dev/null; then
+  echo "Cancel sent to $id. Its result comes in a [harness] note."
+  exit 0
+fi
+python3 - "$id" "$ARX_SESSION_DIR/meta.json" <<'PY'
+import json, sys, time
+try:
+    calls = json.load(open(sys.argv[2])).get("calls") or []
+except (OSError, ValueError):
+    calls = []
+print("No call %s is in flight." % sys.argv[1])
+for c in calls:
+    age = max(0, time.time() - c.get("at", time.time()))
+    print("In flight: %s (%s, started %.0fs ago)" % (c["call"], c["name"], age))
+if not calls:
+    print("No call is in flight.")
+PY
+exit 1

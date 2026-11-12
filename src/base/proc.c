@@ -312,35 +312,48 @@ static ProcChild** Round(ProcChild* const* kids, int count, int* total) {
   return all;
 }
 
-// One round of the loop for many children; see base.h.
-void ProcPoll(ProcChild* const* kids, int count, double max_wait) {
-  ProcPollWith(kids, count, NULL, 0, max_wait);
+// True while only a short wait sees what `c` needs next: its timeout, the
+// SIGKILL after a stop, or an exit that no open pipe reports.
+static int NeedsTick(const ProcChild* c) {
+  int open = c->io.out[0] >= 0 || c->io.err[0] >= 0 || c->io.fd3[0] >= 0;
+  return !c->reaped && (c->deadline || c->killed || !open);
 }
 
-// One round for the children and the caller's own entries; see base.h.
+// One round of the loop for many children; see base.h.
+void ProcPoll(ProcChild* const* kids, int count, double max_wait) {
+  ProcPollWith(kids, count, NULL, 0, max_wait > 0.1 ? 0.1 : max_wait);
+}
+
+// One round that also waits on the caller's poll entries; see base.h.
 void ProcPollWith(ProcChild* const* kids, int count, struct pollfd* extra,
                   int n_extra, double max_wait) {
   ProcChild** all = Round(kids, count, &count);
-  struct pollfd* pf = XMalloc((size_t)(4 * count + n_extra + 1) * sizeof(*pf));
-  int* slot = XMalloc((size_t)(4 * count + 1) * sizeof(*slot));
-  int n = 0;
-  double wait = max_wait > 0.1 ? 0.1 : max_wait;  // see exits and Ctrl-C
+  size_t room = (size_t)(4 * count + n_extra + 1);
+  struct pollfd* pf = XMalloc(room * sizeof(*pf));
+  int* slot = XMalloc(room * sizeof(*slot));
+  int n = 0, tick = g_interrupted != 0;
+  double wait = max_wait;
   for (int k = 0; k < count; k++) {
     ProcChild* c = all[k];
     if (c->done) continue;
     AddChild(c, k, pf, slot, &n);
+    tick |= NeedsTick(c);
     if (c->reaped && c->drain_until - Now() < wait) {
       wait = c->drain_until - Now();
     }
   }
+  if (tick && wait > 0.1) wait = 0.1;  // see exits, timeouts and Ctrl-C
   if (wait < 0) wait = 0;
   int own = n;
-  for (int i = 0; i < n_extra; i++) pf[n++] = extra[i];
+  for (int i = 0; i < n_extra; i++) {
+    pf[n] = extra[i];
+    pf[n++].revents = extra[i].revents = 0;
+  }
   int wait_ms = n ? (int)(wait * 1000) + 1 : 1;  // no pipes: wait for exit
   if (poll(n ? pf : NULL, (nfds_t)n, wait_ms) > 0) {
     for (int i = 0; i < own; i++) Serve(all[slot[i]], &pf[i]);
+    for (int i = own; i < n; i++) extra[i - own].revents = pf[i].revents;
   }
-  for (int i = 0; i < n_extra; i++) extra[i].revents = pf[own + i].revents;
   for (int k = 0; k < count; k++) {
     if (!all[k]->done) Check(all[k]);
   }

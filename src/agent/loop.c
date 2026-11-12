@@ -2,7 +2,9 @@
 // if any of its files changed, reads the inbox, hands harness notes to the
 // agent and compacts the context. Then it calls the model (model_call.c),
 // runs the tool calls (tool_calls.c), and asks the stop hook whether to go
-// on when the agent stops calling tools.
+// on when the agent stops calling tools. While background calls are in
+// flight (background.c), a reply without tool calls waits for a result
+// instead: the stop hook runs only when the agent's own work is done.
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -79,19 +81,41 @@ static void MaybeReload(Agent* a) {
   BufferFree(&err);
 }
 
-// Applies `arx ctl` commands: notes for the agent, and stop.
-static void ReadInbox(Agent* a) {
+// Applies the new inbox lines: `arx ctl` commands (notes for the agent,
+// stop, cancel) and the results of background calls, each a paragraph of
+// the next note. Returns 1 when a line gives the agent something new: a
+// result, a note or stop.
+static int ReadInbox(Agent* a) {
   cJSON* commands = SessionReadInbox(&a->session);
+  int news = 0;
   cJSON* c;
   cJSON_ArrayForEach(c, commands) {
     const char* cmd = JsonStr(c, "cmd", "");
     if (!strcmp(cmd, "stop")) {
-      a->stop_requested = 1;
+      a->stop_requested = news = 1;
     } else if (!strcmp(cmd, "note")) {
       AgentNote(a, "Note from your operator: %s", JsonStr(c, "text", ""));
+      news = 1;
+    } else if (!strcmp(cmd, "result")) {
+      CallNote(a, c);
+      news = 1;
+    } else if (!strcmp(cmd, "cancel")) {
+      CallCancel(a, JsonStr(c, "call", ""));
     }
   }
   cJSON_Delete(commands);
+  return news;
+}
+
+// Waits while background calls are in flight and the agent has nothing
+// else to do: until a result, an operator note or stop arrives, Ctrl-C, or
+// the wall cap. Cancels from the inbox apply while it waits.
+static void CallsWait(Agent* a) {
+  while (!g_interrupted && CallsInFlight(a)) {
+    if (a->caps.wall >= 0 && Now() - a->start >= a->caps.wall) return;
+    CallsPoll(a, 0.1);
+    if (ReadInbox(a)) return;
+  }
 }
 
 // Gives queued harness notes to the agent as one user message.
@@ -135,6 +159,7 @@ int RunTurns(Agent* a) {
     if (code >= 0) return code;
     MaybeReload(a);
     McpTurn(a);
+    CallsPoll(a, 0);  // finish the background calls that ended
     ReadInbox(a);
     if (a->stop_requested) return kExitDone;
     FlushNotes(a);
@@ -152,7 +177,11 @@ int RunTurns(Agent* a) {
     } else {
       free(a->final_output);
       a->final_output = XStrdup(JsonStr(message, "content", ""));
-      if (!StopHook(a)) return kExitDone;
+      if (CallsInFlight(a)) {
+        CallsWait(a);  // the next turn brings what ended the wait
+      } else if (!StopHook(a)) {
+        return kExitDone;
+      }
     }
     SessionWriteMeta(&a->session, "running");
   }

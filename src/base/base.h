@@ -7,11 +7,11 @@
 //           executable check, observers, sleeping, and HttpStart by curl
 //   http.c  one HTTP request on top of the platform (HttpRun)
 //   rpc.c   JSON-RPC 2.0 over JSON lines, with no I/O of its own
-// The browser build swaps proc.c and proc_posix.c for proc_host.c.
 
 #ifndef SRC_BASE_BASE_H_
 #define SRC_BASE_BASE_H_
 
+#include <poll.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stddef.h>
@@ -21,7 +21,8 @@
 
 // ---- util.c ----
 
-// The harness version, from the git tag (see the Makefile), else "dev".
+// The harness version, printed by `arx version` and in session.start events.
+// The build sets it from the git tag (see the Makefile); "dev" otherwise.
 #ifndef ARX_VERSION
 #define ARX_VERSION "dev"
 #endif
@@ -71,7 +72,7 @@ void LineSink(void* ctx, const char* data, size_t n);
 // Takes the first whole line out of `b` (malloc'd, no newline), or NULL.
 char* LinePop(Buffer* b);
 
-// Set by the SIGINT/SIGTERM handler; long waits check it and return early.
+// Set by the SIGINT/SIGTERM handler, to its signal; long waits return early.
 extern volatile sig_atomic_t g_interrupted;
 
 // Absolute path of the running arx binary, used to start subagents.
@@ -95,20 +96,22 @@ char* XStrndup(const char* s, size_t n);
 // Returns a malloc'd, printf-style formatted string.
 char* XAsprintf(const char* fmt, ...);
 
-// Returns a copy of `n` bytes that is valid UTF-8 with no NULs: bad bytes
-// become U+FFFD and NULs become '?', as tool output needs to go into JSON.
+// Returns a copy of `n` bytes that is valid UTF-8 with no NULs (bad bytes
+// become U+FFFD, NULs '?'), as tool output is cleaned before it goes into JSON.
 char* Utf8Clean(const char* s, size_t n);
 
-// Returns a copy of `s` cut to `max` bytes at a character, then "…".
+// Returns a copy of `s` cut to at most `max` bytes (at a character boundary),
+// with "…" appended when it was cut.
 char* Truncate(const char* s, size_t max);
 
-// Reads a whole file into a malloc'd string, or NULL. Sets `*len` if given.
+// Reads a whole file. Returns a malloc'd, NUL-terminated string, or NULL on
+// error. Stores the length in `*len` when `len` is not NULL.
 char* ReadFile(const char* path, size_t* len);
 
 // Writes all `n` bytes to `fd`, retrying on EINTR. Returns 0 or -1.
 int WriteAll(int fd, const void* p, size_t n);
 
-// Replaces `path` atomically, keeping its file mode. Returns 0 or -1.
+// Replaces `path` atomically (temp file + rename), keeping its mode; 0 or -1.
 int WriteFileAtomic(const char* path, const char* data, size_t len);
 
 // Appends to `path`, creating it if needed. Returns 0 or -1.
@@ -127,10 +130,12 @@ char* DirName(const char* path);
 char* SelfPath(const char* argv0);
 
 // Returns arx's config directory (malloc'd): $ARX_CONFIG_DIR, else
-// $XDG_CONFIG_HOME/arx, else ~/.config/arx. It holds config.yaml.
+// $XDG_CONFIG_HOME/arx, else ~/.config/arx. It holds config.yaml (the user's
+// defaults) and, outside macOS, the 0600 credentials file.
 char* ConfigDir(void);
 
-// Returns a file's mtime in nanoseconds and its `*size`; -1 if missing.
+// Returns a file's modification time in nanoseconds, or -1 if it is missing.
+// Stores its size in `*size` (-1 if missing) when `size` is not NULL.
 int64_t MtimeNs(const char* path, int64_t* size);
 
 // Returns monotonic time in seconds.
@@ -177,16 +182,16 @@ typedef struct ProcResult {
   double secs;
 } ProcResult;
 
-// Runs `p` and waits. The child has its own process group, so a timeout or
-// Ctrl-C kills all it started (SIGTERM, then SIGKILL). Returns 0, or -1.
+// Runs `p` and waits for it. The child gets its own process group, so a
+// timeout or Ctrl-C kills it and everything it started (SIGTERM, then
+// SIGKILL after a grace period). Returns 0, or -1 if it could not start.
 int ProcRun(const Proc* p, ProcResult* r);
 
 // A child started by ProcStart.
 typedef struct ProcChild ProcChild;
 
-// Starts `p` and returns at once; ProcPoll then runs it. `p.in` and the
-// contexts it names must stay valid until ProcFinish. Returns NULL if the
-// child could not be started (errno says why).
+// Starts `p` and returns at once; ProcPoll then runs it. `p.in` and its
+// contexts must stay valid until ProcFinish. Returns NULL (errno) on failure.
 ProcChild* ProcStart(const Proc* p);
 
 // Runs one round for `n` children and the kept ones: waits up to `max_wait`
@@ -194,19 +199,15 @@ ProcChild* ProcStart(const Proc* p);
 // at its timeout or on Ctrl-C, as ProcRun does. Repeat until ProcDone.
 void ProcPoll(ProcChild* const* kids, int n, double max_wait);
 
-// Defined in <poll.h>.
-struct pollfd;
-
-// ProcPoll that also waits on `extra`, poll(2) entries the caller fills
-// (stdin, say); their revents are set on return. The browser ignores them.
+// ProcPoll that also waits on `extra` (poll(2) entries; revents is set, 0 in
+// the browser), for all of `max_wait` unless a child has a timeout or stops.
 void ProcPollWith(ProcChild* const* kids, int n, struct pollfd* extra,
                   int n_extra, double max_wait);
 
 // True when the child has exited and its output has been read.
 int ProcDone(const ProcChild* c);
 
-// Queues `n` bytes for the stdin of a child started with `open_in`; ProcPoll
-// writes them.
+// Queues `n` bytes for the stdin of an `open_in` child; ProcPoll writes them.
 void ProcWrite(ProcChild* c, const char* data, size_t n);
 
 // Closes the child's stdin once what ProcWrite queued is written, so it can
@@ -229,8 +230,8 @@ void ProcRelease(ProcChild* c);
 // its group, and ProcPoll sends SIGKILL after the grace period.
 void ProcStop(ProcChild* c);
 
-// Returns the environment with `extra` ("KEY=value", NULL-terminated) added
-// or replaced. Free only the array; the strings are borrowed.
+// Returns a copy of the environment with `extra` ("KEY=value", NULL-terminated)
+// added or replaced. Free only the array; the strings are borrowed.
 char** EnvWith(char* const* extra);
 
 // ---- platform: proc_posix.c natively, proc_host.c in the browser ----
@@ -242,10 +243,12 @@ void ProcInit(void);
 // it /dev/null and the default SIGPIPE. Returns -1 and errno on failure.
 int ProcExec(char* const* argv, int null_stdin);
 
-// True when `path` is a regular file this platform can run.
+// True when `path` is a regular file this platform can run: natively, one
+// we may execute; in the browser, one the runtime has a runner for.
 int IsRunnable(const char* path);
 
-// Starts `sh -c command` with `env`; returns its stdin (and *pid), or -1.
+// Starts `sh -c command` with `env` added, to read events on stdin. Returns
+// the write end (non-blocking, close-on-exec) and sets *pid, or -1.
 int ProcObserverStart(const char* command, char* const* env, int* pid);
 
 // Waits up to `secs` for observer `pid` to exit.
@@ -259,8 +262,7 @@ void SleepSeconds(double s);
 
 // ---- http.c, on top of the platform ----
 
-// One HTTP request: natively curl (through any adapter), with the headers
-// in a 0600 file it deletes after; in the browser, a fetch.
+// One HTTP request: curl with its headers in a 0600 file, or a fetch.
 typedef struct HttpRequest {
   const char* method;  // NULL: POST with a body, else GET
   const char* url;
@@ -379,8 +381,7 @@ double JsonNum(cJSON* o, const char* dotted, double def);
 // Returns the boolean at `dotted` (1 or 0), or `def`.
 int JsonBool(cJSON* o, const char* dotted, int def);
 
-// Returns the duration at `dotted` in seconds ("10s", "5m" or a number),
-// or `def`.
+// Returns the duration at `dotted` in seconds ("10s" or a number), or `def`.
 double JsonDuration(cJSON* o, const char* dotted, double def);
 
 // Returns the size at `dotted` in bytes ("2kb" or a number), or `def`.

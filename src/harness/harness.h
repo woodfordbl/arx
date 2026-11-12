@@ -203,14 +203,12 @@ typedef struct Field {
 
 // The top-level keys of agent.yaml, ending with a zeroed Field.
 extern const Field kTopFields[];
-
 // The keys of plugin.yaml, ending with a zeroed Field.
 extern const Field kPluginFields[];
-
 // The keys of kit.yaml, ending with a zeroed Field.
 extern const Field kKitFields[];
 
-// The hook points, NULL-terminated, from session_start to stop.
+// The six hook points, session_start to stop, NULL-terminated.
 extern const char* const kHookPoints[];
 
 // The characters allowed in tool names (OpenAI function names).
@@ -261,8 +259,7 @@ typedef struct Tool {
   char* plugin;      // that plugin's name, or NULL
   char* core;        // NAME when the file only runs `arx tool NAME`, or NULL
   cJSON* keys;       // key templates from the schema; NULL means ["*"]
-  char* server;      // kToolMcp: its server, or NULL for mcp_search/select
-  char* remote;      // kToolMcp: the server's own name for it, or NULL
+  char *server, *remote;  // kToolMcp: its server, and its name there
 } Tool;
 
 // The tools of the current harness version.
@@ -287,14 +284,12 @@ cJSON* ToolsJson(const ToolSet* tools);
 // A tool call that runs; see ToolStart.
 typedef struct ToolRun ToolRun;
 
-// Finds the tool called `name`, or NULL. An MCP tool that is not selected
-// joins the set, so keep no Tool* across a call of this.
+// Finds tool `name`, or NULL. It may add an MCP tool: keep no Tool* over it.
 Tool* ToolFind(struct Agent* a, const char* name);
 
 // Starts tool `name` with JSON `args` and returns at once; ProcPoll on
-// ToolChild() runs it, and ToolFinish ends it. Stores the full-output path
-// in `*output_path` (malloc'd, or NULL). Returns NULL when the call ends at
-// once (unknown tool, bad arguments, no start), with `*text` and `*is_error`.
+// ToolChild() runs it, and ToolFinish ends it. Sets `*output_path` (malloc'd,
+// or NULL). Returns NULL when the call ended at once: `*text`, `*is_error`.
 ToolRun* ToolStart(struct Agent* a, const char* name, const char* args,
                    char** text, int* is_error, char** output_path,
                    cJSON* end_event);
@@ -302,18 +297,25 @@ ToolRun* ToolStart(struct Agent* a, const char* name, const char* args,
 // The process of a started call, for ProcPoll; NULL for an MCP call.
 ProcChild* ToolChild(ToolRun* run);
 
-// True when a started call has ended: its process, or its MCP request.
+// True when a started call ended: its process, or its MCP request.
 int ToolDone(ToolRun* run);
 
-// Ends a call (stopping its process if it still runs) and frees `run`.
-// Returns the text for the model (malloc'd), sets `*is_error`, and adds
-// exit, secs, bytes and path to `end_event`.
-char* ToolFinish(ToolRun* run, int* is_error, cJSON* end_event);
+// Starts stopping a started call; ToolDone turns true when it has.
+void ToolStop(ToolRun* run);
 
-// Returns the ARX_* environment for tools and hooks, NULL-terminated:
-// ARX_SESSION, _SESSION_DIR, _TURN, _CWD, _SPEC, _SPEC_DIR, _DEPTH, _BIN;
-// ARX_PLUGIN_DIR for `plugin_dir`; and for a plugin's name, ARX_STATE_DIR
-// and ARX_DATA_DIR (<session>/plugins/<name>, <cwd>/.arx/data/<name>).
+// The call runs in the background now: a subagent's events are not drawn.
+void ToolQuiet(ToolRun* run);
+
+// Ends a call (stopping its process if it runs) and frees `run`. Returns
+// the text for the model (malloc'd), sets `*is_error`, and adds exit, secs,
+// bytes and path to `end_event`. `stopped` is the status line of a call
+// that arx stopped, such as "[cancelled]", or NULL.
+char* ToolFinish(ToolRun* run, int* is_error, cJSON* end_event,
+                 const char* stopped);
+
+// Returns the ARX_* environment for tools and hooks, NULL-terminated: the
+// session, turn, cwd, spec, depth and binary; ARX_PLUGIN_DIR for
+// `plugin_dir`; and for a plugin's name, ARX_STATE_DIR and ARX_DATA_DIR.
 char** ToolEnv(struct Agent* a, const char* plugin_dir, const char* plugin);
 
 // ToolEnv for a program of `layer`, plus ARX_PLUGIN_SETTINGS for a plugin's.
@@ -332,8 +334,7 @@ int KeysValid(cJSON* keys);
 
 // Returns the keys of a call to `tool` (NULL: unknown, which gets []) with
 // `args`, as a new array: ["*"] when it declares none, [] for a subagent.
-// {name} becomes the top-level argument `name` ("" if missing), and in a
-// "host:" key its host: "host:{url}" -> "host:a.com".
+// {name} becomes argument `name` (""), or its host in a "host:" key.
 cJSON* KeysFor(const Tool* tool, cJSON* args);
 
 // True when two calls may not run together: "*", or a key they share.
@@ -373,10 +374,9 @@ int HookBand(const Spec* spec, const Layer* layer, const char* point);
 
 // Runs hooks/<point> for a raw-object point (before_model, after_model,
 // before_tool, after_tool) as a chain, by band, then in layer order: each
-// hook gets `object` (kept by the caller), and the fields it prints replace
-// those of `object` (chain.c lists them). A before_tool `result` ends the
-// chain. Changed fields are added to `changed` (an array; may be NULL).
-// Returns 0 with no hook, 1 when hooks ran, -1 when a `fail: closed` failed.
+// hook gets `object`, and the fields it prints replace its own (chain.c
+// lists them). A before_tool `result` ends the chain. Changed fields join
+// `changed` (or NULL). Returns 0 with no hook, 1, or -1 (`fail: closed`).
 int HookChain(struct Agent* a, const char* point, cJSON* object,
               cJSON* changed);
 

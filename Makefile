@@ -4,9 +4,9 @@
 #   make debug      ./arx-debug with AddressSanitizer and UBSan
 #   make test       run the src/base unit tests (tests/base_test.c), then
 #                   tests/run.sh, plugins.sh, layers.sh, cli.sh, shell.sh,
-#                   hooks.sh, runtime.sh, kits.sh, credentials.sh, state.sh,
-#                   climb.sh, climb-run.sh, ui.sh, mcp.sh, mcp-servers.sh and
-#                   mcp-http.sh against ./arx-debug
+#                   hooks.sh, runtime.sh, background.sh, kits.sh,
+#                   credentials.sh, state.sh, climb.sh, climb-run.sh, ui.sh,
+#                   mcp.sh, mcp-servers.sh and mcp-http.sh against ./arx-debug
 #   make bench      check the performance budgets against ./arx
 #   make lint       style checks (scripts/lint.sh)
 #   make format     rewrite src/ and pick/ in Google style
@@ -98,6 +98,7 @@ test: arx-debug build/dbg/base_test $(PICK)
 	ARX=./arx-debug tests/shell.sh
 	ARX=./arx-debug tests/hooks.sh
 	ARX=./arx-debug tests/runtime.sh
+	ARX=./arx-debug tests/background.sh
 	ARX=./arx-debug tests/kits.sh
 	ARX=./arx-debug tests/credentials.sh
 	ARX=./arx-debug tests/state.sh

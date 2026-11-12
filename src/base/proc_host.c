@@ -1,12 +1,14 @@
 // proc_host.c: the browser side of the platform section in base.h, on the
 // host interface ABI v1 that arx.js serves (plans/0.2.0/wasm.md). It takes
 // the place of proc.c and proc_posix.c in `make wasm`: children and HTTP
-// requests are handles in the runtime, and poll and sleep suspend through
-// JSPI. When either returns -3, the page pressed Stop, and arx takes its
-// Ctrl-C path. There is no exec, observer or signal here. ProcStop and
-// ProcClose are stubs until the ABI can stop a child and close its stdin.
+// requests are handles in the runtime, and the calls that wait (poll and
+// sleep) suspend through JSPI. When either returns -3, the page pressed
+// Stop, and arx takes its Ctrl-C path. There is no exec, no observer and no
+// signal here. ProcStop and ProcClose are stubs until the ABI can stop a
+// child without freeing it and close a child's stdin.
 
 #include <errno.h>
+#include <poll.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -74,8 +76,7 @@ void ProcInit(void) {}
 
 // No exec in a browser; see base.h.
 int ProcExec(char* const* argv, int null_stdin) {
-  (void)argv;
-  (void)null_stdin;
+  (void)argv, (void)null_stdin;
   errno = ENOSYS;
   return -1;
 }
@@ -87,18 +88,13 @@ int IsRunnable(const char* path) {
 
 // No `sh -c` for observers in a browser; see base.h.
 int ProcObserverStart(const char* command, char* const* env, int* pid) {
-  (void)command;
-  (void)env;
-  (void)pid;
+  (void)command, (void)env, (void)pid;
   errno = ENOSYS;
   return -1;
 }
 
 // No observers, so nothing to wait for; see base.h.
-void ProcObserverWait(int pid, double secs) {
-  (void)pid;
-  (void)secs;
-}
+void ProcObserverWait(int pid, double secs) { (void)pid, (void)secs; }
 
 // `--events -` needs dup, which WASI lacks; see base.h.
 int ProcDupStdout(void) { return -1; }
@@ -119,7 +115,8 @@ static ProcChild* NewChild(const Proc* p, int32_t id) {
   return c;
 }
 
-// Sends a JSON request (consumed) to `start`. Returns the handle, or 0.
+// Sends a JSON request (consumed) to `start`. Returns the handle, or 0 with
+// errno set.
 static int32_t Open(cJSON* req, const char* data, size_t len,
                     int32_t (*start)(const char*, size_t, const char*,
                                      size_t)) {
@@ -277,6 +274,14 @@ static void Serve(ProcChild* c) {
 
 // One round for the children and the kept ones; see base.h.
 void ProcPoll(ProcChild* const* kids, int count, double max_wait) {
+  ProcPollWith(kids, count, NULL, 0, max_wait > 0.1 ? 0.1 : max_wait);
+}
+
+// The same without the 0.1 s limit: the runtime keeps each child's timeout
+// and wakes arx on Stop. It can't wait on `extra`, so revents stay 0.
+void ProcPollWith(ProcChild* const* kids, int count, struct pollfd* extra,
+                  int n_extra, double max_wait) {
+  for (int i = 0; i < n_extra; i++) extra[i].revents = 0;
   ProcChild** all = XMalloc((size_t)(count + g_kept_count + 1) * sizeof(*all));
   int32_t* ids = XMalloc((size_t)(count + g_kept_count + 1) * sizeof(*ids));
   int m = 0;
@@ -290,7 +295,7 @@ void ProcPoll(ProcChild* const* kids, int count, double max_wait) {
   for (int k = 0; k < m; k++) {
     if (!all[k]->done) ids[n++] = all[k]->id;
   }
-  double wait = max_wait > 0.1 ? 0.1 : max_wait < 0 ? 0 : max_wait;
+  double wait = max_wait > 3600 ? 3600 : max_wait < 0 ? 0 : max_wait;
   if (HostPoll(ids, n, (int32_t)(wait * 1000) + 1) == kStopped) {
     g_interrupted = 1;
   }
@@ -299,14 +304,6 @@ void ProcPoll(ProcChild* const* kids, int count, double max_wait) {
   }
   free(ids);
   free(all);
-}
-
-// The browser has no descriptors to wait on; see base.h.
-void ProcPollWith(ProcChild* const* kids, int n, struct pollfd* extra,
-                  int n_extra, double max_wait) {
-  (void)extra;
-  (void)n_extra;
-  ProcPoll(kids, n, max_wait);
 }
 
 // Keeps a child for the session; see base.h.
@@ -381,7 +378,8 @@ void HttpFinish(ProcChild* c, HttpResult* r) {
 // arx's entry point, in src/main.c.
 int main(int argc, char** argv);
 
-// What arx.js calls for each run; a reactor never exits, so flush here.
+// The export arx.js calls for each run: arx's own main, with the arguments
+// from WASI. stdio is flushed here, since a reactor never calls exit.
 __attribute__((export_name("arx_main"))) int ArxMain(void) {
   size_t argc = 0, size = 0;
   if (__wasi_args_sizes_get(&argc, &size)) return kExitError;

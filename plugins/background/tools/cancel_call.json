@@ -1,0 +1,5 @@
+{"description": "Cancel a background call: one whose result said \"started as c7\" or \"queued as c7\". Its process is stopped, and a [harness] note confirms it.",
+ "parameters": {"type": "object",
+  "properties": {"id": {"type": "string", "description": "The call's id from its placeholder result, such as c7."}},
+  "required": ["id"]},
+ "keys": []}

@@ -99,6 +99,7 @@ prices: {input: 3, output: 15}
 | `credentials` | map | | Named credential programs, `name: path`, for `endpoint.credential`. See [Credentials](plugins/credentials.md). |
 | `adapters` | map | | Named adapters, `name: path`, for `endpoint.adapter`. See [Adapters](plugins/adapters.md). |
 | `hosts` | string list | | Network hosts the harness's programs reach, besides the endpoint, such as `[auth.openai.com]`. Plugins add theirs. `arx check --hosts` lists them all. |
+| `ui` | string | | The command that draws interactive runs: with `ui: NAME`, bare `arx` on a terminal runs `arx-NAME` in place of the built-in view. `none` or empty means the built-in view. See [Running an agent](cli.md#running-an-agent). |
 | `mcp_servers` | map | | MCP servers, by name. Their tools reach the agent through `mcp_search` and `mcp_select`. See [`mcp_servers`](#mcp_servers). |
 
 `kit`, `plugins`, `enable` and `disable` build the

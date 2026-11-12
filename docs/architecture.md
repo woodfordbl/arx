@@ -79,10 +79,11 @@ Every source file, by folder:
 | | `check.c` | `arx check` and `arx tools` |
 | | `shell_tools.c` | the `bash` and `edit` tools behind `arx tool NAME` |
 | | `external.c` | `arx foo` runs `arx-foo`; `arx help` lists every command |
-| `agent/` | `loop.c` | the turn loop: caps, reload, inbox, notes, compaction, tool calls, stop hook |
+| `agent/` | `loop.c` | the turn loop: caps, reload, inbox, notes, compaction, tool calls, the wait for background calls, stop hook |
 | | `model_call.c` | one model call through its hooks |
 | | `tool_calls.c` | the tool runtime, over the session's call table |
-| | `scheduler.c` | the scheduler plugin, which decides when queued tool calls run |
+| | `background.c` | background calls: the placeholder, the result line in the inbox, cancel, shutdown and resume |
+| | `scheduler.c` | the scheduler plugin, which decides when queued tool calls run and which move to the background |
 | | `run.c` | session lifecycle: load, open or resume, observers, headless or interactive, result |
 | | `agent.c` | caps parsing, notes, the system prompt and `{{templates}}` |
 | `harness/` | `spec.c` | YAML to JSON with line numbers, `--set`, merging over `config.yaml` |
@@ -146,7 +147,7 @@ Every build, test and release step is a `make` target:
 |---|---|
 | `make` | release build: `-Os`, LTO, dead code stripped; also `commands/lib/pick` |
 | `make debug` | `./arx-debug` with AddressSanitizer and UBSan |
-| `make test` | the unit tests of `src/base` (`tests/base_test.c`), then 1,134 end-to-end checks in sixteen suites against `tests/fake-curl` (49 core, 39 marketplace plugins, 74 plugin loading, 83 CLI, 56 shell plugin, 70 hooks, 56 tool runtime, 93 kits, 84 credentials, 35 plugin state, 89 climb config, 73 climb runs, 110 terminal UI, 120 MCP client, 53 MCP servers, 50 MCP bridge and sign-in). The MCP suites run against `tests/fake-mcp`, a stdio server in Python, and the `mcp-oauth` plugin against a fake authorization server on 127.0.0.1. No network or API key needed. The terminal UI suite drives pick and `arx setup` on a pseudo-terminal with `tests/pty.py`, and skips itself without python3. |
+| `make test` | the unit tests of `src/base` (`tests/base_test.c`), then 1,289 end-to-end checks in seventeen suites against `tests/fake-curl` (77 core, 60 marketplace plugins, 74 plugin loading, 94 CLI, 56 shell plugin, 70 hooks, 61 tool runtime, 86 background calls, 93 kits, 84 credentials, 35 plugin state, 89 climb config, 73 climb runs, 110 terminal UI, 120 MCP client, 57 MCP servers, 50 MCP bridge and sign-in). The MCP suites run against `tests/fake-mcp`, a stdio server in Python, and the `mcp-oauth` plugin against a fake authorization server on 127.0.0.1. No network or API key needed. The terminal UI suite drives pick and `arx setup` on a pseudo-terminal with `tests/pty.py`, and skips itself without python3. |
 | `make bench` | the [performance budgets](#performance-budgets) |
 | `make lint` | clang-format, cpplint, files of 400 lines or fewer, doc comments, for `src/` and `pick/`, and process calls only in `proc.c` and `proc_posix.c` |
 | `make format` | rewrites `src/` and `pick/` in Google style |

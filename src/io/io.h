@@ -2,9 +2,11 @@
 //   session.c  the files under .arx/sessions/<id>/:
 //                transcript.jsonl  every message, with reset markers
 //                events.jsonl      the event stream
-//                meta.json         counters, for --resume
+//                meta.json         counters and calls in flight, for --resume
 //                tool-NNNN.out     full tool outputs
-//                inbox             commands from `arx ctl` (note, stop)
+//                inbox             one JSON line each: commands from `arx
+//                                  ctl` (note, stop, cancel), and the
+//                                  results of background calls
 //   events.c   the event stream, arx's plugin API: one JSON line per event,
 //              {"v":1,"t":...,"session":...,"depth":0,"turn":7,"type":...}.
 //              arx is the only writer; observers can never block it.
@@ -30,6 +32,8 @@ typedef struct Session {
   FILE* transcript;
   int64_t inbox_offset;
   int tool_seq;  // the number of the last tool-NNNN.out
+  int call_seq;  // the number of the last background call (c1, c2, ...)
+  cJSON* calls;  // background calls whose result the agent has not seen
   int turns;
   int64_t tokens_in;
   int64_t tokens_out;
@@ -54,11 +58,18 @@ void SessionAppend(Session* s, cJSON* message);
 // a reset marker, then every message.
 void SessionReset(Session* s, cJSON* messages);
 
-// Writes meta.json with the counters and `status`.
+// Writes meta.json with the counters, the calls in flight and `status`.
 void SessionWriteMeta(Session* s, const char* status);
 
 // Returns the inbox commands added since the last call, as a JSON array.
 cJSON* SessionReadInbox(Session* s);
+
+// Appends `line` to the inbox as one JSON line. Returns 0 or -1.
+int SessionInboxAppend(Session* s, const cJSON* line);
+
+// Returns the last `result` line for background call `call` ("c7") in the
+// whole inbox, also before the read offset, or NULL. The caller frees it.
+cJSON* SessionInboxFind(Session* s, const char* call);
 
 // Returns the path for the next tool output file.
 char* SessionOutputPath(Session* s);
@@ -110,8 +121,10 @@ void EventDelta(const char* text, size_t n);
 // Sends any batched model text now.
 void EventFlush(void);
 
-// Passes a subagent's event line through to our sinks and shows it.
-void EventForward(const char* line, size_t n);
+// Passes a subagent's event line through to our sinks, and shows it when
+// `draw` is set. A background subagent's lines are not drawn, so they do
+// not mix with the parent's streamed text; `arx watch` still shows them.
+void EventForward(const char* line, size_t n, int draw);
 
 // Starts `sh -c command` with the event stream on its stdin and `env`
 // ("KEY=value", NULL-terminated, may be NULL) added to its environment.

@@ -214,4 +214,24 @@ check "tool.start has the server" [ "$(grep '"tool.start"' $EVENTS | jq -r .serv
 check "tool.progress carries the server's progress" \
   [ "$(grep '"tool.progress"' $EVENTS | jq -c '[.name, .server, .progress, .total, .message]')" = '["gh__echo","gh",1,2,"half"]' ]
 
+begin "a call in the background"
+ln -s "$ROOT/plugins/background" "$ARX_CONFIG_DIR/plugins/background"
+{ gh_spec; echo 'enable: [{background: {tools: [gh__echo]}}]'; } >agent.yaml
+export FAKE_MCP_SLOW=0.5
+calls gh__echo '{\"kind\":\"slow\",\"text\":\"bg\"}'
+sse_text "waiting" | reply 2 "200 OK"
+sse_text "done" | reply 3 "200 OK"
+run "go"
+check "an MCP call can move to the background" has fake/req-02.json 'started as c1 in the background'
+check "  and its result arrives in a note" grep -q 'c1 (gh__echo: .*) finished after [0-9]*s:\\necho: bg' fake/req-03.json
+export FAKE_MCP_SLOW=30
+calls gh__echo '{\"kind\":\"slow\",\"text\":\"never\"}' bash '{\"command\":\"sleep 1\"}'
+rm -f fake/mcp-gh.jsonl
+t0=$(now)
+run "go" --cap turns=2
+t1=$(now)
+check "the end of the session stops a background MCP call" within "$t0" "$t1" 10
+check "  with notifications/cancelled to the server" grep -q notifications/cancelled fake/mcp-gh.jsonl
+rm -f "$ARX_CONFIG_DIR/plugins/background"
+
 summary
