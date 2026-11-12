@@ -12,7 +12,7 @@ program, not more code in the core loop.
 | 3a | Credential and adapter plugins | **done**: [credentials](plugins/credentials.md), [adapters](plugins/adapters.md), `hosts:` and `arx check --hosts`, and the [`chatgpt`](../plugins/chatgpt) plugin for ChatGPT plan usage |
 | 4 | `arx acp`: an Agent Client Protocol server | planned |
 | 5 | A TUI plugin | planned |
-| 6 | MCP client | planned |
+| 6 | MCP client | **done**: [MCP servers](mcp.md), `mcp_search` and `mcp_select`, `arx mcp`, and the [`mcp-oauth`](../plugins/mcp-oauth) plugin |
 | 7 | `arx climb`: a keep/revert driver | **done**: [`arx climb`](climb.md) and the `climber` kit |
 | 8 | Installer and settings menus | planned for 0.2.0 |
 
@@ -29,7 +29,6 @@ The plan adds these to `arx plugin`:
   plugins named like `@acme/lint`.
 - **A `setup:` command**: a command in `plugin.yaml` that will run once after
   an install.
-- **MCP servers in `plugin.yaml`**: once the MCP client exists.
 
 ## `arx acp`
 
@@ -44,20 +43,13 @@ arx like this:
 - `permissions: ask` will send `session/request_permission` before tool
   calls.
 
-It will share one small JSON-RPC module with the MCP client.
+It will use `src/base/rpc.c`, the JSON-RPC module that the MCP client uses.
 
 ## A TUI plugin
 
 The TUI plugin will be a terminal front-end built with
 [OpenTUI](https://opentui.com) that will talk to `arx acp`. Because it is a
 plugin, it will add nothing to the binary.
-
-## MCP client
-
-The MCP client will turn MCP servers declared in the spec into tools. Only
-two built-in tools will sit in the prompt: `mcp_search` to find a tool, and
-`mcp_select` to add its full schema on the next turn. Large tool catalogs
-will then cost almost nothing until the agent uses them.
 
 ## Installer and settings menus
 

@@ -27,6 +27,7 @@ a line number. Only these keys are allowed:
 | `hosts` | string list | The network hosts its programs connect to, such as `[api.openai.com]`. See [Hosts](#hosts). |
 | `instructions` | text list | Text that arx adds to the system prompt, after the spec's prompt: a string, `{file: path}` or a list of them. See [Prompt text and model settings](prompt.md). |
 | `model_settings` | map | Request fields, as in the spec. `null` removes a field. They rank below the spec, the kit and `config.yaml`. See [Prompt text and model settings](prompt.md). |
+| `mcp_servers` | map | MCP servers it adds, with the keys of the spec's [`mcp_servers`](../spec.md#mcp_servers). A `command` with `/`, and `cwd`, are relative to the plugin folder. See [Servers in a plugin](../mcp.md#servers-in-a-plugin). |
 
 A `plugin.yaml` that uses every key:
 
@@ -260,7 +261,7 @@ arx removes any `ARX_PLUGIN_DIR`, `ARX_PLUGIN_SETTINGS`, `ARX_STATE_DIR` and
 | `session_start` | none | `{"context": "..."}` |
 | `before_model` | `{"messages", "tools", "model", "settings", "reason"}`; `settings` is `model_settings` from the spec, the kit, `config.yaml` and plugins, merged | any of `messages`, `tools`, `model`, `settings` |
 | `after_model` | `{"reply", "usage", "finish"}` | `reply` |
-| `before_tool` | `{"id", "name", "args", "keys"}` | any of `name`, `args`, `keys`, `result`; or `{"decision": "deny", "reason": "..."}` |
+| `before_tool` | `{"id", "name", "args", "keys"}`, and `server` for a call to an MCP tool | any of `name`, `args`, `keys`, `result`; or `{"decision": "deny", "reason": "..."}` |
 | `after_tool` | `{"call": {"id", "name", "args"}, "result", "is_error"}` | `result`, `backoff`; or `{"note": "..."}` |
 | `stop` | `{"last_message": "..."}` | `{"decision": "continue" or "restart", "message": "..."}` |
 
@@ -287,8 +288,10 @@ new `v`.
 | `model.message` | `tokens_in`, `tokens_out`, `cost`, `tool_calls` (a count) |
 | `model.retry` | `attempt`, `status` (HTTP), `curl_exit`, `wait_s`, `error` |
 | `model.credential` | `program`, `reason` (`start`, `expired` or `rejected`), `secs`, and `expires_in` or `error`; never the value |
-| `tool.start` | `id`, `name`, `preview` |
-| `tool.end` | `id`, `name`, `error`, `preview`; process tools add `exit`, `secs`, `bytes` and `path` |
+| `tool.start` | `id`, `name`, `preview`; `server` for an MCP tool |
+| `tool.end` | `id`, `name`, `error`, `preview`; tools that ran add `exit`, `secs`, `bytes` and `path`; `server` for an MCP tool |
+| `tool.progress` | `id`, `name`, `server`, `progress`, and `total` and `message` when the server sent them: an MCP server's progress for a call that runs |
+| `mcp.server` | `server`, `state` (`start`, `ready`, `exit`, `failed` or `stop`); `era` (`modern` or `legacy`) and `version` once known; `tools` and `secs` for `ready`; `code` for `exit`; `error` for `failed` |
 | `hook` | `point`, `secs`, `plugin` (for a plugin's hook), `band` (outside `normal`); `changed` (the fields the hook changed), `decision`, `ignored` (a change dropped after a policy result), or `error` |
 | `harness.reload` | `ok`, `ms`, and `tools` (a count) or `errors` |
 | `compact` | `strategy`, `tokens_before`, `tokens_after` |
@@ -308,11 +311,19 @@ Each session has a folder `.arx/sessions/<id>/` in the working directory.
 | `transcript.jsonl` | every message; a `{"_reset":true}` line starts the history over, after compaction |
 | `events.jsonl` | the event stream |
 | `meta.json` | turns, tokens, cost and status, for `--resume` |
-| `tool-NNNN.out` | the full output of each process tool call |
+| `tool-NNNN.out` | the full output of each tool call that ran |
+| `tool-NNNN-N.png` | an image or other file that an MCP tool returned, named after the call's output file |
+| `mcp/selected.json` | the MCP tools the agent selected, as a list of names |
+| `mcp/<server>.log` | an MCP server's stderr, its log messages and the lines it printed that were not JSON-RPC |
 | `inbox` | commands from `arx ctl` |
 | `plugins/<name>/` | a plugin's `ARX_STATE_DIR`, when the plugin made it |
 
 With a kit that pins versions, arx also writes `kit.lock` next to the spec.
+
+arx keeps each MCP server's tool list in `.arx/mcp/<server>.json` in the
+working directory, across sessions: the entry's hash, the era, the protocol
+version, the server's instructions, the list time, `ttlMs`, and the tools as
+the server listed them. A replacement `mcp_search` can read these files.
 
 ## arx tool
 
@@ -327,6 +338,20 @@ schema.
 
 Arguments that are not valid give exit `1` and a message. A name other than
 `bash` or `edit` is a usage error (exit `2`).
+
+## arx mcp
+
+`arx mcp` lists, searches and calls the MCP servers of the spec without a
+session. See [MCP servers](../mcp.md).
+
+| Command | What it does |
+|---|---|
+| `arx mcp list` | One tab-separated line per server: name, transport, and the cached tools or `not listed`. It starts nothing. |
+| `arx mcp list --refresh` | Starts every server and lists its tools again. Exit `1` when one fails. |
+| `arx mcp list --json` | The same as a JSON list: `name`, `transport`, `url` or `command`, `tools`, `era`, `version`, `age`. |
+| `arx mcp search QUERY [--server S]` | Prints what `mcp_search` prints for the query. |
+| `arx mcp call SERVER TOOL` | Makes one call. `TOOL` is the server's own name for it, and the arguments are JSON on stdin. Exit `1` for an error result. |
+| `arx mcp http` | The HTTP bridge. arx starts it for each `url` server, with the entry in `ARX_MCP_SERVER`. |
 
 ## arx plugin
 

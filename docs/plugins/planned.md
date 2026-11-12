@@ -23,7 +23,6 @@ are not built:
 | Calls that do not block | a result now, the real result later | [Calls that do not block](#calls-that-do-not-block) |
 | Long-lived and concurrent hooks | hooks that keep state, and `before_tool` hooks that run at the same time | [Long-lived and concurrent hooks](#long-lived-and-concurrent-hooks) |
 | Front-ends | an ACP server and a terminal UI | [Front-ends](#front-ends) |
-| MCP client | MCP servers as tools | [MCP client](#mcp-client) |
 | The marketplace index | `index.yaml` and `arx plugin search` | [More of arx plugin](#more-of-arx-plugin) |
 
 ## Trust
@@ -75,12 +74,6 @@ Two changes would make hooks cheaper and let them wait:
   `session/cancel` would take the Ctrl-C path, and events would become
   `session/update` messages.
 - **A terminal UI**: a plugin that talks to `arx acp`.
-
-## MCP client
-
-MCP servers that the spec names would become tools. Only two built-in tools
-would sit in the prompt: `mcp_search` would find a tool, and `mcp_select`
-would add its full schema on the next turn.
 
 ## More of arx plugin
 

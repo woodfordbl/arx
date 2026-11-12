@@ -88,6 +88,21 @@ check "mcp_search needs a query" [ "$(jq -c '.[2].function.parameters.required' 
 check "tools.<server>__<tool> needs no file" lacks check.txt "tools.github__create_issue is configured"
 check "another missing tool is still reported" has check.txt "tools.other is configured but tools/other is missing"
 check "nothing starts for a check" [ ! -e .arx/mcp ]
+python3 -c 'import json; print(json.dumps([{"name": "tool_%d" % i, "description": "Does thing %d." % i, "inputSchema": {"type": "object", "properties": {"x": {"type": "string"}}}} for i in range(100)]))' >hundred.json
+mcp_spec >agent.yaml <<EOF2
+one: {command: $FAKE_MCP, args: [one, hundred.json]}
+two: {command: $FAKE_MCP, args: [two, hundred.json]}
+three: {command: $FAKE_MCP, args: [three, hundred.json]}
+EOF2
+"$ARX" mcp list --refresh >/dev/null 2>&1
+rm -f fake/mcp-*.starts
+"$ARX" check >check.txt 2>&1
+check "arx check counts the cached tools" has check.txt "mcp: one (stdio, 100 tools cached) two (stdio, 100 tools cached) three (stdio, 100 tools cached)"
+calls
+run "go"
+check "with 3 servers and 300 tools the request has two MCP tools" [ "$(tool_names 1)" = "bash edit mcp_search mcp_select" ]
+check "  whose description names the 3 servers" sh -c "jq -r '.tools[2].function.description' fake/req-01.json | grep -q 'these MCP servers: one (The one server), two (The two server), three (The three server). Then'"
+check "  and no server starts" [ "$(starts one)$(starts two)$(starts three)" = 000 ]
 
 begin "search"
 gh_spec 'description: Issues and pull requests' >agent.yaml

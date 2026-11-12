@@ -16,6 +16,7 @@ arx update [--check]                  update to the latest release
 arx plugin add|rm|ls|new              install and manage plugins (`arx add` for short)
 arx kit add|rm|ls                     install and manage kits
 arx config get|set|unset|add|remove   read and change top-level spec keys
+arx mcp list|search|call              list, search and call the MCP servers of the spec
 arx check | tools | schema | tool | request PATH | watch | ctl | version | help
 ```
 
@@ -195,6 +196,28 @@ arx schema > agent.schema.json        # JSON Schema for editors
 
 `arx check` exits with code 2 when the spec is invalid, so it works in CI and
 in a pre-commit hook.
+
+### `arx mcp`
+
+`arx mcp` works with the [MCP servers](mcp.md) of the spec, without a
+session. Each form takes `--spec PATH` and `--set KEY=VALUE`.
+
+| Command | What it does |
+|---|---|
+| `arx mcp list` | Lists each server with its transport and its cached tools. It starts nothing. |
+| `arx mcp list --refresh` | Starts every server and lists its tools again. `arx doctor` runs this. |
+| `arx mcp list --json` | The same as JSON, for scripts. |
+| `arx mcp search QUERY [--server S]` | Prints what the agent's `mcp_search` prints, so you can tune descriptions. |
+| `arx mcp call SERVER TOOL` | Makes one call with JSON arguments on stdin. |
+
+```sh
+arx mcp list --refresh
+arx mcp search "create issue"
+echo '{"repo": "me/site", "title": "Fix the footer"}' | arx mcp call github create_issue
+```
+
+`arx mcp http` is the bridge that arx starts for a `url` server. You don't
+run it yourself.
 
 ## Following a session
 

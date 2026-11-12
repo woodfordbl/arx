@@ -54,6 +54,17 @@ must:
 A second 401 or 403 in a row stops the run with exit code 4. Each subagent
 is its own arx process, so it runs the program once at its start.
 
+An MCP server with `credential` in its [`mcp_servers`](../spec.md#mcp_servers)
+entry uses the same programs:
+
+| Server | When arx runs the program | What it uses |
+|---|---|---|
+| stdio (`command`) | before each start of the server, with reason `start` | `api_key`, which goes in the `api_key_env` variable; `headers` are ignored |
+| HTTP (`url`) | in the bridge: before its first request, when less than 60 seconds are left before `expires_at`, and after a 401 or 403 | `headers`, or `api_key` as a bearer token |
+
+After a 401 or 403 the bridge repeats the request once. A second one ends
+the request with an error for the model.
+
 ### Input and output
 
 arx writes one line of JSON to the program's stdin:
@@ -61,6 +72,20 @@ arx writes one line of JSON to the program's stdin:
 ```json
 {"reason": "start", "model": "gpt-6.1-sol", "base_url": "https://x.dev/v1"}
 ```
+
+For an MCP server the input names the server in place of the model:
+
+```json
+{"reason": "rejected", "server": "linear", "url": "https://mcp.linear.app/mcp",
+ "base_url": "https://mcp.linear.app/mcp", "status": 401,
+ "challenge": "Bearer resource_metadata=\"https://mcp.linear.app/.well-known/oauth-protected-resource\""}
+```
+
+| Field | When |
+|---|---|
+| `server` | always, for an MCP server |
+| `url` | HTTP servers; `base_url` holds the same value, for programs written for model calls |
+| `status`, `challenge` | reason `rejected`: the HTTP status (401 or 403) and the `WWW-Authenticate` value |
 
 The program prints one JSON object on stdout. Every field is optional:
 

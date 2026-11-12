@@ -137,7 +137,7 @@ has a list of **keys**, and a key works as a lock:
 | Keys | Effect | Use it when |
 |---|---|---|
 | `["*"]` | the call runs alone; this is the default for a tool that declares no keys | the tool can change anything, as a shell can |
-| `[]` | the call runs with any other call; this is the default for a subagent | the tool only reads, such as a search |
+| `[]` | the call runs with any other call; this is the default for a subagent, `mcp_search` and `mcp_select` | the tool only reads, such as a search |
 | `["file:{path}"]` | calls with the same key run one at a time; calls with different keys run together | the tool writes one thing that an argument names |
 
 Declare them in the schema (the schema file or `--schema`):
@@ -164,6 +164,10 @@ Declare them in the schema (the schema file or `--schema`):
 
 The [built-in scheduler](schedulers.md) starts calls by their keys. A
 scheduler plugin can replace it.
+
+An MCP tool takes its keys from its server's entry: `keys` in
+[`mcp_servers`](../spec.md#mcp_servers), and `["*"]` without it. arx ignores
+a server's `readOnlyHint`, since a server can claim anything.
 
 ## bash and edit
 
@@ -212,6 +216,12 @@ plugin says so with `replaces: [bash]` in its `plugin.yaml`.
   other name.
 - When two layers have a tool with the same name, the first layer wins. See
   [Layers](concepts.md#layer).
+- A tool of an [MCP server](../mcp.md) is named `<server>__<tool>`, such as
+  `github__create_issue`. Other characters in the server's name for it
+  become `_`. A name over 64 characters, or one that two tools share, keeps
+  its first 55 characters and ends in `_` and 6 hex digits.
+- A tool file with the name of an MCP tool wins. A file named `mcp_search`
+  or `mcp_select` replaces that tool.
 
 ## Common mistakes
 

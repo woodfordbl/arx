@@ -64,7 +64,7 @@ in the "May print" column.
 |---|---|---|
 | `before_model` | `{"messages", "tools", "model", "settings", "reason"}` | any of `messages`, `tools`, `model`, `settings` |
 | `after_model` | `{"reply", "usage", "finish"}` | `reply` |
-| `before_tool` | `{"id", "name", "args", "keys"}` | any of `name`, `args`, `keys`; or `result` to skip the tool |
+| `before_tool` | `{"id", "name", "args", "keys"}`, and `server` for a call to an [MCP tool](../mcp.md) | any of `name`, `args`, `keys`; or `result` to skip the tool |
 | `after_tool` | `{"call": {"id", "name", "args"}, "result", "is_error"}` | `result`, `backoff` |
 
 #### `before_model`
