@@ -50,6 +50,9 @@ not part of the binary, and harness files that an agent writes at run time
   harness < agent < main). The one exception: files that need the `Agent`
   struct include `agent.h` from their `.c` file, and headers refer to it as
   `struct Agent`.
+- `src/mcp/` sits beside `harness/`: its header includes `harness.h`, and
+  harness, agent and cli files include `mcp.h` from their `.c` files. It
+  also uses `model.h`, for credential programs.
 - Split a `.c` file when it nears 400 lines; the new file shares the
   folder's header.
 - Header guards follow the path: `src/harness/harness.h` uses

@@ -66,14 +66,12 @@ typedef struct Spec {
   char* prompt_from;    // where the base prompt came from, for `arx check`
 } Spec;
 
-// Loads and validates `path`, merged over the kit and the user's defaults
-// in ConfigDir()/config.yaml (the spec wins key by key, and the kit wins
-// over the defaults), applies `sets` (--set, and --kit as `kit=NAME`; may be
-// NULL), builds the active list (see ActiveBuild) and adds the plugins (see
-// PluginsLoad). A missing kit is an error. With `path` NULL the defaults are
-// the whole spec, and tools/ and hooks/ come from the config directory.
-// Returns 0 and fills `spec`, or returns -1, appends one line per problem to
-// `err` ("file:line: path: message") and leaves `spec` empty.
+// Loads and validates `path`, merged over the kit and ConfigDir()/config.yaml
+// (the spec wins key by key, then the kit), applies `sets` (--set, and --kit
+// as `kit=NAME`; may be NULL), builds the active list (ActiveBuild) and adds
+// the plugins (PluginsLoad). A missing kit is an error. With `path` NULL the
+// defaults are the whole spec, and its folders are the config directory's.
+// Returns 0, or -1 with "file:line: path: message" lines in `err`.
 int SpecLoad(const char* path, cJSON* sets, Spec* spec, Buffer* err);
 
 // Parses the YAML file at `path` into spec->root and spec->lines, without
@@ -141,13 +139,12 @@ void KitLockWrite(const Spec* spec);
 // ---- plugins.c ----
 
 // Builds spec->layers and spec->rows. With an active list (spec->active):
-// the spec folder, then each listed plugin in order, from <spec
-// dir>/plugins/<name>/ or else the config folder's. Without one: the spec
-// folder, its plugins/, then the config folder (when different) and its
-// plugins/, less those `disable` names. A plugin's tools, compactors,
-// observers and model_settings merge under the spec; its hook options,
-// settings, `replaces` and instructions stay with its layer. A broken,
-// missing or too-new plugin is skipped and explained in spec->problems.
+// the spec folder, then each listed plugin in order, from the spec's
+// plugins/ or else the config folder's. Without one: the spec folder, its
+// plugins/, the config folder and its plugins/, less those `disable` names.
+// A plugin's keys merge under the spec; its hook options, settings,
+// `replaces` and instructions stay with its layer. A broken, missing or
+// too-new plugin is skipped and explained in spec->problems.
 void PluginsLoad(Spec* spec);
 
 // Adopt's part for a plugin's instructions and model_settings (plugin_keys.c).
@@ -193,6 +190,7 @@ typedef enum FieldType {
   kMap,         // a mapping with the keys in `sub`
   kDict,        // a mapping whose values each have the keys in `sub`
   kPluginList,  // a list of names or {name: {settings}}
+  kFlagOrList,  // true, false or a list of strings
 } FieldType;
 
 // One key of the spec: name, type, sub-fields (kMap, kDict) and a doc line.
@@ -222,11 +220,14 @@ int TypeOk(FieldType type, const cJSON* v);
 // Describes `type` for messages, such as "a string" (fields.c).
 const char* TypeName(FieldType type);
 
+// Appends "file:line: path: message" for the key at `path` of `spec`.
+void SpecProblem(const Spec* spec, Buffer* err, const char* path,
+                 const char* fmt, ...);
+
 // Validates the spec and the plugins' settings; appends problems to `err`.
 void SpecValidate(const Spec* spec, Buffer* err);
 
-// Validates a parsed plugin.yaml against kPluginFields, and its programs,
-// hosts and text, appending problems to `err`.
+// Validates a parsed plugin.yaml against kPluginFields; appends to `err`.
 void PluginValidate(const Spec* plugin, Buffer* err);
 
 // Validates a parsed kit.yaml against kKitFields, appending to `err`.
@@ -243,6 +244,7 @@ void SpecSchema(Buffer* out);
 typedef enum ToolKind {
   kToolExec,   // tools/<name>, arguments as JSON on stdin
   kToolAgent,  // a subagent: arx -p - --spec <path>
+  kToolMcp,    // a tool of an MCP server, or mcp_search and mcp_select
 } ToolKind;
 
 // One tool as the model sees it, plus how to run it.
@@ -257,6 +259,7 @@ typedef struct Tool {
   char* plugin;      // that plugin's name, or NULL
   char* core;        // NAME when the file only runs `arx tool NAME`, or NULL
   cJSON* keys;       // key templates from the schema; NULL means ["*"]
+  char *server, *remote;  // kToolMcp: its server, and its name there
 } Tool;
 
 // The tools of the current harness version.
@@ -266,11 +269,10 @@ typedef struct ToolSet {
 } ToolSet;
 
 // Rebuilds a->tools from the spec and every layer's tools/: an executable
-// is a tool named after its file, described by <file>.json or else
-// `<tool> --schema`, with {{timeout}} and {{tool_output.*}} filled in. The
-// first layer with a working tool of a name wins. A file that only runs
-// `exec "$ARX_BIN" tool NAME "$@"` starts as `arx tool NAME`. A spec entry
-// with `agent: path` is a subagent. Problems become notes, once each.
+// is a tool named after its file, described by <file>.json or `<tool>
+// --schema`, with {{timeout}} and {{tool_output.*}} filled in. The first
+// layer's tool of a name wins. A file that only runs `exec "$ARX_BIN" tool
+// NAME` starts as `arx tool NAME`. `agent: path` makes a subagent.
 void ToolsBuild(struct Agent* a);
 
 // Frees every tool and empties the set.
@@ -282,7 +284,7 @@ cJSON* ToolsJson(const ToolSet* tools);
 // A tool call that runs; see ToolStart.
 typedef struct ToolRun ToolRun;
 
-// Finds the tool called `name`, or returns NULL.
+// Finds tool `name`, or NULL. It may add an MCP tool: keep no Tool* over it.
 Tool* ToolFind(struct Agent* a, const char* name);
 
 // Starts tool `name` with JSON `args` and returns at once; ProcPoll on
@@ -292,8 +294,14 @@ ToolRun* ToolStart(struct Agent* a, const char* name, const char* args,
                    char** text, int* is_error, char** output_path,
                    cJSON* end_event);
 
-// The process of a started call, for ProcPoll.
+// The process of a started call, for ProcPoll; NULL for an MCP call.
 ProcChild* ToolChild(ToolRun* run);
+
+// True when a started call ended: its process, or its MCP request.
+int ToolDone(ToolRun* run);
+
+// Starts stopping a started call; ToolDone turns true when it has.
+void ToolStop(ToolRun* run);
 
 // The call runs in the background now: a subagent's events are not drawn.
 void ToolQuiet(ToolRun* run);
@@ -326,12 +334,10 @@ int KeysValid(cJSON* keys);
 
 // Returns the keys of a call to `tool` (NULL: unknown, which gets []) with
 // `args`, as a new array: ["*"] when it declares none, [] for a subagent.
-// In each key, {name} becomes the top-level argument `name` ("" if
-// missing), and in a "host:" key its host: "host:{url}" -> "host:a.com".
+// {name} becomes argument `name` (""), or its host in a "host:" key.
 cJSON* KeysFor(const Tool* tool, cJSON* args);
 
-// True when two calls with these keys may not run at the same time: one of
-// them has "*", or they share a key.
+// True when two calls may not run together: "*", or a key they share.
 int KeysConflict(cJSON* a, cJSON* b);
 
 // ---- hooks.c ----
@@ -340,9 +346,8 @@ int KeysConflict(cJSON* a, cJSON* b);
 // by band, then in layer order, with `input` (consumed) plus point, session
 // and turn on stdin. Sets `*output` to the combined JSON or NULL:
 // session_start joins every {"context"}; stop takes the first {"decision":
-// "continue" | "restart", "message"}. Returns 0 when there is no hook, 1
-// when hooks ran. A failed hook (non-zero exit, timeout, stdout that is not
-// a JSON object) is ignored, unless `fail: closed`: then it returns -1.
+// "continue" | "restart", "message"}. Returns 0 with no hook, 1 when hooks
+// ran. A failed hook is ignored, unless `fail: closed`: then it returns -1.
 int HookRun(struct Agent* a, const char* point, cJSON* input, cJSON** output);
 
 // True when any layer has an executable hooks/<point>.
@@ -362,19 +367,16 @@ int HookRunOne(struct Agent* a, const Layer* layer, const char* point,
 // plugin.yaml, the others from the spec's hooks.<point>. May be NULL.
 cJSON* HookOptions(const Spec* spec, const Layer* layer, const char* point);
 
-// The band of `layer`'s hook at `point`: 0 policy, 1 normal (the
-// default), 2 final.
+// The band of `layer`'s hook at `point`: 0 policy, 1 normal, 2 final.
 int HookBand(const Spec* spec, const Layer* layer, const char* point);
 
 // ---- chain.c ----
 
 // Runs hooks/<point> for a raw-object point (before_model, after_model,
 // before_tool, after_tool) as a chain, by band, then in layer order: each
-// hook gets `object` (kept by the caller), and the fields it prints replace
-// those of `object` (chain.c lists them). A before_tool `result` ends the
-// chain. Changed fields are added to `changed` (an array; may be NULL).
-// Returns 0 when no hook ran, 1 when hooks ran, and -1 when a
-// `fail: closed` hook failed (the chain stops).
+// hook gets `object`, and the fields it prints replace its own (chain.c
+// lists them). A before_tool `result` ends the chain. Changed fields join
+// `changed` (or NULL). Returns 0 with no hook, 1, or -1 (`fail: closed`).
 int HookChain(struct Agent* a, const char* point, cJSON* object,
               cJSON* changed);
 
@@ -388,13 +390,11 @@ int64_t CurrentTokens(struct Agent* a);
 
 // Compacts with `strategy`: mask (clear old tool outputs, the default),
 // summarize (one model call), hybrid (mask, then summarize if still over),
-// restart (fresh context, then `message` if not NULL), a name from
-// `compactors:`, or a path to an executable that rewrites {"messages"}.
-// Records a transcript reset and a compact event. Returns 0, or -1.
+// restart (fresh context, then `message` if not NULL), a `compactors:` name
+// or a program that rewrites {"messages"}. Sends compact. Returns 0 or -1.
 int Compact(struct Agent* a, const char* strategy, const char* message);
 
-// Compacts with the spec's strategy when the prompt is over
-// compaction.trigger x context_window.
+// Compacts when the prompt is over compaction.trigger x context_window.
 void MaybeCompact(struct Agent* a);
 
 #endif  // SRC_HARNESS_HARNESS_H_

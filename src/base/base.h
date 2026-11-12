@@ -262,8 +262,7 @@ void SleepSeconds(double s);
 
 // ---- http.c, on top of the platform ----
 
-// One HTTP request: natively curl (through any adapter), with the headers
-// in a 0600 file it deletes after; in the browser, a fetch.
+// One HTTP request: curl with its headers in a 0600 file, or a fetch.
 typedef struct HttpRequest {
   const char* method;  // NULL: POST with a body, else GET
   const char* url;
@@ -287,6 +286,7 @@ typedef struct HttpResult {
   int interrupted;     // stopped by Ctrl-C
   int spawn_failed;    // curl or the adapter did not start
   Buffer err;          // curl's stderr, or why it failed; free it
+  Buffer headers;      // the last response's header lines; free it
   double secs;
 } HttpResult;
 

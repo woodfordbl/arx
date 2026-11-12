@@ -15,6 +15,7 @@ it:
 | **One C binary, two vendored libraries** | It starts in under a millisecond, uses a few MB over hundreds of turns, and runs anywhere without a runtime. cJSON and libyaml are vendored, unmodified. |
 | **Plugins are processes** | Any language works, a crash can't take the core down, and the agent can write plugins with the same tools it uses for the task. |
 | **Model calls through `curl`** | Every request goes through `HttpRun`, which runs curl natively. The binary has no TLS or HTTP code. curl handles proxies, certificates and HTTP/2. The API key goes in a 0600 header file, never on the command line. |
+| **MCP over pipes in the agent, HTTP in a bridge process** | The agent process speaks one transport, JSON-RPC over a child's pipes, which `arx acp` needs too. `arx mcp http` is a separate process for each `url` server, so HTTP, tokens and sign-in can't stop the agent. MCP servers are arx's children: they share its Ctrl-C path and its exit. |
 | **Hot reload by `stat()`** | A fingerprint of the harness files costs microseconds, so arx checks before every model call instead of watching files. |
 | **One field table for the spec** | Validation, "did you mean" hints and `arx schema` all come from `kTopFields` in `fields.c`. Adding a key adds it to all three. |
 | **Errors go to the agent** | A rejected edit or a broken tool becomes a `[harness]` note with enough detail for the agent to fix it itself. |
@@ -56,11 +57,15 @@ flowchart TD
   cli["cli.h<br><b>cli/</b><br>options, built-in and<br>external commands"]
   agent["agent.h<br><b>agent/</b><br>the loop, session<br>lifecycle, prompts"]
   harness["harness.h<br><b>harness/</b><br>what the agent<br>can change"]
+  mcp["mcp.h<br><b>mcp/</b><br>MCP servers<br>as tools"]
   model["model.h<br><b>model/</b><br>model calls<br>through curl"]
   io["io.h<br><b>io/</b><br>sessions, events,<br>terminal view"]
   base["base.h<br><b>base/</b><br>buffers, files, JSON, processes"]
   main --> cli --> agent
   agent --> harness & model & io
+  agent --> mcp
+  harness <--> mcp
+  mcp --> model
   io --> base
 ```
 
@@ -70,7 +75,7 @@ Every source file, by folder:
 |---|---|---|
 | | `main.c` | the entry point: signals, then the command line |
 | `cli/` | `options.c` | option parsing, spec lookup and usage errors |
-| | `commands.c` | built-in commands: `schema`, `tool`, `watch`, `ctl`, `request`, `version`, `help` |
+| | `commands.c` | built-in commands: `schema`, `tool`, `watch`, `ctl`, `mcp`, `request`, `version`, `help` |
 | | `check.c` | `arx check` and `arx tools` |
 | | `shell_tools.c` | the `bash` and `edit` tools behind `arx tool NAME` |
 | | `external.c` | `arx foo` runs `arx-foo`; `arx help` lists every command |
@@ -96,9 +101,21 @@ Every source file, by folder:
 | | `hooks.c` | runs `hooks/<point>`: one hook, its options and band, and the `session_start` and `stop` points |
 | | `chain.c` | the hook chain over one raw object, around the model and tool calls |
 | | `compact.c` | the compaction strategies |
+| `mcp/` | `spec.c` | the `mcp_servers` key: its rules, a plugin's servers, hosts, `${NAME}` |
+| | `catalog.c` | the servers of the spec, their cached tool lists, tool names |
+| | `toolset.c` | the selection, and the MCP tools of the tool set |
+| | `search.c` | `mcp_search`'s ranking (BM25F) and what `mcp_select` does |
+| | `launch.c` | starts a server's process: its credential and environment |
+| | `servers.c` | a server's process: starts, exits, restarts, failure, stop |
+| | `probe.c` | the era probe (`server/discover`, else `initialize`), the tool list, and what a server sends on its own |
+| | `calls.c` | one call: `tools/call`, its result as text, cancel, progress |
+| | `http.c` | `arx mcp http`: the bridge from stdio to one HTTP server |
+| | `http_headers.c` | the bridge's request headers, `x-mcp-header` and credential |
+| | `http_legacy.c` | the bridge's handshake with a 2025-11-25 HTTP server |
+| | `command.c` | `arx mcp list`, `search` and `call` |
 | `model/` | `llm.c` | builds the request, sends it with `HttpRun`, classifies errors, retries |
 | | `auth.c` | finds the API key (environment, Keychain or credentials file) and builds the request headers |
-| | `credential.c` | runs the credential program (`endpoint.credential`) and finds the adapter (`endpoint.adapter`) |
+| | `credential.c` | runs credential programs (`endpoint.credential`, and an MCP server's) and finds the adapter (`endpoint.adapter`) |
 | | `sse.c` | parses the streamed reply |
 | `io/` | `session.c` | session folders, transcript, meta, inbox |
 | | `events.c` | the event stream and observers |
@@ -130,7 +147,7 @@ Every build, test and release step is a `make` target:
 |---|---|
 | `make` | release build: `-Os`, LTO, dead code stripped; also `commands/lib/pick` |
 | `make debug` | `./arx-debug` with AddressSanitizer and UBSan |
-| `make test` | the unit tests of `src/base` (`tests/base_test.c`), then 949 end-to-end checks in thirteen suites against `tests/fake-curl` (77 core, 38 marketplace plugins, 74 plugin loading, 94 CLI, 56 shell plugin, 70 hooks, 56 tool runtime, 93 kits, 84 credentials, 35 plugin state, 89 climb config, 73 climb runs, 110 terminal UI). No network or API key needed. The terminal UI suite drives pick and `arx setup` on a pseudo-terminal with `tests/pty.py`, and skips itself without python3. |
+| `make test` | the unit tests of `src/base` (`tests/base_test.c`), then 1,289 end-to-end checks in seventeen suites against `tests/fake-curl` (77 core, 60 marketplace plugins, 74 plugin loading, 94 CLI, 56 shell plugin, 70 hooks, 61 tool runtime, 86 background calls, 93 kits, 84 credentials, 35 plugin state, 89 climb config, 73 climb runs, 110 terminal UI, 120 MCP client, 57 MCP servers, 50 MCP bridge and sign-in). The MCP suites run against `tests/fake-mcp`, a stdio server in Python, and the `mcp-oauth` plugin against a fake authorization server on 127.0.0.1. No network or API key needed. The terminal UI suite drives pick and `arx setup` on a pseudo-terminal with `tests/pty.py`, and skips itself without python3. |
 | `make bench` | the [performance budgets](#performance-budgets) |
 | `make lint` | clang-format, cpplint, files of 400 lines or fewer, doc comments, for `src/` and `pick/`, and process calls only in `proc.c` and `proc_posix.c` |
 | `make format` | rewrites `src/` and `pick/` in Google style |

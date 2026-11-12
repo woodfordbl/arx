@@ -6,7 +6,8 @@
 #            (the menu program) <= 64 KB on macOS, <= 256 KB on Linux
 #   startup  median `arx version` within 1 ms of `true` (the OS floor)
 #   memory   peak RSS <= 16 MB over a 500-turn session
-#   reload   a harness edit is live in <= 10 ms (plus the tool's --schema)
+#   reload   a harness edit is live in <= 10 ms (plus the tool's --schema),
+#            also with 20 MCP servers in the spec, and none of them starts
 set -u
 . "$(dirname "$0")/lib.sh"
 ARX="$ROOT/arx"
@@ -88,6 +89,22 @@ sse_tool bash '{\"command\":\"echo \\\"context_window: 64000\\\" >> agent.yaml\"
 sse_text "done" | reply 2 "200 OK"
 "$ARX" -p go --quiet >/dev/null 2>&1
 budget reload "$(reload_ms)" 10 "ms for a spec edit"
+
+# MCP: a spec that names 20 servers must cost nothing at the start or on
+# a reload, since no server starts until the agent needs one.
+begin "bench-mcp"
+{
+  spec
+  echo "mcp_servers:"
+  for i in $(seq 1 20); do echo "  s$i: {command: /nonexistent/server-$i}"; done
+} >agent.yaml
+sse_tool bash '{\"command\":\"echo \\\"context_window: 64000\\\" >> agent.yaml\"}' |
+  reply 1 "200 OK"
+sse_text "done" | reply 2 "200 OK"
+"$ARX" -p go --quiet >/dev/null 2>&1
+budget reload "$(reload_ms)" 10 "ms for a spec edit with 20 MCP servers"
+budget servers "$(grep -c '"type":"mcp.server"' .arx/sessions/last/events.jsonl)" 0 \
+  "MCP servers started"
 
 # Adding a tool also runs its --schema once. Not a budget: on macOS the
 # first run of any new executable includes ~40-50 ms of OS security checks.

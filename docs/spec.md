@@ -100,6 +100,7 @@ prices: {input: 3, output: 15}
 | `adapters` | map | | Named adapters, `name: path`, for `endpoint.adapter`. See [Adapters](plugins/adapters.md). |
 | `hosts` | string list | | Network hosts the harness's programs reach, besides the endpoint, such as `[auth.openai.com]`. Plugins add theirs. `arx check --hosts` lists them all. |
 | `ui` | string | | The command that draws interactive runs: with `ui: NAME`, bare `arx` on a terminal runs `arx-NAME` in place of the built-in view. `none` or empty means the built-in view. See [Running an agent](cli.md#running-an-agent). |
+| `mcp_servers` | map | | MCP servers, by name. Their tools reach the agent through `mcp_search` and `mcp_select`. See [`mcp_servers`](#mcp_servers). |
 
 `kit`, `plugins`, `enable` and `disable` build the
 [active list](plugins/kits.md#the-active-list) of plugins.
@@ -155,6 +156,49 @@ out `shell` leaves the agent without them. See
   directory.
 - **`edit`**: replaces `old` with `new` in `path`. `old` must occur exactly
   once. An empty `old` creates a new file.
+
+### `mcp_servers`
+
+Each entry is one MCP server: a program (`command`) or a URL (`url`). The
+keys match the `mcpServers` entries of other MCP hosts. A server name uses
+letters, digits, `_` and `-`, 32 at most, and no `__`. See
+[MCP servers](mcp.md) for the guide.
+
+```yaml
+mcp_servers:
+  github:
+    command: npx
+    args: [-y, "@modelcontextprotocol/server-github"]
+    env: {GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_TOKEN}"}
+    exclude: ["delete_*"]
+  linear:
+    url: https://mcp.linear.app/mcp
+    credential: mcp-oauth
+```
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `type` | string | from `command` or `url` | `stdio` or `http`. For pasted entries. `sse` is an error. |
+| `command` | string | | stdio: the program. A bare name is looked up on `PATH`. A name with `/` is relative to the spec folder. |
+| `args` | string list | `[]` | stdio: its arguments. |
+| `env` | map of strings | | stdio: variables added to its environment. |
+| `cwd` | string | the folder arx runs in | stdio: its working folder, relative to the spec folder. |
+| `url` | string | | http: the MCP endpoint, `http://` or `https://`. |
+| `headers` | map of strings | | http: headers sent on every request. |
+| `credential` | string | | A name from `credentials:` or a program path, as for `endpoint.credential`. |
+| `api_key_env` | string | | stdio: the variable that gets the credential's `api_key`. Needs `command` and `credential`. |
+| `description` | string | the first sentence of the server's instructions | One line in `mcp_search`'s description. |
+| `include` | string list | every tool | Glob patterns on the server's own tool names. Only matching tools exist. |
+| `exclude` | string list | | Glob patterns. Matching tools never exist. |
+| `preload` | boolean or string list | `false` | Tools in the prompt from the first turn. `true` takes every tool of the server. |
+| `keys` | string list | `["*"]` | The keys of every call to this server. |
+| `timeout` | duration | `120s` | The longest call. `tools.<server>__<tool>.timeout` wins for one tool. |
+| `startup_timeout` | duration | `60s` | The longest time from the start to the first tool list. |
+| `enabled` | boolean | `true` | `false` turns the server off. |
+
+An entry has exactly one of `command` and `url`. `${NAME}` and
+`${NAME:-default}` in `args`, `env`, `url` and `headers` expand from arx's
+environment when the server starts. `arx check` prints them unexpanded.
 
 ### `tool_output`
 

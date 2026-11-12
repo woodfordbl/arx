@@ -15,6 +15,7 @@
 #include "src/base/base.h"
 #include "src/harness/harness.h"
 #include "src/io/io.h"
+#include "src/mcp/mcp.h"
 
 // The "status" for an exit code.
 static const char* StatusName(int code) {
@@ -76,6 +77,7 @@ static int Start(Agent* a) {
   }
   FreeEnv(env);
   ToolsBuild(a);
+  McpSync(a);
   cJSON* e = EventNew("session.start");
   cJSON_AddStringToObject(e, "name", JsonStr(a->spec.root, "name", "agent"));
   cJSON_AddStringToObject(e, "model", JsonStr(a->spec.root, "model", ""));
@@ -261,10 +263,11 @@ static void PrintResult(Agent* a, int code) {
   }
 }
 
-// Ends the session: stops the calls in flight, then the final event,
-// meta.json and the result.
+// Ends the session: stops the calls in flight and the MCP servers, then
+// the final event, meta.json and the result.
 static void Finish(Agent* a, int code) {
   CallsShutdown(a);
+  McpShutdown();  // after the calls, so each one is cancelled, not cut off
   cJSON* e = EventNew("session.end");
   AddTotals(a, e, code);
   cJSON_AddNumberToObject(e, "secs", Now() - a->start);

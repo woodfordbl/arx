@@ -18,6 +18,7 @@
 #include "src/base/base.h"
 #include "src/harness/harness.h"
 #include "src/io/io.h"
+#include "src/mcp/mcp.h"
 
 // A one-line summary of a tool call; see agent.h.
 char* CallPreview(const char* args) {
@@ -48,10 +49,15 @@ static cJSON* NewCall(Agent* a, const char* id, const char* name,
   cJSON_AddStringToObject(call, "id", id);
   cJSON_AddStringToObject(call, "name", name);
   cJSON* parsed = cJSON_Parse(args);
-  cJSON* keys = KeysFor(ToolFind(a, name), parsed);
+  const Tool* tool = ToolFind(a, name);
+  cJSON* keys = KeysFor(tool, parsed);
   cJSON_AddItemToObject(call, "args",
                         parsed ? parsed : cJSON_CreateString(args));
   cJSON_AddItemToObject(call, "keys", keys);
+  // Input only: a guard can deny the calls of one MCP server by name.
+  if (tool && tool->server) {
+    cJSON_AddStringToObject(call, "server", tool->server);
+  }
   return call;
 }
 
@@ -223,8 +229,10 @@ static void Prepare(Agent* a, Call* c, cJSON* raw) {
   cJSON_AddStringToObject(start, "id", c->id);
   cJSON_AddStringToObject(start, "name", name);
   cJSON_AddStringToObject(start, "preview", preview);
-  free(preview);
   c->model_call = NewCall(a, c->id, name, c->args);
+  const char* server = JsonStr(c->model_call, "server", NULL);
+  if (server) cJSON_AddStringToObject(start, "server", server);
+  free(preview);
   c->call = cJSON_Duplicate(c->model_call, 1);
   if (strlen(c->args) > kEventArgsMax) {
     cJSON_AddTrueToObject(start, "args_cut");
@@ -303,15 +311,20 @@ int CallsPoll(Agent* a, double wait) {
   int k = 0, busy = 0;
   for (int i = 0; i < a->call_count; i++) {
     Call* c = a->calls[i];
-    // A background call's process is kept, so every round serves it.
-    if (c->state == kRunning && !c->short_id) kids[k++] = ToolChild(c->run);
+    // A background call's process is kept, so every round serves it. An
+    // MCP call has no process of its own.
+    ProcChild* kid = c->state == kRunning ? ToolChild(c->run) : NULL;
+    if (kid && !c->short_id) kids[k++] = kid;
     busy += c->state != kDone;
+    // A search of the cache has its answer at once: do not wait for it.
+    if (c->state == kRunning && !kid) wait = 0.001;
   }
   if (busy) ProcPoll(kids, k, SchedWait(wait));
   free(kids);
+  McpPump(a);
   for (int i = 0; i < a->call_count; i++) {
     Call* c = a->calls[i];
-    if (c->state != kRunning || !ProcDone(ToolChild(c->run))) continue;
+    if (c->state != kRunning || !ToolDone(c->run)) continue;
     c->text = ToolFinish(c->run, &c->is_error, c->end, c->stop_line);
     c->run = NULL;
     Complete(a, c, JsonNum(c->end, "secs", 0));

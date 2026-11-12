@@ -184,9 +184,10 @@ reference.
 | [arx climb](docs/climb.md) | run the agent in rounds; arx scores and keeps or reverts each change |
 | [agent.yaml reference](docs/spec.md) | every key, its type and default, and the templates |
 | [Plugins](docs/plugins.md) | every plugin kind, plugin folders, the marketplace, events |
+| [MCP servers](docs/mcp.md) | add MCP servers; the agent finds their tools with `mcp_search` and `mcp_select` |
 | [Command line](docs/cli.md) | commands, options, caps, exit codes |
 | [Architecture](docs/architecture.md) | design decisions, source layout, building, testing, releases |
-| [Roadmap](docs/roadmap.md) | ACP, a TUI, MCP |
+| [Roadmap](docs/roadmap.md) | ACP and a TUI |
 
 The same pages are published as a docs site by
 [arx-docs](https://github.com/woodfordbl/arx-docs), which renders this

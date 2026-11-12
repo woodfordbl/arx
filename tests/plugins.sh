@@ -29,7 +29,7 @@ check "python tool found" has check.txt 'word_count'
 check "shell tool found" has check.txt ' now'
 check "subagent found" has check.txt 'reviewer'
 check "all four hooks found" has check.txt 'session_start(git-context) before_tool(guard) after_tool(fail-hint) stop'
-check "every plugin loads" has check.txt 'plugins: background chatgpt clock fail-hint git-context guard keep-last never-stop notify op-key plugin-authoring reviewer shell word-count'
+check "every plugin loads" has check.txt 'plugins: background chatgpt clock fail-hint git-context guard keep-last mcp-oauth never-stop notify op-key plugin-authoring reviewer shell word-count'
 
 # Tools, every hook, and the observer in one session.
 begin_examples "tools, hooks, observer"

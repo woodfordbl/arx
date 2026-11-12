@@ -13,6 +13,7 @@
 #include "src/base/base.h"
 #include "src/harness/harness.h"
 #include "src/io/io.h"
+#include "src/mcp/mcp.h"
 
 // Captured output: the head and tail in memory, everything in a file.
 typedef struct Capture {
@@ -113,7 +114,9 @@ struct ToolRun {
   char* input;  // stdin, kept until the process ends
   char* path;   // the full output
   ProcChild* child;
-  int quiet;  // in the background: a subagent's events are not drawn
+  McpCall* mcp;  // an MCP call has no process of its own
+  int stopped;   // ToolStop came for an MCP call
+  int quiet;     // in the background: a subagent's events are not drawn
 };
 
 // DataFn for a subagent's fd 3: forwards each complete event line.
@@ -224,13 +227,15 @@ Tool* ToolFind(Agent* a, const char* name) {
   for (int i = 0; i < a->tools.count; i++) {
     if (!strcmp(a->tools.items[i].name, name)) return &a->tools.items[i];
   }
-  return NULL;
+  return McpToolFor(a, name);
 }
 
-// Starts a process-backed tool (an executable or a subagent). Returns
-// NULL when the process could not start.
+// Starts a tool: an executable or a subagent as a process, an MCP tool as
+// a call on its server. The run has no child when the process did not
+// start.
 static ToolRun* StartProcessTool(Agent* a, Tool* t, cJSON* args,
-                                 const char* raw, char* path) {
+                                 const char* raw, char* path,
+                                 cJSON* end_event) {
   ToolRun* run = XMalloc(sizeof(*run));
   memset(run, 0, sizeof(*run));
   run->kind = t->kind;
@@ -240,7 +245,11 @@ static ToolRun* StartProcessTool(Agent* a, Tool* t, cJSON* args,
   run->cap.tail_max = JsonSize(a->spec.root, "tool_output.tail", 6144);
   run->cap.fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
   run->env = ToolEnv(a, t->plugin_dir, t->plugin);
-  if (t->kind == kToolAgent) {
+  if (t->kind == kToolMcp) {
+    if (t->server) cJSON_AddStringToObject(end_event, "server", t->server);
+    run->mcp =
+        McpCallStart(a, t, args, JsonStr(end_event, "id", ""), run->path);
+  } else if (t->kind == kToolAgent) {
     run->input = XStrdup(JsonStr(args, "task", ""));
     run->child = StartSubagent(a, t, run);
   } else {
@@ -263,6 +272,21 @@ static ToolRun* StartProcessTool(Agent* a, Tool* t, cJSON* args,
 // The process of a started call; see harness.h.
 ProcChild* ToolChild(ToolRun* run) { return run->child; }
 
+// True when the call ended; see harness.h.
+int ToolDone(ToolRun* run) {
+  if (run->mcp) return run->stopped || McpCallDone(run->mcp);
+  return ProcDone(run->child);
+}
+
+// Starts stopping a call; see harness.h.
+void ToolStop(ToolRun* run) {
+  if (run->mcp) {
+    run->stopped = 1;  // ToolFinish cancels the request
+  } else {
+    ProcStop(run->child);
+  }
+}
+
 // Marks a started call as in the background; see harness.h.
 void ToolQuiet(ToolRun* run) { run->quiet = 1; }
 
@@ -273,7 +297,19 @@ char* ToolFinish(ToolRun* run, int* is_error, cJSON* end_event,
   int saved = errno;
   if (run->child) ProcFinish(run->child, &r);
   char* text = NULL;
-  if (r.spawn_failed) {
+  if (run->mcp) {  // its text gets the same head and tail cut as any output
+    memset(&r, 0, sizeof(r));
+    int cut_short = stopped && !McpCallDone(run->mcp);
+    char* full = McpCallFinish(run->mcp, &r.code, &r.secs);
+    if (cut_short) {
+      free(full);
+      full = XStrdup(stopped);
+    }
+    CaptureSink(&run->cap, *full ? full : "(no output)",
+                *full ? strlen(full) : 11);
+    text = CaptureText(&run->cap, run->path);
+    free(full);
+  } else if (r.spawn_failed) {
     text = XAsprintf("could not start the tool: %s", strerror(saved));
   } else if (run->kind == kToolAgent) {
     text = SubagentResult(&run->out, &run->cap, run->path, r.code, stopped);
@@ -320,8 +356,8 @@ ToolRun* ToolStart(Agent* a, const char* name, const char* args, char** text,
     *text = XAsprintf("the arguments are not a valid JSON object: %.200s", raw);
   } else if (!(*text = CheckArgs(t, parsed))) {
     *output_path = SessionOutputPath(&a->session);
-    run = StartProcessTool(a, t, parsed, raw, *output_path);
-    if (!run->child) {  // report it at once, with the end fields
+    run = StartProcessTool(a, t, parsed, raw, *output_path, end_event);
+    if (!run->child && !run->mcp) {  // report it at once, with the end fields
       *text = ToolFinish(run, is_error, end_event, NULL);
       run = NULL;
     }

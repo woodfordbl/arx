@@ -131,7 +131,7 @@ void CallDetach(Agent* a, Call* c) {
 void CallRuns(Agent* a, Call* c) {
   if (!c->short_id || !c->run) return;
   ToolQuiet(c->run);
-  ProcKeep(ToolChild(c->run));
+  if (ToolChild(c->run)) ProcKeep(ToolChild(c->run));  // not an MCP call
   cJSON* e = Entry(a, c->short_id);
   if (e && c->out_path && !cJSON_GetObjectItem(e, "out")) {
     cJSON_AddStringToObject(e, "out", c->out_path);
@@ -145,7 +145,7 @@ void CallCancel(Agent* a, const char* id) {
   c->status = "cancelled";
   if (c->state == kRunning) {
     c->stop_line = "[cancelled]";
-    ProcStop(ToolChild(c->run));
+    ToolStop(c->run);
   } else {
     SchedDone(c->id, 0, 1, NULL, 0);
     CallEndWithout(a, c, XStrdup("[cancelled before it started]"), 1);
@@ -197,7 +197,7 @@ void CallsShutdown(Agent* a) {
     c->status = "stopped";
     if (c->state == kRunning) {
       c->stop_line = "[stopped: the session ended]";
-      ProcStop(ToolChild(c->run));
+      ToolStop(c->run);
     } else {
       SchedDone(c->id, 0, 1, NULL, 0);
       CallEndWithout(

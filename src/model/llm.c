@@ -252,6 +252,7 @@ LlmStatus LlmChatWith(struct Agent* a, const char* model, cJSON* settings,
     }
     StreamFree(&s);
     BufferFree(&r.err);
+    BufferFree(&r.headers);
     BufferFree(&why);
     if (o != kOutcomeRetry) break;
   }

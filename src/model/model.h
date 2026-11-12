@@ -74,6 +74,13 @@ char* EndpointProgram(cJSON* root, const char* spec_dir, const char* key);
 CredentialStatus CredentialEnsure(cJSON* root, const char* spec_dir,
                                   int rejected, Buffer* err);
 
+// Runs the credential program at `path` with `input` (consumed) as one
+// line of JSON on stdin, so a caller gives its own input fields. Sets
+// `*value` to its checked output (the caller owns it) or NULL, sends
+// model.credential, and writes why it failed to `why`.
+CredentialStatus CredentialRun(const char* path, cJSON* input, cJSON** value,
+                               Buffer* why);
+
 // Returns the credential program's last output while the spec names one,
 // else NULL. The caller does not own it.
 cJSON* CredentialValue(cJSON* root);
