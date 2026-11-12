@@ -17,7 +17,7 @@ before it runs, but it can't limit what the tool does once it runs.
 
 ## Where hooks run in a turn
 
-There are six hook points. Four of them run inside each turn:
+There are seven hook points. Four of them run inside each turn:
 
 1. **`before_model`** gets the request. What it leaves is what the model
    gets.
@@ -32,8 +32,10 @@ There are six hook points. Four of them run inside each turn:
 6. **`after_tool`** runs as each call ends. It can change the call's result.
 7. **The results** go to the model in the order of the calls.
 
-The other two run around the turns: `session_start` runs once, before the
-first turn, and `stop` runs when the model replies without calling a tool.
+The other three run around the turns: `session_start` runs once, before
+the first turn, and `stop` runs when the model replies without calling a
+tool. `harness_edit` runs before a changed harness loads, and only in a
+[policy folder](policies.md).
 
 ## Contract
 
@@ -133,6 +135,7 @@ These outputs come from before the raw objects. They still work:
 |---|---|---|---|
 | `session_start` | once, before the first model call of a new session | none (`turn` is 0) | `{"context": "..."}` |
 | `stop` | when the model replies without calling a tool | `{"last_message": "..."}` | `{"decision": "continue", "message": "..."}` or `{"decision": "restart", "message": "..."}` |
+| `harness_edit` | before a changed harness loads; in policy folders only | `{"changes": [...]}`: every changed harness file | `{"reject": {"PATH": "REASON"}}`, `{"decision": "reject", "reason": "..."}` or `{"decision": "stop", "reason": "..."}` |
 
 - **`session_start` context**: arx adds it to the end of the first user
   message. The hook does not run again on `--resume`, so keep what a
@@ -144,6 +147,10 @@ These outputs come from before the raw objects. They still work:
   system prompt, the first message and `message`. `session_start` does not
   run again.
 - **`stop` with no output,** or any other decision: the session ends.
+- **`harness_edit`**: arx reverts each rejected file, and `stop` ends the
+  run with exit code `5`. Its `fail` option defaults to `closed`. See
+  [Policies](policies.md#the-harness_edit-hook) for the input and the
+  revert.
 
 arx cuts `last_message` at 8 KB.
 
@@ -192,9 +199,10 @@ arx runs them in this order:
 
 1. By [band](#bands): every `policy` hook, then every `normal` hook, then
    every `final` hook.
-2. Inside a band, in layer order: the spec folder first, then the plugins in
-   the order of the active list. Without a kit or a list, that is the
-   project plugins, your config folder and your user plugins.
+2. Inside a band, in layer order: the policy folders first, then the spec
+   folder, then the plugins in the order of the active list. Without a kit
+   or a list, that is the project plugins, your config folder and your user
+   plugins.
 
 What each hook gets depends on the point:
 
@@ -203,6 +211,7 @@ What each hook gets depends on the point:
 | `before_model`, `after_model`, `before_tool`, `after_tool` | A chain: each hook gets the object as the hook before it left it. A `before_tool` hook that prints `result` (or a deny) ends the chain. |
 | `session_start` | Each hook gets the same input. arx joins all the contexts, with a blank line between them. |
 | `stop` | Each hook gets the same input. The first hook that prints a decision wins, and the later hooks do not run. |
+| `harness_edit` | Each policy folder's hook gets the same input. arx joins their rejects. The first `stop` ends the run, and the later hooks do not run. |
 
 Each `hook` event lists the fields that hook changed, such as
 `"changed":["args"]`, so you can see which plugin changed what.
@@ -231,6 +240,12 @@ hooks: {before_tool: {band: policy, fail: closed, changes: [result]}}
 > a later hook can change its result. With `fail: open`, a guard that
 > crashes lets every call through.
 
+The `policy` band and a [policy folder](policies.md) are two things. The
+band is a place in the order of hooks at one point, and any layer can use
+it, the agent's spec folder too. A policy folder is a layer that you name
+with `--policy DIR`: the spec cannot remove it, and it comes first in
+every band.
+
 The rules:
 
 - **Inside a band,** hooks run in layer order, which is the order of the
@@ -244,7 +259,8 @@ The rules:
   order they run in. For two plugins, `redact` and `trim`, that both set
   `changes: [result]` at `after_tool`:
   `- after_tool: 2 hooks change result; they run in this order: plugin redact (policy), plugin trim (normal)`.
-- **The `hook` event** of a hook outside the `normal` band has `"band"`.
+- **The `hook` event** of a hook outside the `normal` band has `"band"`, and
+  that of a policy folder's hook has `"policy":true`.
 
 `arx check` shows each point that has a hook, and the plugins it comes from:
 `hooks: before_tool(guard) after_tool(fail-hint) stop`.
@@ -370,7 +386,7 @@ echo '{"decision": "continue", "message": "Not done yet. When the task is comple
 | The pattern expects spaces, such as `"name": "bash"` | arx sends compact JSON, `"name":"bash"`, so the pattern never matches | match the compact form, or parse the JSON |
 | A plugin's hook options are in the spec | they apply only to hooks in the spec folder and the config folder | put them in the plugin's `plugin.yaml` under `hooks:` |
 | A guard hook can fail open | if it crashes, every call goes through | set `fail: closed` for `before_tool` |
-| The agent can turn off a plugin's guard | it can edit `plugins:` or `kit:` in `agent.yaml` | pin it from the command line: `--kit NAME`, or `--set 'plugins=["guard","shell"]'` |
+| The agent can turn off a plugin's guard | it can edit `plugins:` or `kit:` in `agent.yaml`, and under a pin it can still edit the kit's or the plugin's files | pin the list (`--kit NAME`, or `--set 'plugins=["guard","shell"]'`) and load the guard with `--policy DIR`: see [Policies](policies.md) |
 | A guard runs in the `normal` band | a hook after it can change its result | set `band: policy` for the guard's hook |
 | A `stop` hook always continues | the run ends only at a cap | give the agent a clear way to finish, such as a `DONE` file |
 
@@ -390,4 +406,5 @@ calls. See [Planned changes](planned.md).
   an `after_tool` hook prints.
 - [Compactors](compactors.md): shrink the history without writing a
   `before_model` hook.
+- [Policies](policies.md): policy folders and the `harness_edit` hook.
 - [Plugin reference](reference.md#events): the fields of the `hook` event.

@@ -24,6 +24,8 @@ Follow this path the first time you extend arx:
    `ARX_*` variable, event, session file, `arx plugin` command and exit code.
 5. **[Kits](plugins/kits.md)**: choose the plugins of a run, in order, to
    make one kind of agent.
+6. **[Policies](plugins/policies.md)**: keep a guard in every run, and decide
+   which harness edits of the agent load.
 
 ## The kinds
 
@@ -76,5 +78,4 @@ arx plugin add --link DIR    # use a plugin from where it is, while you work on 
   [`examples/plugins/`](../examples/plugins) is a harness that uses all of
   them, and `make test` runs it.
 - [Planned changes](plugins/planned.md): see what is designed but not built:
-  a policy folder, sandboxes, calls that do not block, and a marketplace
-  index.
+  sandboxes, calls that do not block, and a marketplace index.

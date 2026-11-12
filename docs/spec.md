@@ -168,8 +168,10 @@ marks the cut with that path.
 ### `hooks`
 
 Keys are hook points: `session_start`, `before_model`, `after_model`,
-`before_tool`, `after_tool` and `stop`. The hook itself is the executable
-`hooks/<point>`.
+`before_tool`, `after_tool`, `stop` and `harness_edit`. The hook itself is
+the executable `hooks/<point>`. `harness_edit` runs only in a
+[policy folder](plugins/policies.md), which sets its options in its own
+`plugin.yaml`, so the key does nothing in a spec.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
@@ -264,3 +266,6 @@ arx --set model=your/other-model --set limits.max_turns=10 -p "..."
 arx parses values like YAML scalars: `10` is a number and `true` a boolean.
 A value that starts with `[` or `{` is parsed as JSON, such as
 `--set 'plugins=["guard","shell"]'`.
+
+An override keeps a value, not the files. To stop edits to harness files,
+which `--set` cannot do, use a [policy folder](plugins/policies.md).

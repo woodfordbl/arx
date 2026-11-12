@@ -206,6 +206,6 @@ Check each of these before you leave a run alone:
   `after_tool`.
 - [arx climb](climb.md): run the loop in rounds, with a scorer the agent
   can't reach.
-- [Planned changes](plugins/planned.md#trust): how arx plans to keep a
-  policy out of the agent's reach.
+- [Policies](plugins/policies.md): a policy folder decides which harness
+  edits load. Without a sandbox it stops mistakes, not a hostile agent.
 - [`examples/tsp`](../examples/tsp): the complete self-improving TSP solver.

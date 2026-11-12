@@ -148,8 +148,13 @@ arx starts it, gives it JSON, and reads what it prints.
 | [Scheduler](docs/plugins/schedulers.md) | `scheduler` at the top of a layer | the queued tool calls in, which to start out, one JSON line each. |
 
 The agent's own parts live next to its spec. Plugins load below them, so a
-tool the agent writes always wins. Tool calls run at the same time when their
-keys allow it.
+tool the agent writes wins, unless a plugin lists the name in `replaces:`.
+Tool calls run at the same time when their keys allow it.
+
+`arx --policy DIR` loads a [policy folder](docs/plugins/policies.md) before
+the spec folder. The agent cannot remove it, and its `harness_edit` hook
+accepts or rejects each harness edit before it loads. Without a sandbox it
+stops mistakes, not a hostile agent.
 
 A [kit](docs/plugins/kits.md) has no code: it chooses the plugins of a run,
 in order, with their settings and the prompt. arx ships three in

@@ -30,8 +30,10 @@ arx reads the harness from up to four places, in order:
 3. Your config folder (`~/.config/arx/`).
 4. The plugins you installed.
 
-For tools, the first layer wins, so a tool the agent writes always beats a
-plugin's. Hooks from every layer run in order.
+For tools, the first layer wins, so a tool the agent writes beats a
+plugin's, unless the plugin lists the name in `replaces:`. Hooks from every
+layer run in order. A [policy folder](plugins/policies.md) that you name
+with `--policy DIR` loads before all four, and its tools win.
 
 A spec that lists `plugins: [...]` uses only the spec folder and the plugins
 it names. Use it for any run you need to repeat: a plugin you install later
@@ -103,6 +105,13 @@ The agent can make three kinds of change:
 - **A new hook**: any executable at `hooks/<point>`.
 - **A spec edit**: the model settings, the compaction strategy, the tool
   timeouts and the prompts.
+
+By default every edit loads. To decide which edits load, start the run with
+a [policy folder](plugins/policies.md): `arx --policy DIR`. Before arx loads
+a changed harness, the policy's `harness_edit` hook sees each changed file
+and accepts or rejects it, and arx writes the accepted version back over a
+rejected one. "The agent may edit prompts, but not hooks" is one hook of a
+few lines.
 
 ### Bad edits are safe
 
@@ -203,7 +212,9 @@ arx leaves three jobs to other programs:
 - **No TLS, no HTTP client**: model calls go through `curl`. arx passes the
   API key in a private header file, never on the command line.
 - **No sandbox**: tools run as your user, in the working directory. Run arx
-  in a container or VM when the task needs isolation.
+  in a container or VM when the task needs isolation. A policy folder is a
+  gate on harness edits, not a sandbox: the agent's `bash` can still write
+  any file arx reads.
 - **No plugin API**: plugins are processes. Nothing is linked into the
   binary.
 

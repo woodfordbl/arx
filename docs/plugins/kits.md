@@ -81,7 +81,8 @@ These rules decide where arx finds a kit and what it does with it:
 
 The active list is the ordered list of plugins that one run loads. The
 position in the list is the priority: the first plugin's tool wins over a
-later plugin's tool with the same name, and its hooks run first in their
+later plugin's tool with the same name, unless the later plugin lists the
+name in `replaces:`, and its hooks run first in their
 [band](hooks.md#bands).
 
 Four sources build the list. Each one changes the list that the sources
@@ -107,8 +108,9 @@ When no source names a kit or a `plugins:` list, every installed plugin is
 on, minus the ones that `disable:` takes out. With a list, only the plugins
 in it load, each from `./plugins/<name>/` or else from your user plugins, and
 arx leaves out the loose files in your config folder (`tools/`, `hooks/`,
-`skills/`). The agent's own tools and hooks in the spec folder always come
-first. See [Layers](concepts.md#layer).
+`skills/`). The agent's own tools and hooks in the spec folder come before
+the plugins', and after those of a [policy folder](policies.md). See
+[Layers](concepts.md#layer).
 
 **Settings** for a plugin are the object after its name in any list:
 `- never-stop: {message: "..."}`. They merge in the order `config.yaml`, the
@@ -128,11 +130,13 @@ settings in two ways:
 > Start a run with `--kit NAME` when the agent must not change its plugins.
 > `--kit` is the same as `--set kit=NAME`, so it stays in force after every
 > reload. The agent can edit `agent.yaml`, but it cannot change the kit of a
-> run that started with `--kit`.
+> run that started with `--kit`. `--kit` pins the kit's name, not its
+> `kit.yaml`: to gate edits to the files too, add a
+> [policy folder](policies.md).
 
 `arx plugin list` shows the active list for the current folder, with the
-position, the state (`on`, `off`, `broken`, `missing`) and the reason for
-each plugin:
+position, the state (`on`, `off`, `broken`, `missing`, or `policy` for a
+folder of `ARX_POLICY`) and the reason for each plugin:
 
 ```text
 PLUGIN             VERSION   SCOPE    #   STATE    WHY                          SOURCE
@@ -238,6 +242,7 @@ disable: [notify]
 | A plugin in the list is not installed | `arx check` lists it as `missing` with `run arx plugin add NAME`; the run goes on without it | `arx kit add` the kit again, or add the plugin |
 | You expect `kit:` in `agent.yaml` to add to your default kit | a kit replaces the list | use `enable:` and `disable:` to change a kit |
 | The agent turns off a guard by editing `agent.yaml` | without a launcher pin it can | start the run with `--kit NAME` |
+| You expect `--kit NAME` to keep the kit's files | it pins the name; the agent can still edit `kits/NAME/kit.yaml` and take the guard out | load the guard with `--policy DIR`, and reject kit edits in its `harness_edit` hook: see [Policies](policies.md) |
 | Settings for a plugin that is not in the list | they do nothing | add the plugin with `enable:` and its settings |
 | A kit that `extends` another gives settings in `enable:` for a plugin the other kit already lists | the plugin is already in the list, so arx skips that entry and its settings | list the plugins in full with `plugins:`, or give the settings in `agent.yaml` |
 | A guard that must win runs in list order | a later hook can change its result | put its hook in the `policy` band (see [Bands](hooks.md#bands)) |
@@ -251,5 +256,6 @@ its versions, for `arx plugin search`. See [Planned changes](planned.md).
 - [Plugin concepts](concepts.md#layer): how layers and the active list decide
   which part wins.
 - [Hooks](hooks.md#bands): the `policy`, `normal` and `final` bands.
+- [Policies](policies.md): a policy folder that no kit or list removes.
 - [Plugin reference](reference.md#arx-plugin): every `arx plugin` command
   and option.

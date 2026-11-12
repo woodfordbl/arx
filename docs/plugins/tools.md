@@ -202,9 +202,12 @@ plugins/shell/
 
 To run the tools somewhere else, such as in a sandbox, replace them. Put
 your own `bash` or `edit` in a higher layer, such as the spec folder or a
-plugin before `shell` in the active list. The first tool with a name wins.
-When a plugin hides another plugin's tool, `arx check` warns, unless the
-plugin says so with `replaces: [bash]` in its `plugin.yaml`.
+plugin before `shell` in the active list. The first tool with a name wins,
+with two exceptions: a [policy folder](policies.md)'s tool wins over every
+other, and a plugin that lists the name in `replaces: [bash]` in its
+`plugin.yaml` wins over the spec folder's tool and over plugins before it.
+When a plugin hides another plugin's tool only by its place in the list,
+`arx check` warns.
 
 ## Tool names
 

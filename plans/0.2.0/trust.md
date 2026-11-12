@@ -1,6 +1,8 @@
 # Trust: policy folders and the `harness_edit` gate
 
-Slug: `trust`. Plan for arx 0.2.0. Nothing here is built yet.
+Slug: `trust`. Plan for arx 0.2.0. Built: see
+[Policies](../../docs/plugins/policies.md). The "Current state" section
+describes the code before this plan.
 
 ## Goal
 

@@ -41,6 +41,7 @@ arx check | tools | schema | tool | request PATH | watch | ctl | version | help
 | `-p`, `--prompt TASK` | Runs one task. `-` reads the task from stdin. |
 | `--spec PATH` | Sets the agent spec. Default `./agent.yaml`, or your defaults from `arx setup` when there is none. |
 | `--kit NAME` | Uses an installed kit: its plugins, in order, and its prompt. The agent cannot change it. |
+| `--policy DIR` | Loads a [policy folder](plugins/policies.md) before the spec folder. The agent's spec cannot remove it. Repeatable. |
 | `--set KEY=VALUE` | Overrides a spec value for this run, such as `limits.max_turns=10`. Repeatable. See [Overrides](spec.md#overrides). |
 | `--cap KEY=VALUE` | Sets a hard limit the spec cannot raise. Repeatable. See [Caps](#caps). |
 | `--resume ID\|last` | Continues a session with its full history and its plugins' state. |
@@ -78,7 +79,7 @@ With `--json`, arx prints one object on stdout when the run ends:
  "tokens": {"input": 91234, "output": 4210}, "cost": 0.31}
 ```
 
-`status` is `done`, `cap`, `error`, `auth` or `interrupted`.
+`status` is `done`, `cap`, `error`, `auth`, `policy` or `interrupted`.
 
 ### Exit codes
 
@@ -86,9 +87,10 @@ With `--json`, arx prints one object on stdout when the run ends:
 |---|---|
 | `0` | done: the agent stopped on its own, or `arx ctl stop` |
 | `1` | error |
-| `2` | usage error, or an invalid spec |
+| `2` | usage error, an invalid spec, or a missing or broken policy folder |
 | `3` | a cap or limit was reached |
 | `4` | authentication failed (HTTP 401 or 403) |
+| `5` | the policy stopped the run: a `harness_edit` hook said stop, a file in a policy folder changed, or arx could not revert a rejected edit |
 | `130` | interrupted or cancelled (Ctrl-C) |
 
 ## Setup and maintenance
@@ -176,6 +178,7 @@ plugin can add a command but not replace one. See
 | Command | What it does |
 |---|---|
 | `arx check [--spec PATH] [--kit NAME]` | Validates the harness without starting a session, and lists its kit, tools, hooks, plugins in order, problems and warnings. |
+| `arx check --policy DIR` | Validates the harness with a policy folder, and prints a `policy:` line before `plugins:`. |
 | `arx check --list` | Prints the active list as tab-separated rows, for scripts. |
 | `arx check --hosts` | Prints the network hosts the run needs, one per line, for an egress allowlist. See [Hosts](plugins/reference.md#hosts). |
 | `arx check --plugin DIR` | Checks one plugin folder without loading it. |
@@ -275,6 +278,7 @@ deletes a run's branch, its candidate refs and its folder, after asking.
 | the variable named by `endpoint.api_key_env` | the API key; wins over the key `arx setup` saved |
 | `ARX_CONFIG_DIR` | the config folder, instead of `$XDG_CONFIG_HOME/arx` or `~/.config/arx` |
 | `ARX_CURL` | the curl executable, when `endpoint.curl` is not set |
+| `ARX_POLICY` | a colon-separated list of policy folders, loaded before those of `--policy`; a flag can add to it, not remove it |
 | `ARX_DOWNLOAD_URL` | where `install.sh`, `arx update` and `arx plugin add` download from, instead of `https://arx-documentation.vercel.app` |
 | `ARX_UI` | **Planned:** how commands ask: `menu`, `plain` (numbered questions) or `off` (no questions); it overrides the terminal test |
 | `NO_COLOR` | **Planned:** set and not empty: menus draw no color or style |
