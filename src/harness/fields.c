@@ -93,6 +93,8 @@ const Field kTopFields[] = {
     {"adapters", kAnyMap, NULL, "Named request adapters: name -> path"},
     {"hosts", kStringList, NULL,
      "Network hosts the harness's programs reach, besides the endpoint"},
+    {"ui", kString, NULL,
+     "Command that draws interactive runs (arx-NAME), or none"},
     {NULL, 0, NULL, NULL}};
 
 const Field kPluginFields[] = {

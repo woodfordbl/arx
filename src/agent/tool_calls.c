@@ -110,7 +110,7 @@ static char* AfterTool(Agent* a, cJSON* call, char* text, int is_error,
   int interrupted = g_interrupted;
   g_interrupted = 0;
   HookChain(a, "after_tool", in, NULL);
-  if (interrupted) g_interrupted = 1;
+  if (interrupted) g_interrupted = interrupted;
   char* result = XStrdup(JsonStr(in, "result", text));
   *backoff = Backoff(in);
   cJSON_Delete(in);
@@ -136,10 +136,11 @@ static char* RanAs(cJSON* model_call, cJSON* call) {
   return line;
 }
 
-// Sends the call's tool.end event with its error flag and the first line of
-// its result.
+// Sends the call's tool.end event with its error flag, the first line of
+// its result, and the first 2 KB of it as the tool gave it.
 static void SendEnd(Call* c) {
   cJSON_AddBoolToObject(c->end, "error", c->is_error);
+  JsonAddTruncated(c->end, "output", c->text, 2048);
   char* first_line = XStrndup(c->text, strcspn(c->text, "\n"));
   JsonAddTruncated(c->end, "preview", first_line, 100);
   free(first_line);
@@ -187,8 +188,18 @@ static void Launch(Agent* a, Call* c) {
                      &c->is_error, &c->out_path, c->end);
   free(input);
   c->state = kRunning;
-  if (!c->run) Complete(a, c, 0);
+  if (!c->run) {
+    Complete(a, c, 0);
+    return;
+  }
+  cJSON* e = EventNew("tool.run");
+  cJSON_AddStringToObject(e, "id", c->id);
+  cJSON_AddStringToObject(e, "name", JsonStr(c->call, "name", ""));
+  EventSend(e);
 }
+
+// The most argument JSON a tool.start event carries.
+static const size_t kEventArgsMax = 16384;
 
 // Runs the before_tool hooks of one call and sends tool.start. Leaves the
 // call queued, or done when a hook gave the result.
@@ -208,10 +219,16 @@ static void Prepare(Agent* a, Call* c, cJSON* raw) {
   cJSON_AddStringToObject(start, "id", c->id);
   cJSON_AddStringToObject(start, "name", name);
   cJSON_AddStringToObject(start, "preview", preview);
-  EventSend(start);
   free(preview);
   c->model_call = NewCall(a, c->id, name, c->args);
   c->call = cJSON_Duplicate(c->model_call, 1);
+  if (strlen(c->args) > kEventArgsMax) {
+    cJSON_AddTrueToObject(start, "args_cut");
+  } else {
+    cJSON* args = cJSON_GetObjectItem(c->model_call, "args");
+    cJSON_AddItemToObject(start, "args", cJSON_Duplicate(args, 1));
+  }
+  EventSend(start);
   int is_error = 1;
   char* text = BeforeTool(a, c->call, &is_error);
   if (text) {
