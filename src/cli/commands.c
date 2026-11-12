@@ -12,6 +12,7 @@
 #include "src/cli/cli.h"
 #include "src/harness/harness.h"
 #include "src/io/io.h"
+#include "src/mcp/mcp.h"
 #include "src/model/model.h"
 
 // Loads the spec for a command; prints problems. Returns 0 or kExitUsage.
@@ -150,6 +151,7 @@ static int Request(const Spec* spec, const char* method, char* body,
   if (r.net_error) fprintf(stderr, "arx: curl exited with %d\n", r.net_error);
   int status = r.status;
   BufferFree(&r.err);
+  BufferFree(&r.headers);
   BufferFree(&headers);
   free(adapter);
   free(url);
@@ -219,6 +221,8 @@ const Command kCommands[] = {
     {"watch", "[ID|last] [--json] [--from start|now]",
      "follow a session's events", WatchCommand},
     {"ctl", "ID|last stop|note TEXT", "steer a running session", CtlCommand},
+    {"mcp", "http", "the HTTP bridge for an MCP server; arx starts it",
+     McpCommand},
     {"request", "[-X METHOD] [--data JSON|-] [--auth-source] PATH",
      "call your endpoint with your key, e.g. /models", RequestCommand},
     {"version", "", "print the version", VersionCommand},

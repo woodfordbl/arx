@@ -194,6 +194,14 @@ ProcChild* ProcStart(const Proc* p);
 // at its timeout or on Ctrl-C, as ProcRun does. Repeat until ProcDone.
 void ProcPoll(ProcChild* const* kids, int n, double max_wait);
 
+// Defined in <poll.h>.
+struct pollfd;
+
+// ProcPoll that also waits on `extra`, poll(2) entries the caller fills
+// (stdin, say); their revents are set on return. The browser ignores them.
+void ProcPollWith(ProcChild* const* kids, int n, struct pollfd* extra,
+                  int n_extra, double max_wait);
+
 // True when the child has exited and its output has been read.
 int ProcDone(const ProcChild* c);
 
@@ -276,6 +284,7 @@ typedef struct HttpResult {
   int interrupted;     // stopped by Ctrl-C
   int spawn_failed;    // curl or the adapter did not start
   Buffer err;          // curl's stderr, or why it failed; free it
+  Buffer headers;      // the last response's header lines; free it
   double secs;
 } HttpResult;
 

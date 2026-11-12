@@ -314,8 +314,14 @@ static ProcChild** Round(ProcChild* const* kids, int count, int* total) {
 
 // One round of the loop for many children; see base.h.
 void ProcPoll(ProcChild* const* kids, int count, double max_wait) {
+  ProcPollWith(kids, count, NULL, 0, max_wait);
+}
+
+// One round for the children and the caller's own entries; see base.h.
+void ProcPollWith(ProcChild* const* kids, int count, struct pollfd* extra,
+                  int n_extra, double max_wait) {
   ProcChild** all = Round(kids, count, &count);
-  struct pollfd* pf = XMalloc((size_t)(4 * count + 1) * sizeof(*pf));
+  struct pollfd* pf = XMalloc((size_t)(4 * count + n_extra + 1) * sizeof(*pf));
   int* slot = XMalloc((size_t)(4 * count + 1) * sizeof(*slot));
   int n = 0;
   double wait = max_wait > 0.1 ? 0.1 : max_wait;  // see exits and Ctrl-C
@@ -328,10 +334,13 @@ void ProcPoll(ProcChild* const* kids, int count, double max_wait) {
     }
   }
   if (wait < 0) wait = 0;
+  int own = n;
+  for (int i = 0; i < n_extra; i++) pf[n++] = extra[i];
   int wait_ms = n ? (int)(wait * 1000) + 1 : 1;  // no pipes: wait for exit
   if (poll(n ? pf : NULL, (nfds_t)n, wait_ms) > 0) {
-    for (int i = 0; i < n; i++) Serve(all[slot[i]], &pf[i]);
+    for (int i = 0; i < own; i++) Serve(all[slot[i]], &pf[i]);
   }
+  for (int i = 0; i < n_extra; i++) extra[i].revents = pf[own + i].revents;
   for (int k = 0; k < count; k++) {
     if (!all[k]->done) Check(all[k]);
   }

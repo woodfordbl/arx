@@ -10,6 +10,10 @@
 //   probe.c    the era probe (server/discover, else initialize), the tool
 //              list, and what a server sends on its own
 //   calls.c    one call: tools/call, its result as text, cancel, progress
+//   http.c     `arx mcp http`: the bridge from stdio to one HTTP server
+//   http_headers.c  the bridge's request headers, x-mcp-header, credential
+//   http_legacy.c   the bridge's handshake with a 2025-11-25 HTTP server
+//   command.c  `arx mcp`
 
 #ifndef SRC_MCP_MCP_H_
 #define SRC_MCP_MCP_H_
@@ -260,6 +264,124 @@ void McpPump(struct Agent* a);
 // tools are not listed, a wait of up to 5 seconds for a list that is being
 // read again, and the selection, when its file changed.
 void McpTurn(struct Agent* a);
+
+// ---- http.c ----
+
+// The bridge: one HTTP server behind stdio, in a process of its own.
+typedef struct Bridge Bridge;
+
+// One HTTP request of the bridge: a request of arx's, or one of its own.
+typedef struct HttpJob HttpJob;
+
+// Called when a job's request ended: sets j->over, or sends or parks it.
+typedef void (*HttpJobDone)(Bridge* b, HttpJob* j, const HttpResult* r);
+
+// A job's request, its reply so far, and what was tried.
+struct HttpJob {
+  cJSON* id;  // arx's request id; NULL for a request of the bridge
+  char* method;
+  cJSON* params;  // or NULL
+  int notify;     // a notification: the message has no id
+  char* body;     // the JSON-RPC message
+  char* headers;  // the request header lines
+  HttpRequest http;
+  ProcChild* child;  // the request in flight, or NULL
+  Buffer in;         // reply bytes not yet read as a message
+  int sse;           // -1 until the first byte, 1 for an event stream, else 0
+  cJSON* response;   // the JSON-RPC response of the reply, or NULL
+  int attempts;      // retries so far
+  int reauthed;      // the credential ran again for this job
+  int resessioned;   // a new legacy session was made for this job
+  int parked;        // waits for the legacy handshake
+  double retry_at;   // send again at this Now(), or 0
+  int over;          // done: the main loop frees it
+  HttpJobDone done;
+  HttpJob* next;
+};
+
+// The server, its credential and session, and the jobs in flight.
+struct Bridge {
+  const char* name;  // the server's name
+  const char* url;
+  cJSON* entry;   // ARX_MCP_SERVER: name, url, headers, credential, timeout
+  char* host;     // the URL's host, for messages
+  char* tmp_dir;  // where HttpStart puts its header files
+  RpcPeer* up;    // arx, on stdio
+  HttpJob* jobs;
+  cJSON* credential;    // the credential program's last value, or NULL
+  double expires;       // its expires_at, or 0
+  int known;            // a request has worked: the era is settled
+  int legacy;           // the server speaks the initialize handshake
+  int handshaking;      // the legacy handshake runs
+  char* session;        // legacy: Mcp-Session-Id, or NULL
+  char* version;        // legacy: the negotiated version
+  cJSON* init;          // legacy: the InitializeResult
+  cJSON* tool_headers;  // {tool: {argument: header}} from x-mcp-header
+  int next_id;          // ids of the bridge's own requests
+};
+
+// `arx mcp http`: serves the server in $ARX_MCP_SERVER to arx on stdio, as
+// modern MCP. Each request becomes one HttpStart; replies come back as JSON
+// or as an event stream, whose messages go to arx as they arrive. Returns
+// an ExitCode.
+int McpHttpMain(void);
+
+// Creates a job for `method` with `params` (consumed) and `id` (consumed,
+// or NULL) and starts it, or parks it while the legacy handshake runs.
+HttpJob* McpHttpJob(Bridge* b, cJSON* id, const char* method, cJSON* params,
+                    HttpJobDone done);
+
+// Sends a job's request (again): a fresh credential when it is due, the
+// headers, the body, then HttpStart.
+void McpHttpStart(Bridge* b, HttpJob* j);
+
+// Ends a job with JSON-RPC error -32000 and a printf-style message for
+// arx (a job of the bridge's own only logs it).
+void McpHttpFail(Bridge* b, HttpJob* j, const char* fmt, ...);
+
+// Schedules the job again after a transient result (curl exit 6, 7, 28,
+// 35, 52, 56; HTTP 429, 502, 503, 504) when the method is safe to repeat:
+// after 1, 4 and 16 seconds, or Retry-After. Returns 1 when it did.
+int McpHttpRetry(HttpJob* j, const HttpResult* r);
+
+// ---- http_headers.c ----
+
+// The request header lines of a job (malloc'd): Content-Type, Accept,
+// MCP-Protocol-Version, Mcp-Method, Mcp-Name, Mcp-Param-*, the session id,
+// the credential's headers and the entry's.
+char* McpHttpHeaders(const Bridge* b, const HttpJob* j);
+
+// Reads a tools/list result before it goes to arx: drops each tool whose
+// x-mcp-header breaks the rules, and keeps the header of each argument.
+void McpHttpTools(Bridge* b, cJSON* result);
+
+// Runs the bridge's credential program with `reason` ("start", "expired"
+// or "rejected", then with the HTTP `status` and the WWW-Authenticate
+// `challenge`). Returns 0, or -1 with the reason in `why`.
+int McpHttpCredential(Bridge* b, const char* reason, int status,
+                      const char* challenge, Buffer* why);
+
+// The value of response header `name` in `r` (malloc'd), or NULL.
+char* McpHttpHeader(const HttpResult* r, const char* name);
+
+// ---- http_legacy.c ----
+
+// Starts the initialize handshake with a legacy server, once; the parked
+// jobs go out when it ends, and arx's server/discover gets a DiscoverResult
+// built from the InitializeResult.
+void McpHttpLegacy(Bridge* b);
+
+// The DiscoverResult for arx, from the legacy InitializeResult.
+cJSON* McpHttpDiscover(const Bridge* b);
+
+// Ends the legacy session with DELETE, with a 2-second limit.
+void McpHttpLegacyEnd(Bridge* b);
+
+// ---- command.c ----
+
+// `arx mcp http`: the HTTP bridge, which arx starts for a `url` server.
+// Returns an ExitCode.
+int McpCommand(int argc, char** argv, struct Agent* a);
 
 // ---- search.c ----
 

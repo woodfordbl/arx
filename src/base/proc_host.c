@@ -1,11 +1,10 @@
 // proc_host.c: the browser side of the platform section in base.h, on the
 // host interface ABI v1 that arx.js serves (plans/0.2.0/wasm.md). It takes
 // the place of proc.c and proc_posix.c in `make wasm`: children and HTTP
-// requests are handles in the runtime, and the calls that wait (poll and
-// sleep) suspend through JSPI. When either returns -3, the page pressed
-// Stop, and arx takes its Ctrl-C path. There is no exec, no observer and no
-// signal here. ProcStop and ProcClose are stubs until the ABI can stop a
-// child without freeing it and close a child's stdin.
+// requests are handles in the runtime, and poll and sleep suspend through
+// JSPI. When either returns -3, the page pressed Stop, and arx takes its
+// Ctrl-C path. There is no exec, observer or signal here. ProcStop and
+// ProcClose are stubs until the ABI can stop a child and close its stdin.
 
 #include <errno.h>
 #include <stdint.h>
@@ -120,8 +119,7 @@ static ProcChild* NewChild(const Proc* p, int32_t id) {
   return c;
 }
 
-// Sends a JSON request (consumed) to `start`. Returns the handle, or 0 with
-// errno set.
+// Sends a JSON request (consumed) to `start`. Returns the handle, or 0.
 static int32_t Open(cJSON* req, const char* data, size_t len,
                     int32_t (*start)(const char*, size_t, const char*,
                                      size_t)) {
@@ -303,6 +301,14 @@ void ProcPoll(ProcChild* const* kids, int count, double max_wait) {
   free(all);
 }
 
+// The browser has no descriptors to wait on; see base.h.
+void ProcPollWith(ProcChild* const* kids, int n, struct pollfd* extra,
+                  int n_extra, double max_wait) {
+  (void)extra;
+  (void)n_extra;
+  ProcPoll(kids, n, max_wait);
+}
+
 // Keeps a child for the session; see base.h.
 void ProcKeep(ProcChild* c) {
   for (int k = 0; k < g_kept_count; k++) {
@@ -375,8 +381,7 @@ void HttpFinish(ProcChild* c, HttpResult* r) {
 // arx's entry point, in src/main.c.
 int main(int argc, char** argv);
 
-// The export arx.js calls for each run: arx's own main, with the arguments
-// from WASI. stdio is flushed here, since a reactor never calls exit.
+// What arx.js calls for each run; a reactor never exits, so flush here.
 __attribute__((export_name("arx_main"))) int ArxMain(void) {
   size_t argc = 0, size = 0;
   if (__wasi_args_sizes_get(&argc, &size)) return kExitError;

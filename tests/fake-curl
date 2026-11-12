@@ -9,20 +9,68 @@
 # A first line "EXIT n" makes it exit with n instead, like a curl error
 # (28 is a timeout). The body is written in 7-byte pieces so the stream
 # parser sees lines split at arbitrary points.
+#
+# A request with an Mcp-Method header (the MCP HTTP bridge) is answered by
+# method instead: call NN of method a/b gets $FAKE_DIR/mcp-a-b-NN.resp, or
+# else mcp-a-b.resp, and its body and headers are saved as
+# mcp-a-b-NN.json and mcp-a-b-NN.hdr. A first line "SLEEP n" waits n seconds
+# first, and writes mcp-a-b-NN.killed when it is stopped while it waits. A
+# DELETE is saved as mcp-delete.hdr and gets 200.
 set -u
 
 headers=/dev/null
+verb=""
 request_headers=""
 url=""
 while [ $# -gt 0 ]; do
   case "$1" in
     -D) headers=$2; shift 2 ;;
     -H) case "$2" in @*) request_headers=${2#@} ;; esac; shift 2 ;;
-    -X | --max-time | --data-binary) shift 2 ;;
+    -X) verb=$2; shift 2 ;;
+    --max-time | --data-binary) shift 2 ;;
     -*) shift ;;
     *) url=$1; shift ;;
   esac
 done
+
+# The MCP bridge: answer by method.
+method=""
+if [ -n "$request_headers" ]; then
+  method=$(sed -n 's/^Mcp-Method: //p' "$request_headers" | tr '/' '-')
+fi
+if [ "$verb" = DELETE ]; then
+  cp "$request_headers" "$FAKE_DIR/mcp-delete.hdr"
+  echo "HTTP/1.1 200 OK" >"$headers"
+  exit 0
+fi
+if [ -n "$method" ]; then
+  until mkdir "$FAKE_DIR/.lock" 2>/dev/null; do sleep 0.01; done
+  n=$(($(cat "$FAKE_DIR/count-$method" 2>/dev/null || echo 0) + 1))
+  echo "$n" >"$FAKE_DIR/count-$method"
+  rmdir "$FAKE_DIR/.lock"
+  id=$(printf %02d "$n")
+  cat >"$FAKE_DIR/mcp-$method-$id.json"
+  cp "$request_headers" "$FAKE_DIR/mcp-$method-$id.hdr"
+  resp="$FAKE_DIR/mcp-$method-$id.resp"
+  [ -f "$resp" ] || resp="$FAKE_DIR/mcp-$method.resp"
+  if [ ! -f "$resp" ]; then
+    echo "fake-curl: no response for $method ($id)" >&2
+    exit 7
+  fi
+  first=$(head -n 1 "$resp")
+  case "$first" in
+    EXIT*) exit "${first#EXIT }" ;;
+    SLEEP*)
+      trap 'touch "$FAKE_DIR/mcp-$method-$id.killed"; exit 143' TERM
+      sleep "${first#SLEEP }" &
+      wait $!
+      sed -i.bak 1d "$resp"
+      ;;
+  esac
+  awk 'NR == 1, /^$/' "$resp" | sed '/^$/d' >"$headers"
+  awk 'body; /^$/ { body = 1 }' "$resp"
+  exit 0
+fi
 
 # Subagents share the counter, so take a lock (mkdir is atomic).
 until mkdir "$FAKE_DIR/.lock" 2>/dev/null; do sleep 0.01; done

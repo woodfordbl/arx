@@ -207,15 +207,19 @@ ProcChild* HttpStart(const HttpRequest* req) {
   return h->child;
 }
 
-// Reads the last HTTP status and any Retry-After from a `curl -D` file.
-static void ReadStatus(const char* path, int* status, double* retry_after) {
+// Reads the last HTTP status, any Retry-After and the header lines of the
+// last response from a `curl -D` file.
+static void ReadStatus(const char* path, int* status, double* retry_after,
+                       Buffer* headers) {
   char* text = ReadFile(path, NULL);
   for (char* line = text; line && *line;) {
     char* nl = strchr(line, '\n');
     if (nl) *nl = 0;
+    if (strncmp(line, "HTTP/", 5)) BufferPrintf(headers, "%s\n", line);
     if (!strncmp(line, "HTTP/", 5)) {
       const char* space = strchr(line, ' ');
       *status = space ? atoi(space + 1) : 0;
+      headers->len = 0;  // a new response: the lines before it go
     } else if (!strncasecmp(line, "retry-after:", 12)) {
       char* end;
       double secs = strtod(line + 12, &end);
@@ -240,7 +244,7 @@ void HttpFinish(ProcChild* c, HttpResult* r) {
   r->interrupted = pr.interrupted;
   r->secs = pr.secs;
   if (!h) return;
-  ReadStatus(h->response, &r->status, &r->retry_after);
+  ReadStatus(h->response, &r->status, &r->retry_after, &r->headers);
   r->err = h->err;
   memset(&h->err, 0, sizeof(h->err));
   CallFree(h);

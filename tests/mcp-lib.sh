@@ -46,7 +46,8 @@ sse_calls() {
 # fake-curl's count again, so a workspace can run more than once.
 calls() {
   local n=1
-  rm -f "$FAKE_DIR"/count "$FAKE_DIR"/*.resp "$FAKE_DIR"/req-*.json
+  local dir=${FAKE_DIR:?}
+  rm -f "$dir/count" "$dir"/[0-9][0-9].resp "$dir"/req-*.json
   while [ $# -gt 0 ]; do
     sse_tool "$1" "$2" | reply "$n" "200 OK"
     n=$((n + 1))
