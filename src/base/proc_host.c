@@ -8,6 +8,7 @@
 // child without freeing it and close a child's stdin.
 
 #include <errno.h>
+#include <poll.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -75,8 +76,7 @@ void ProcInit(void) {}
 
 // No exec in a browser; see base.h.
 int ProcExec(char* const* argv, int null_stdin) {
-  (void)argv;
-  (void)null_stdin;
+  (void)argv, (void)null_stdin;
   errno = ENOSYS;
   return -1;
 }
@@ -88,18 +88,13 @@ int IsRunnable(const char* path) {
 
 // No `sh -c` for observers in a browser; see base.h.
 int ProcObserverStart(const char* command, char* const* env, int* pid) {
-  (void)command;
-  (void)env;
-  (void)pid;
+  (void)command, (void)env, (void)pid;
   errno = ENOSYS;
   return -1;
 }
 
 // No observers, so nothing to wait for; see base.h.
-void ProcObserverWait(int pid, double secs) {
-  (void)pid;
-  (void)secs;
-}
+void ProcObserverWait(int pid, double secs) { (void)pid, (void)secs; }
 
 // `--events -` needs dup, which WASI lacks; see base.h.
 int ProcDupStdout(void) { return -1; }
@@ -279,6 +274,14 @@ static void Serve(ProcChild* c) {
 
 // One round for the children and the kept ones; see base.h.
 void ProcPoll(ProcChild* const* kids, int count, double max_wait) {
+  ProcPollWith(kids, count, NULL, 0, max_wait > 0.1 ? 0.1 : max_wait);
+}
+
+// The same without the 0.1 s limit: the runtime keeps each child's timeout
+// and wakes arx on Stop. It can't wait on `extra`, so revents stay 0.
+void ProcPollWith(ProcChild* const* kids, int count, struct pollfd* extra,
+                  int n_extra, double max_wait) {
+  for (int i = 0; i < n_extra; i++) extra[i].revents = 0;
   ProcChild** all = XMalloc((size_t)(count + g_kept_count + 1) * sizeof(*all));
   int32_t* ids = XMalloc((size_t)(count + g_kept_count + 1) * sizeof(*ids));
   int m = 0;
@@ -292,7 +295,7 @@ void ProcPoll(ProcChild* const* kids, int count, double max_wait) {
   for (int k = 0; k < m; k++) {
     if (!all[k]->done) ids[n++] = all[k]->id;
   }
-  double wait = max_wait > 0.1 ? 0.1 : max_wait < 0 ? 0 : max_wait;
+  double wait = max_wait > 3600 ? 3600 : max_wait < 0 ? 0 : max_wait;
   if (HostPoll(ids, n, (int32_t)(wait * 1000) + 1) == kStopped) {
     g_interrupted = 1;
   }
