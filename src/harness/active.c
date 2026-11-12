@@ -4,7 +4,8 @@
 // launcher (--kit and --set). The position in the list is the priority.
 // In each source, `kit:` replaces the list with the kit's, `plugins:`
 // replaces it with its own, `enable:` adds to it and `disable:` takes out.
-// Plugin settings merge in the order config.yaml, kit, agent.yaml, --set.
+// Plugin settings merge in the order config.yaml, kit, agent.yaml, --set;
+// a policy folder's come from config.yaml and --set only.
 // When no source sets a kit or a list, every installed plugin is on, as
 // before kits.
 
@@ -14,6 +15,7 @@
 
 #include "src/base/base.h"
 #include "src/harness/harness.h"
+#include "src/harness/trust.h"
 
 // The keys that build the active list, as one source gave them.
 typedef struct ListSource {
@@ -142,6 +144,26 @@ static cJSON* KitRoot(const Kit* kit) {
   return root;
 }
 
+// Replaces the settings of each policy's name with those of the launcher's
+// sources, and warns about the ones that agent.yaml gave.
+static void PolicySettings(Spec* spec, cJSON* settings, cJSON* launcher,
+                           cJSON* ignored) {
+  cJSON* dir;
+  cJSON_ArrayForEach(dir, spec->policy) {
+    const char* name = PolicyName(dir->valuestring);
+    cJSON* mine = cJSON_GetObjectItemCaseSensitive(launcher, name);
+    cJSON_DeleteItemFromObjectCaseSensitive(settings, name);
+    if (mine) {
+      cJSON_AddItemToObject(settings, name, cJSON_Duplicate(mine, 1));
+    }
+    if (cJSON_GetObjectItemCaseSensitive(ignored, name)) {
+      BufferPrintf(&spec->warnings,
+                   "- settings for policy %s in agent.yaml are ignored\n",
+                   name);
+    }
+  }
+}
+
 // Builds the list from `count` sources, in order.
 static int Build(Spec* spec, ListSource* sources, int count, cJSON** kit_root,
                  Buffer* err) {
@@ -187,13 +209,24 @@ static int Build(Spec* spec, ListSource* sources, int count, cJSON** kit_root,
     }
     EnableDisable(list, off, s);
   }
-  // Settings: config.yaml, then the kit, then agent.yaml and --set.
+  // Settings: config.yaml, then the kit, then agent.yaml and --set. The
+  // agent can write agent.yaml and a kit, so a policy takes its settings
+  // from the launcher's sources only: config.yaml and --set.
   cJSON* settings = cJSON_CreateObject();
+  cJSON* launcher = cJSON_CreateObject();
+  cJSON* ignored = cJSON_CreateObject();
   for (int i = 0; i < count; i++) {
+    int agent = !strcmp(sources[i].label, "agent.yaml");
+    cJSON* into = agent ? ignored : launcher;
     AddSettings(settings, sources[i].plugins);
     AddSettings(settings, sources[i].enable);
+    AddSettings(into, sources[i].plugins);
+    AddSettings(into, sources[i].enable);
     if (i == 0) AddSettings(settings, kit.plugins);  // sources[0]: config
   }
+  PolicySettings(spec, settings, launcher, ignored);
+  cJSON_Delete(launcher);
+  cJSON_Delete(ignored);
   KitFree(&kit);
   spec->active = list;
   spec->off = off;

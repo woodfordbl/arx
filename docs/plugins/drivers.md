@@ -46,7 +46,7 @@ With `--json`, arx prints one object on stdout when the run ends:
  "cost": 0.0153}
 ```
 
-`status` is `done`, `cap`, `auth`, `interrupted` or `error`. Read `session`
+`status` is `done`, `cap`, `auth`, `policy`, `interrupted` or `error`. Read `session`
 from here when you resume or steer the run, rather than `last`.
 
 ### Exit codes
@@ -60,6 +60,7 @@ The exit code tells the driver what to do next:
 | `2` | usage error, or a spec that is not valid |
 | `3` | a cap was reached |
 | `4` | authentication failed |
+| `5` | the policy stopped the run |
 | `130` | interrupted (Ctrl-C) |
 
 ### Steer a running session
@@ -107,10 +108,13 @@ full version, with a limit on the rounds, is
 | A climb uses a kit that names plugins without versions | a later `arx kit add` can change a plugin between runs | pin versions in the kit (`guard@v0.2.0`), and keep the `kit.lock` that arx writes |
 | The driver trusts `final_output` as the score | the agent can write anything | measure it with your own program, or use [`arx climb`](../climb.md) |
 
-## Planned
+## Keep a policy in every run
 
-**Planned:** a policy folder (`--policy DIR`) that loads first and that the
-spec cannot remove. See [Planned changes](planned.md#trust).
+A driver can load a [policy folder](policies.md) in every run it starts:
+pass `--policy DIR`, or set `ARX_POLICY` once for all of them. The spec
+cannot remove it. Exit code `5` and the status `policy` mean the policy
+stopped the run. Without a sandbox, a policy stops mistakes, not a hostile
+agent.
 
 ## Related
 

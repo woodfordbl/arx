@@ -13,6 +13,7 @@
 #include "src/base/base.h"
 #include "src/cli/cli.h"
 #include "src/harness/harness.h"
+#include "src/harness/trust.h"
 
 static const char* const kBandNames[] = {"policy", "normal", "final"};
 // Bytes of text above which one plugin's instructions get a warning.
@@ -22,7 +23,8 @@ static const size_t kLongText = 4096;
 static int LoadSpec(Agent* a) {
   Buffer err = {0};
   ResolveSpec(a);
-  int failed = SpecLoad(a->spec_path, a->sets, &a->spec, &err);
+  int failed = PolicyResolve(&a->policy, &err) ||
+               SpecLoad(a->spec_path, a->sets, a->policy, &a->spec, &err);
   if (failed) fputs(err.data, stderr);
   BufferFree(&err);
   return failed ? kExitUsage : 0;
@@ -38,12 +40,16 @@ static char* LayerFile(const Layer* layer, const char* sub, const char* name) {
 
 // How warnings name a layer.
 static char* LayerLabel(const Spec* spec, const Layer* layer) {
+  if (layer->policy) return XAsprintf("policy %s", layer->plugin);
   if (layer->plugin) return XAsprintf("plugin %s", layer->plugin);
-  if (layer == &spec->layers[0]) return XStrdup("the spec folder");
-  return XStrdup("the config folder");
+  for (const Layer* l = spec->layers; l < layer; l++) {
+    if (!l->plugin) return XStrdup("the config folder");
+  }
+  return XStrdup("the spec folder");
 }
 
-// Prints the hooks of every layer, with the plugins that add them.
+// Prints the hooks of every layer, with the plugins that add them and a `*`
+// after a policy folder's. harness_edit runs only in a policy folder.
 static void PrintHooks(Agent* a) {
   printf("\nhooks:");
   for (const char* const* p = kHookPoints; *p; p++) {
@@ -51,11 +57,14 @@ static void PrintHooks(Agent* a) {
     int found = 0;
     for (int l = 0; l < a->spec.layer_count; l++) {
       const Layer* layer = &a->spec.layers[l];
-      char* path = LayerFile(layer, "hooks", *p);
+      int gate = !strcmp(*p, "harness_edit");
+      char* path =
+          gate && !layer->policy ? NULL : LayerFile(layer, "hooks", *p);
       if (path) {
         found = 1;
         if (layer->plugin) {
-          BufferPrintf(&from, "%s%s", from.len ? "," : "", layer->plugin);
+          BufferPrintf(&from, "%s%s%s", from.len ? "," : "", layer->plugin,
+                       layer->policy && !gate ? "*" : "");
         }
       }
       free(path);
@@ -75,17 +84,22 @@ static size_t TextBytes(const Spec* spec, cJSON* node) {
   return n;
 }
 
-// Prints where the base prompt comes from, and the plugins that add text:
-// "prompt: kit coding; plugins add reviewer (212 bytes), ...".
+// Prints where the base prompt comes from, and the policy folders and
+// plugins that add text: "prompt: kit coding; policies add guard (80
+// bytes); plugins add reviewer (212 bytes), ...".
 static void PrintPrompt(const Spec* spec) {
   printf("prompt: %s", spec->prompt_from ? spec->prompt_from : "default");
-  int any = 0;
-  for (int l = 0; l < spec->layer_count; l++) {
-    const Layer* layer = &spec->layers[l];
-    if (!layer->plugin || !layer->instructions) continue;
-    printf("%s%s (%zu bytes)", any ? ", " : "; plugins add ", layer->plugin,
-           TextBytes(spec, layer->instructions));
-    any = 1;
+  for (int policy = 1; policy >= 0; policy--) {
+    int any = 0;
+    for (int l = 0; l < spec->layer_count; l++) {
+      const Layer* layer = &spec->layers[l];
+      if (!layer->plugin || !layer->instructions) continue;
+      if (layer->policy != policy) continue;
+      const char* first = policy ? "; policies add " : "; plugins add ";
+      printf("%s%s (%zu bytes)", any ? ", " : first, layer->plugin,
+             TextBytes(spec, layer->instructions));
+      any = 1;
+    }
   }
   printf("\n");
 }
@@ -132,7 +146,7 @@ static void PrintPlugins(Agent* a) {
   int any = 0;
   for (int l = 0; l < a->spec.layer_count; l++) {
     const Layer* layer = &a->spec.layers[l];
-    if (!layer->plugin) continue;
+    if (!layer->plugin || layer->policy) continue;
     printf("%s%s", any ? " " : "plugins: ", layer->plugin);
     any = 1;
   }
@@ -181,21 +195,13 @@ static void OverlapWarnings(const Spec* spec, Buffer* out) {
   }
 }
 
-// True when `list` (an array of strings) has `name`.
-static int Lists(cJSON* list, const char* name) {
-  cJSON* c;
-  cJSON_ArrayForEach(c, list) {
-    if (cJSON_IsString(c) && !strcmp(c->valuestring, name)) return 1;
-  }
-  return 0;
-}
-
-// Warns when a plugin's tool hides a tool of a layer below it, unless the
-// plugin declares it in `replaces:`.
+// Warns when a plugin's tool hides a tool of a layer below it only by its
+// place in the order. A hide that the tool rule explains (ToolPass: a
+// policy's tool, or a name in `replaces:`) gets no warning.
 static void HiddenWarnings(const Spec* spec, Buffer* out) {
   for (int i = 0; i < spec->layer_count; i++) {
     const Layer* layer = &spec->layers[i];
-    if (!layer->plugin) continue;
+    if (!layer->plugin || layer->policy) continue;
     char* dir = PathJoin(layer->dir, "tools");
     char** names;
     int n = ListNames(dir, &names);
@@ -203,7 +209,8 @@ static void HiddenWarnings(const Spec* spec, Buffer* out) {
       char* mine = LayerFile(layer, "tools", names[t]);
       for (int j = i + 1; mine && j < spec->layer_count; j++) {
         char* other = LayerFile(&spec->layers[j], "tools", names[t]);
-        if (other && !Lists(layer->replaces, names[t])) {
+        if (other && ToolPass(layer, names[t]) == 3 &&
+            ToolPass(&spec->layers[j], names[t]) == 3) {
           char* label = LayerLabel(spec, &spec->layers[j]);
           BufferPrintf(out,
                        "- plugin %s hides the tool %s of %s; if that is on "
@@ -291,6 +298,7 @@ static void PrintCheck(Agent* a) {
   int any = 0;
   PrintSettings(spec, JsonGet(spec->root, "model_settings"), "", &any);
   if (any) printf("\n");
+  CheckPolicyLine(spec);
   PrintPlugins(a);
   if (a->notes.len) printf("problems:\n%s", a->notes.data);
   Buffer warnings = {0};
@@ -298,6 +306,7 @@ static void PrintCheck(Agent* a) {
   HiddenWarnings(spec, &warnings);
   if (spec->warnings.len) BufferAppendStr(&warnings, spec->warnings.data);
   LongTextWarnings(spec, &warnings);
+  CheckPolicyWarnings(spec, &warnings);
   if (warnings.len) printf("warnings:\n%s", warnings.data);
   BufferFree(&warnings);
 }

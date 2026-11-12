@@ -52,6 +52,18 @@ extern const Command kCommands[];
 // `name` is not a built-in.
 int RunBuiltin(const char* name, int argc, char** argv, Agent* a);
 
+// ---- check_policy.c ----
+
+// Prints "policy: NAME ..." with the policy folders in order, when the
+// harness has any.
+void CheckPolicyLine(const Spec* spec);
+
+// Appends the `arx check` warnings about policy folders to `out`: a
+// hooks/harness_edit outside a policy folder, a policy folder inside the
+// working directory, and a policy's before_tool hook without `band: policy`
+// and `fail: closed`.
+void CheckPolicyWarnings(const Spec* spec, Buffer* out);
+
 // ---- check.c ----
 
 // `arx check` and `arx tools`: load the harness without starting a

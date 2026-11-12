@@ -15,6 +15,7 @@
 #include "src/agent/agent.h"
 #include "src/base/base.h"
 #include "src/harness/harness.h"
+#include "src/harness/trust.h"
 #include "src/io/io.h"
 
 // Describes why a hook failed, or returns NULL if it did not.
@@ -71,17 +72,20 @@ int HookRunOne(struct Agent* a, const Layer* layer, const char* point,
             .out_ctx = &out,
             .on_err = BufferSink,
             .err_ctx = &err};
-  ProcResult r;
-  int rc = ProcRun(&p, &r);
+  ProcResult r = {0};
+  // With a policy, a file that changed since it was accepted does not run.
+  const char* changed = NULL;
+  int rc = GateAllows(a, path, &changed) ? ProcRun(&p, &r) : 0;
   *event = EventNew("hook");
   cJSON_AddStringToObject(*event, "point", point);
   if (layer->plugin) cJSON_AddStringToObject(*event, "plugin", layer->plugin);
+  if (layer->policy) cJSON_AddTrueToObject(*event, "policy");
   if (HookBand(&a->spec, layer, point) != 1) {
     cJSON_AddStringToObject(*event, "band",
                             kBandNames[HookBand(&a->spec, layer, point)]);
   }
   cJSON_AddNumberToObject(*event, "secs", r.secs);
-  char* failure = FailureText(rc, &r, &err);
+  char* failure = changed ? XStrdup(changed) : FailureText(rc, &r, &err);
   *output = NULL;
   if (!failure && out.len && strspn(out.data, " \t\r\n") < out.len) {
     *output = cJSON_Parse(out.data);
@@ -154,6 +158,10 @@ static int Combine(const char* point, cJSON* answer, cJSON** output) {
 // Runs every layer's hook for a decision point; see harness.h.
 int HookRun(struct Agent* a, const char* point, cJSON* input, cJSON** output) {
   *output = NULL;
+  if (!strcmp(point, "harness_edit")) {  // only the gate runs this point
+    cJSON_Delete(input);
+    return 0;
+  }
   cJSON_AddStringToObject(input, "point", point);
   cJSON_AddStringToObject(input, "session", a->session.id);
   cJSON_AddNumberToObject(input, "turn", a->session.turns);

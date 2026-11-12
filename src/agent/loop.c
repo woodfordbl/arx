@@ -13,6 +13,7 @@
 #include "src/agent/agent.h"
 #include "src/base/base.h"
 #include "src/harness/harness.h"
+#include "src/harness/trust.h"
 #include "src/io/io.h"
 
 // Returns kExitCap when a cap or limit is reached, else -1.
@@ -41,16 +42,31 @@ static int CheckCaps(Agent* a) {
   return kExitCap;
 }
 
+// Returns kExitPolicy, with a note, when the policy stopped the run; else -1.
+static int PolicyStop(Agent* a) {
+  if (!GateStopped(a)) return -1;
+  cJSON* e = EventNew("note");
+  char* text = XAsprintf("stopped by the policy: %s", GateStopped(a));
+  cJSON_AddStringToObject(e, "text", text);
+  EventSend(e);
+  free(text);
+  return kExitPolicy;
+}
+
 // Reloads the spec, tools and prompt when any harness file changed. A bad
-// edit keeps the previous version and tells the agent why.
-static void MaybeReload(Agent* a) {
-  uint64_t sig = SpecSignature(&a->spec);
-  if (sig == a->spec.sig) return;
+// edit keeps the previous version and tells the agent why. With a policy
+// folder, the gate judges the changes first (GateReload) and may revert
+// some or stop the run. Returns -1 to go on, or kExitPolicy.
+static int MaybeReload(Agent* a) {
+  uint64_t sig = a->gate ? 0 : SpecSignature(&a->spec);
+  if (a->gate ? !GateDirty(a) : sig == a->spec.sig) return -1;
   double start = Now();
+  int rejected = 0;
+  if (a->gate && GateReload(a, &rejected) >= 0) return PolicyStop(a);
   Spec fresh;
   Buffer err = {0};
   cJSON* e = EventNew("harness.reload");
-  if (SpecLoad(a->spec_path, a->sets, &fresh, &err)) {
+  if (SpecLoad(a->spec_path, a->sets, a->policy, &fresh, &err)) {
     a->spec.sig = sig;  // report this version once, not every turn
     AgentNote(a,
               "Your harness edit was rejected; the previous version is "
@@ -74,9 +90,12 @@ static void MaybeReload(Agent* a) {
     cJSON_AddTrueToObject(e, "ok");
     cJSON_AddNumberToObject(e, "tools", a->tools.count);
   }
+  if (a->gate) GateAccept(a);
+  if (rejected) cJSON_AddNumberToObject(e, "rejected", rejected);
   cJSON_AddNumberToObject(e, "ms", (Now() - start) * 1000);
   EventSend(e);
   BufferFree(&err);
+  return -1;
 }
 
 // Applies the new inbox lines: `arx ctl` commands (notes for the agent,
@@ -153,9 +172,11 @@ int RunTurns(Agent* a) {
   KitLockWrite(&a->spec);  // a kit that pins versions: record the parts
   for (;;) {
     if (g_interrupted) return kExitInterrupted;
-    int code = CheckCaps(a);
+    int code = PolicyStop(a);  // a policy file changed and was about to run
+    if (code < 0) code = CheckCaps(a);
     if (code >= 0) return code;
-    MaybeReload(a);
+    code = MaybeReload(a);
+    if (code >= 0) return code;
     CallsPoll(a, 0);  // finish the background calls that ended
     ReadInbox(a);
     if (a->stop_requested) return kExitDone;
@@ -166,6 +187,8 @@ int RunTurns(Agent* a) {
     cJSON* message;
     code = ModelTurn(a, &message);
     if (code >= 0) return code;
+    if (GateStopped(a)) cJSON_Delete(message);
+    if ((code = PolicyStop(a)) >= 0) return code;
     cJSON_AddItemToArray(a->messages, message);
     SessionAppend(&a->session, message);
     cJSON* calls = cJSON_GetObjectItem(message, "tool_calls");
@@ -176,8 +199,10 @@ int RunTurns(Agent* a) {
       a->final_output = XStrdup(JsonStr(message, "content", ""));
       if (CallsInFlight(a)) {
         CallsWait(a);  // the next turn brings what ended the wait
-      } else if (!StopHook(a)) {
-        return kExitDone;
+      } else {
+        int go_on = StopHook(a);
+        if ((code = PolicyStop(a)) >= 0) return code;
+        if (!go_on) return kExitDone;
       }
     }
     SessionWriteMeta(&a->session, "running");

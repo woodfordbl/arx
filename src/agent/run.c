@@ -14,6 +14,7 @@
 #include "src/agent/agent.h"
 #include "src/base/base.h"
 #include "src/harness/harness.h"
+#include "src/harness/trust.h"
 #include "src/io/io.h"
 
 // The "status" for an exit code.
@@ -25,6 +26,8 @@ static const char* StatusName(int code) {
       return "cap";
     case kExitAuth:
       return "auth";
+    case kExitPolicy:
+      return "policy";
     case kExitInterrupted:
       return "interrupted";
     default:
@@ -60,7 +63,8 @@ static int OpenSession(Agent* a) {
 // Loads the harness and starts the session. Returns 0 or an exit code.
 static int Start(Agent* a) {
   Buffer err = {0};
-  if (SpecLoad(a->spec_path, a->sets, &a->spec, &err)) {
+  if (PolicyResolve(&a->policy, &err) ||
+      SpecLoad(a->spec_path, a->sets, a->policy, &a->spec, &err)) {
     fputs(err.data, stderr);
     BufferFree(&err);
     return kExitUsage;
@@ -76,6 +80,7 @@ static int Start(Agent* a) {
   }
   FreeEnv(env);
   ToolsBuild(a);
+  GateOpen(a);  // the files on disk at the start are the accepted ones
   cJSON* e = EventNew("session.start");
   cJSON_AddStringToObject(e, "name", JsonStr(a->spec.root, "name", "agent"));
   cJSON_AddStringToObject(e, "model", JsonStr(a->spec.root, "model", ""));
@@ -86,6 +91,12 @@ static int Start(Agent* a) {
                           JsonNum(a->spec.root, "context_window", 128000));
   char cwd[4096];
   cJSON_AddStringToObject(e, "cwd", getcwd(cwd, sizeof(cwd)) ? cwd : "");
+  cJSON* names = a->spec.policy ? cJSON_AddArrayToObject(e, "policy") : NULL;
+  for (int l = 0; names && l < a->spec.layer_count; l++) {
+    const Layer* layer = &a->spec.layers[l];
+    if (!layer->policy) continue;
+    cJSON_AddItemToArray(names, cJSON_CreateString(layer->plugin));
+  }
   EventSend(e);
   // The calls a stopped session left in flight become notes.
   if (a->resume) CallsResume(a);
@@ -295,6 +306,7 @@ int AgentMain(Agent* a) {
   if (code) return code;
   code = a->interactive ? Interactive(a) : Headless(a);
   Finish(a, code);
+  GateFree(a);
   ToolsFree(&a->tools);
   SpecFree(&a->spec);
   SessionClose(&a->session);

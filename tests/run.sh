@@ -90,6 +90,18 @@ check "offered after the edit" has fake/req-02.json '"name":"hello"'
 check "new tool ran" has fake/req-03.json 'hello-from-tool'
 check "reload event" has .arx/sessions/last/events.jsonl '"type":"harness.reload"'
 
+# The fingerprint also covers named programs and the scheduler file.
+begin "hot reload: programs and the scheduler"
+{ spec; echo "compactors: {mine: bin/compact}"; } >agent.yaml
+script bin/compact <<<'#!/bin/sh'
+sse_tool bash '{\"command\":\"echo cat >>bin/compact\"}' | reply 1 "200 OK"
+sse_tool bash '{\"command\":\"true\"}' | reply 2 "200 OK"
+sse_tool bash '{\"command\":\"echo x >scheduler\"}' | reply 3 "200 OK"
+sse_text "done" | reply 4 "200 OK"
+run "go"
+check "a changed compactor and a new scheduler file each reload" \
+  test "$(count .arx/sessions/last/events.jsonl '"type":"harness.reload"')" = 2
+
 # A file in tools/ that is not executable is not a tool, and arx says why.
 begin "tools: not executable"
 mkdir tools

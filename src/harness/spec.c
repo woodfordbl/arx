@@ -13,6 +13,7 @@
 
 #include "src/base/base.h"
 #include "src/harness/harness.h"
+#include "src/harness/trust.h"
 
 // Deeper YAML than this is rejected, which also stops alias bombs.
 static const int kMaxYamlDepth = 64;
@@ -236,7 +237,8 @@ static int BuildList(Spec* spec, Spec* config, int spec_is_config, cJSON* sets,
 }
 
 // Loads, merges, overrides, validates and fingerprints; see harness.h.
-int SpecLoad(const char* path, cJSON* sets, Spec* spec, Buffer* err) {
+int SpecLoad(const char* path, cJSON* sets, cJSON* policy, Spec* spec,
+             Buffer* err) {
   Spec config;
   memset(spec, 0, sizeof(*spec));
   size_t errors_before = err->len;
@@ -253,6 +255,7 @@ int SpecLoad(const char* path, cJSON* sets, Spec* spec, Buffer* err) {
   if (!path) {
     *spec = config;  // the defaults are the whole spec
     spec->config = XStrdup(spec->path);
+    spec->policy = cJSON_Duplicate(policy, 1);
     listed =
         cJSON_IsObject(spec->root) ? BuildList(spec, NULL, 1, sets, err) : 0;
   } else if (SpecParse(path, spec, err)) {
@@ -261,6 +264,7 @@ int SpecLoad(const char* path, cJSON* sets, Spec* spec, Buffer* err) {
   } else {
     spec->path = XStrdup(path);
     spec->dir = DirName(path);
+    spec->policy = cJSON_Duplicate(policy, 1);
     if (cJSON_IsObject(spec->root)) {
       listed = BuildList(spec, &config, 0, sets, err);
     }
@@ -284,6 +288,7 @@ int SpecLoad(const char* path, cJSON* sets, Spec* spec, Buffer* err) {
     } else if (!spec->prompt_from) {
       spec->prompt_from = XStrdup("default");
     }
+    PolicyLoad(spec, err);
     PluginsLoad(spec);
   }
   if (listed == 0) SpecValidate(spec, err);
@@ -314,6 +319,7 @@ void SpecFree(Spec* spec) {
   cJSON_Delete(spec->setting_from);
   BufferFree(&spec->warnings);
   free(spec->prompt_from);
+  cJSON_Delete(spec->policy);
   memset(spec, 0, sizeof(*spec));
 }
 

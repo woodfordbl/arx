@@ -20,6 +20,7 @@ not built.
 | [Marketplace](#marketplace) | A Git repository with plugin folders in `plugins/<name>/`. |
 | [Kit](#kit) | A folder with a `kit.yaml` and no code, that chooses plugins, their order and their settings. |
 | [Active list](#active-list) | The ordered list of plugins that one run uses. |
+| [Policy folder](policies.md) | A plugin folder that loads before the spec folder and that the agent cannot remove. You name it with `--policy DIR`. |
 | [Band](#band) | The group a hook runs in at its point: `policy`, `normal` or `final`. |
 | [Key](#key) | A lock on a tool call: calls that share a key run one at a time. |
 | [Plugin state](#plugin-state) | The files a plugin keeps between calls, in `ARX_STATE_DIR` and `ARX_DATA_DIR`. |
@@ -89,11 +90,13 @@ every field.
 ## Layer
 
 A layer is a folder that arx reads `tools/`, `hooks/`, skills and a
-`scheduler` from. The spec folder is always the first layer. The rest depend
-on whether the run has an [active list](#active-list):
+`scheduler` from. Without a [policy folder](policies.md), the spec folder is
+the first layer. The rest depend on whether the run has an
+[active list](#active-list):
 
 | # | With a kit or a `plugins:` list | With neither |
 |---|---|---|
+| 0 | the policy folders of `--policy` and `ARX_POLICY`, in order | the same |
 | 1 | the spec folder | the spec folder |
 | 2 | each plugin of the active list, in list order, from `<spec folder>/plugins/<name>/` or else `~/.config/arx/plugins/<name>/` | project plugins: `<spec folder>/plugins/<name>/`, in name order |
 | 3 | none | your config folder: `~/.config/arx/` (`tools/`, `hooks/`, `skills/`) |
@@ -115,19 +118,20 @@ Each kind uses the layer order in its own way:
 
 | Part | Rule |
 |---|---|
-| Tools | The first layer with a working tool of a name wins. arx tells the agent about each tool that a higher layer hides. |
+| Tools | Three steps, in order: a policy folder's tool wins; else the tool of a plugin that lists the name in `replaces:` wins, wherever that plugin is in the active list; else the first layer with a working tool of the name wins. Inside the first two steps, the first layer wins. arx tells the agent about each tool that another one hides. |
 | Hooks | Every layer's hook for a point runs, by [band](#band), then in layer order. Around the model and tool calls, each hook gets the object as the hook before it left it. See [More than one hook](hooks.md#more-than-one-hook). |
 | Scheduler | The first layer with an executable `scheduler` at its top wins. |
 | Skills | `{{skills}}` lists the skills of every layer. When two layers have a skill folder with the same name, the first one wins. |
 | Observers | All of them run. |
 | Compactors | All names are available. When two places name the same compactor, the spec wins, then the first plugin. |
 | Credentials and adapters | The same as compactors. `endpoint.credential` and `endpoint.adapter` choose one by name. |
-| Prompt text | Every plugin's `instructions` is added, in layer order, after the spec's prompt. See [Prompt text and model settings](prompt.md). |
-| Model settings | The spec wins, then the first plugin. The kit and `config.yaml` count as the spec. |
+| Prompt text | Every plugin's `instructions` is added, in layer order, after the spec's prompt. A policy folder's text comes first, before the spec's prompt. See [Prompt text and model settings](prompt.md). |
+| Model settings | A policy folder wins, then the spec, then the first plugin. The kit and `config.yaml` count as the spec. |
 | Commands | Only user plugins add commands, whether or not they are in the active list. See [Commands](commands.md). |
 
-So a tool that the agent writes in its spec folder always wins over a
-plugin's tool with the same name.
+So a tool that the agent writes in its spec folder wins over a plugin's
+tool with the same name, with two exceptions: a policy folder has a tool
+with that name, or the plugin lists the name in `replaces:`.
 
 ### Turn plugins on and off
 
@@ -159,6 +163,11 @@ arx -p "..." --set 'plugins=["guard","shell"]'
 
 Write a `--set` list as JSON. `plugins=[guard]` is not valid.
 
+A pin keeps the list, not the files: the agent can still edit a plugin's
+files or a `kit.yaml`. `--policy DIR` loads a
+[policy folder](policies.md) that no list removes, and its `harness_edit`
+hook can reject such edits.
+
 ### Reload
 
 Before every model call, arx checks the files of every layer, each
@@ -167,6 +176,10 @@ the harness again, so a plugin you add or remove takes effect on the next
 turn. If the new harness is not valid, arx keeps the old one and tells the
 agent why.
 
+With a policy folder, the changes go through a gate first: each policy's
+`harness_edit` hook accepts or rejects every changed file, and arx reverts
+the rejected ones. See [Policies](policies.md#the-harness_edit-hook).
+
 > [!NOTE]
 > Observers are the exception to reload. They start once, when the session
 > starts.
@@ -174,7 +187,7 @@ agent why.
 ## Hook point
 
 A hook point is a fixed place in the run where arx runs hooks. There are
-six:
+seven:
 
 | Point | When | The hook gets |
 |---|---|---|
@@ -184,6 +197,7 @@ six:
 | `before_tool` | before each tool call | the call: id, name, args |
 | `after_tool` | after each tool call | the call and its result |
 | `stop` | when the model replies without calling a tool | the last message |
+| `harness_edit` | before a changed harness loads, in policy folders only | the changed files |
 
 A hook is the executable `hooks/<point>` in any layer. Hooks at one point run
 by [band](#band) (`policy`, `normal`, `final`), then in layer order. See

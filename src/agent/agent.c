@@ -130,13 +130,14 @@ static void SkillsIndex(Agent* a, Buffer* out) {
 static void TextPlugins(Agent* a, Buffer* out) {
   int n = 0, at = 0;
   for (int l = 0; l < a->spec.layer_count; l++) {
-    n += a->spec.layers[l].plugin && a->spec.layers[l].instructions;
+    const Layer* layer = &a->spec.layers[l];
+    n += layer->plugin && !layer->policy && layer->instructions;
   }
   if (!n) return;
   BufferAppendStr(out, n == 1 ? " The plugin " : " The plugins ");
   for (int l = 0; l < a->spec.layer_count; l++) {
     const Layer* layer = &a->spec.layers[l];
-    if (!layer->plugin || !layer->instructions) continue;
+    if (!layer->plugin || layer->policy || !layer->instructions) continue;
     at++;
     BufferPrintf(out, "%s%s",
                  at == 1   ? ""
@@ -153,9 +154,11 @@ static void TextPlugins(Agent* a, Buffer* out) {
 // Appends a line about the plugins in use, if there are any.
 static void PluginsText(Agent* a, Buffer* out) {
   size_t before = out->len;
+  int replaces = 0;  // a plugin's tool may win over one of the spec folder
   for (int l = 0; l < a->spec.layer_count; l++) {
     const Layer* layer = &a->spec.layers[l];
-    if (!layer->plugin) continue;
+    if (!layer->plugin || layer->policy) continue;
+    replaces |= cJSON_GetArraySize(layer->replaces) > 0;
     BufferPrintf(out, "%s%s (%s)", out->len == before ? "" : ", ",
                  layer->plugin, layer->dir);
   }
@@ -165,15 +168,41 @@ static void PluginsText(Agent* a, Buffer* out) {
   out->data[before] = 0;
   BufferPrintf(out,
                "\n- Plugins add tools, hooks and skills below yours: %s. A "
-               "tool of yours with the same name wins; hooks all run by band "
+               "tool of yours with the same name wins%s; hooks all run by band "
                "(policy, normal, final) and then in this order, yours first.",
-               list);
+               list,
+               replaces ? ", unless the plugin lists it in replaces:" : "");
   if (a->spec.kit) {
     BufferPrintf(out, " The kit %s (%s) chose them.", a->spec.kit,
                  a->spec.kit_dir);
   }
   free(list);
   TextPlugins(a, out);
+}
+
+// Appends a line about the policy folders, if there are any. It names the
+// policies, not their folders.
+static void PolicyText(Agent* a, Buffer* out) {
+  int n = 0, gated = 0;
+  for (int l = 0; l < a->spec.layer_count; l++) {
+    const Layer* layer = &a->spec.layers[l];
+    if (!layer->policy) continue;
+    BufferPrintf(out, "%s%s", n++ ? ", " : "\n- Policy: ", layer->plugin);
+    char* gate = HookPath(layer, "harness_edit");
+    gated |= gate != NULL;
+    free(gate);
+  }
+  if (!n) return;
+  BufferAppendStr(out,
+                  ". They come before your harness and you cannot remove "
+                  "them; their text comes before your instructions, and "
+                  "their tools win over yours.");
+  if (!gated) return;
+  BufferPrintf(out,
+               " Each harness edit goes to the policy before it loads; a "
+               "rejected edit is restored, and your version is kept in "
+               "%s/harness/rejected/.",
+               a->session.dir ? a->session.dir : ".arx/sessions/<id>");
 }
 
 // Tells the agent where its harness lives and how to change it.
@@ -199,6 +228,7 @@ static void HarnessText(Agent* a, Buffer* out) {
       skills ? skills : "(set `skills:` in the spec) ", skills ? "/" : "",
       a->session.dir ? a->session.dir : "(none)");
   PluginsText(a, out);
+  PolicyText(a, out);
 }
 
 // {{file:PATH}}, {{file:PATH:tail=N}} or {{file:PATH:max=SIZE}}.
@@ -247,15 +277,14 @@ static void AppendPart(Buffer* out, char* part) {
 
 // The text of each plugin layer, each rendered on its own and joined by a
 // blank line, or NULL when none adds text. With `policy`, the text of each
-// policy layer instead: those come with trust (--policy DIR), so there are
-// none yet.
+// policy layer instead (--policy DIR), in the order of the folders.
 static char* PluginText(Agent* a, int policy) {
   Buffer out = {0};
   g_rendering_plugins = 1;
-  for (int l = 0; !policy && l < a->spec.layer_count; l++) {
+  for (int l = 0; l < a->spec.layer_count; l++) {
     const Layer* layer = &a->spec.layers[l];
-    char* text =
-        layer->plugin ? SpecText(&a->spec, layer->instructions, NULL) : NULL;
+    int mine = layer->plugin && !layer->policy == !policy;
+    char* text = mine ? SpecText(&a->spec, layer->instructions, NULL) : NULL;
     AppendPart(&out, text ? RenderTemplate(a, text) : NULL);
     free(text);
   }

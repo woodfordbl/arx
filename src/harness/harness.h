@@ -6,10 +6,11 @@
 //   plugins.c    the layers (spec folder, plugins, config folder); plugin.yaml
 //   plugin_keys.c  a plugin's instructions and model_settings
 //   describe.c   `arx check --plugin`: one plugin, without loading it
-//   signature.c  fingerprints every layer with stat() for hot reload
+//   signature.c  walks the harness files; the fingerprint (trust.h)
 //   fields.c     the field tables of agent.yaml, plugin.yaml and kit.yaml
 //   validate.c, schema.c  validation and `arx schema`, from those tables
 //   tools.c      finds tools: tools/<name> in every layer, and subagents
+//   policy.c, tool_layers.c, manifest.c, gate.c  see trust.h
 //   tool_exec.c  runs one tool call; subagents run arx again
 //   keys.c       the keys of a tool call, which say what may run together
 //   hooks.c      runs hooks/<point>, by band and then in layer order
@@ -40,6 +41,7 @@ typedef struct Layer {
   cJSON* settings;  // a plugin's settings from the active list, or NULL
   cJSON* replaces;  // the tools a plugin hides on purpose, or NULL
   cJSON* instructions;  // a plugin's text node, with absolute paths, or NULL
+  int policy;           // a policy folder (--policy): see trust.h
 } Layer;
 
 // A loaded, validated spec.
@@ -64,17 +66,20 @@ typedef struct Spec {
   cJSON* setting_from;  // {"model_settings.<path>": plugin}, from plugins
   Buffer warnings;      // for `arx check`: plugins that set a field apart
   char* prompt_from;    // where the base prompt came from, for `arx check`
+  cJSON* policy;        // the policy folders (absolute), in order, or NULL
 } Spec;
 
 // Loads and validates `path`, merged over the kit and the user's defaults
 // in ConfigDir()/config.yaml (the spec wins key by key, and the kit wins
 // over the defaults), applies `sets` (--set, and --kit as `kit=NAME`; may be
 // NULL), builds the active list (see ActiveBuild) and adds the plugins (see
-// PluginsLoad). A missing kit is an error. With `path` NULL the defaults are
-// the whole spec, and tools/ and hooks/ come from the config directory.
-// Returns 0 and fills `spec`, or returns -1, appends one line per problem to
-// `err` ("file:line: path: message") and leaves `spec` empty.
-int SpecLoad(const char* path, cJSON* sets, Spec* spec, Buffer* err);
+// PluginsLoad), the policy folders in `policy` (may be NULL) first. A missing
+// kit is an error. With `path` NULL the defaults are the whole spec, and
+// tools/ and hooks/ come from the config directory. Returns 0 and fills
+// `spec`, or returns -1, appends one line per problem to `err`
+// ("file:line: path: message") and leaves `spec` empty.
+int SpecLoad(const char* path, cJSON* sets, cJSON* policy, Spec* spec,
+             Buffer* err);
 
 // Parses the YAML file at `path` into spec->root and spec->lines, without
 // validating it. Returns 0, or -1 with the problem in `err`.
@@ -151,7 +156,8 @@ void KitLockWrite(const Spec* spec);
 void PluginsLoad(Spec* spec);
 
 // Adopt's part for a plugin's instructions and model_settings (plugin_keys.c).
-void PluginKeysAdopt(Spec* spec, cJSON* root, Layer* layer);
+// `over` holds the values of the policy folders before this one, or is NULL.
+void PluginKeysAdopt(Spec* spec, cJSON* root, Layer* layer, cJSON* over);
 
 // Frees spec->layers.
 void LayersFree(Spec* spec);
@@ -168,13 +174,6 @@ int ListNames(const char* dir, char*** names);
 // Checks the plugin in `dir` without loading it, for `arx check --plugin`,
 // and appends key=value lines to `out`: fields, parts, hosts. Returns 0 or -1.
 int PluginDescribe(const char* dir, Buffer* out, Buffer* err);
-
-// ---- signature.c ----
-
-// Fingerprints every harness file with stat() only, so it costs microseconds
-// before each model call: the spec, the prompt files of the spec and each
-// plugin, tools/, hooks/ and skills in every layer, plugin.yaml and kit.yaml.
-uint64_t SpecSignature(const Spec* spec);
 
 // ---- validate.c ----
 
@@ -210,7 +209,7 @@ extern const Field kPluginFields[];
 // The keys of kit.yaml, ending with a zeroed Field.
 extern const Field kKitFields[];
 
-// The six hook points, session_start to stop, NULL-terminated.
+// The seven hook points, session_start to harness_edit, NULL-terminated.
 extern const char* const kHookPoints[];
 
 // The characters allowed in tool names (OpenAI function names).
@@ -267,9 +266,9 @@ typedef struct ToolSet {
 
 // Rebuilds a->tools from the spec and every layer's tools/: an executable
 // is a tool named after its file, described by <file>.json or else
-// `<tool> --schema`, with {{timeout}} and {{tool_output.*}} filled in. The
-// first layer with a working tool of a name wins. A file that only runs
-// `exec "$ARX_BIN" tool NAME "$@"` starts as `arx tool NAME`. A spec entry
+// `<tool> --schema`, with {{timeout}} and {{tool_output.*}} filled in. When
+// layers share a name, ToolPass (trust.h) says which wins. A file that only
+// runs `exec "$ARX_BIN" tool NAME "$@"` starts as `arx tool NAME`. A spec entry
 // with `agent: path` is a subagent. Problems become notes, once each.
 void ToolsBuild(struct Agent* a);
 

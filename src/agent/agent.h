@@ -58,6 +58,7 @@ typedef struct Agent {
   const char* resume;  // session to resume, or NULL
   const char* events;  // --events target, or NULL
   cJSON* sets;         // --set overrides, applied on every (re)load
+  cJSON* policy;       // policy folders: ARX_POLICY's, then --policy's
   Caps caps;
   char** cap_args;  // the raw --cap arguments, passed on to subagents
   int cap_count;
@@ -80,6 +81,7 @@ typedef struct Agent {
   int stop_requested;        // `arx ctl stop` arrived
   Call** calls;              // the session's call table (tool_calls.c)
   int call_count;
+  struct Gate* gate;  // the gate on harness edits (trust.h), or NULL
 } Agent;
 
 // Parses one --cap argument ("turns=50", "usd=2", "wall=8h", "depth=2")

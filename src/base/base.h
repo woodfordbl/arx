@@ -21,8 +21,7 @@
 
 // ---- util.c ----
 
-// The harness version, printed by `arx version` and in session.start events.
-// The build sets it from the git tag (see the Makefile); "dev" otherwise.
+// The harness version; the build sets it from the git tag, else it is "dev".
 #ifndef ARX_VERSION
 #define ARX_VERSION "dev"
 #endif
@@ -34,6 +33,7 @@ typedef enum ExitCode {
   kExitUsage = 2,
   kExitCap = 3,
   kExitAuth = 4,
+  kExitPolicy = 5,
   kExitInterrupted = 130,
 } ExitCode;
 

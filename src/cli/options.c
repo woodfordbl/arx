@@ -55,6 +55,9 @@ int ParseOptions(int argc, char** argv, int first, Agent* a) {
       cJSON_AddStringToObject(a->sets, "kit", value);
     } else if (!strcmp(arg, "--set")) {
       if (SpecAddSet(a->sets, value)) return UsageError("bad --set", value);
+    } else if (!strcmp(arg, "--policy")) {
+      if (!a->policy) a->policy = cJSON_CreateArray();
+      cJSON_AddItemToArray(a->policy, cJSON_CreateString(value));
     } else if (!strcmp(arg, "--cap")) {
       if (CapsParse(&a->caps, value)) return UsageError("bad --cap", value);
       a->cap_args[a->cap_count++] = (char*)value;
@@ -94,6 +97,8 @@ void PrintOptions(FILE* out) {
       "                        defaults from `arx setup`)\n"
       "  --kit NAME            use an installed kit (its plugins, in order,\n"
       "                        and its prompt); the agent cannot change it\n"
+      "  --policy DIR          load a policy folder first; repeatable. The\n"
+      "                        agent cannot remove it (also: ARX_POLICY)\n"
       "  --set KEY=VALUE       override a spec value, e.g. model=...\n"
       "  --cap KEY=VALUE       hard limit: turns, tokens, usd, wall, depth\n"
       "  --resume ID|last      continue a session\n"
@@ -103,6 +108,6 @@ void PrintOptions(FILE* out) {
       "  --events PATH|-|fd:N  also write the event stream there\n"
       "  --quiet               no terminal view\n"
       "\nexit codes: 0 done, 1 error, 2 usage, 3 cap reached, 4 auth, "
-      "130 interrupted\n",
+      "5 policy, 130 interrupted\n",
       out);
 }

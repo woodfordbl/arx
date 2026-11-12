@@ -103,4 +103,21 @@ sse_text "done" | reply 2 "200 OK"
 printf '  info  %-8s %8s ms for a new tool (incl. its first --schema run)\n' \
   "reload" "$(reload_ms)"
 
+# A reload through the gate starts one harness_edit hook. Not a budget: the
+# hook is a new process, outside the 10 ms that a reload without a policy
+# keeps.
+begin "bench-reload-gate"
+mkdir -p pol/p
+printf 'name: p\nversion: 0.1.0\ndescription: accepts every edit\n' >pol/p/plugin.yaml
+script pol/p/hooks/harness_edit <<'EOF'
+#!/bin/sh
+cat >/dev/null
+EOF
+sse_tool bash '{\"command\":\"echo \\\"context_window: 64000\\\" >> agent.yaml\"}' |
+  reply 1 "200 OK"
+sse_text "done" | reply 2 "200 OK"
+"$ARX" -p go --quiet --policy pol/p >/dev/null 2>&1
+printf '  info  %-8s %8s ms for a spec edit through a harness_edit hook\n' \
+  "reload" "$(reload_ms)"
+
 exit "$status"

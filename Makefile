@@ -2,10 +2,12 @@
 #   make            release binary ./arx (-Os, LTO, dead-code stripped), and
 #                   commands/lib/pick, the menu program the commands call
 #   make debug      ./arx-debug with AddressSanitizer and UBSan
-#   make test       run the src/base unit tests (tests/base_test.c), then
+#   make test       run the unit tests (tests/base_test.c for src/base and
+#                   tests/manifest_test.c for the accepted list), then
 #                   tests/run.sh, plugins.sh, layers.sh, cli.sh, shell.sh,
 #                   hooks.sh, runtime.sh, background.sh, kits.sh,
-#                   credentials.sh, state.sh, climb.sh, climb-run.sh and ui.sh
+#                   credentials.sh, state.sh, climb.sh, climb-run.sh, ui.sh,
+#                   trust.sh and gate.sh
 #                   against ./arx-debug
 #   make bench      check the performance budgets against ./arx
 #   make lint       style checks (scripts/lint.sh)
@@ -89,8 +91,15 @@ BASE_TEST_OBJ := $(patsubst %.c,build/dbg/%.o,$(filter src/base/%,$(SRC)) \
 build/dbg/base_test: tests/base_test.c $(BASE_TEST_OBJ)
 	$(CC) $(CPPFLAGS) $(WARN) $(DBG) $^ -o $@
 
-test: arx-debug build/dbg/base_test $(PICK)
+# Unit tests for the accepted list: manifest.c over the file walk.
+MANIFEST_TEST_OBJ := $(BASE_TEST_OBJ) build/dbg/src/harness/manifest.o \
+  build/dbg/src/harness/signature.o
+build/dbg/manifest_test: tests/manifest_test.c $(MANIFEST_TEST_OBJ)
+	$(CC) $(CPPFLAGS) $(WARN) $(DBG) $^ -o $@
+
+test: arx-debug build/dbg/base_test build/dbg/manifest_test $(PICK)
 	build/dbg/base_test
+	ASAN_OPTIONS=detect_leaks=0 build/dbg/manifest_test
 	ARX=./arx-debug tests/run.sh
 	ARX=./arx-debug tests/plugins.sh
 	ARX=./arx-debug tests/layers.sh
@@ -105,6 +114,8 @@ test: arx-debug build/dbg/base_test $(PICK)
 	ARX=./arx-debug tests/climb.sh
 	ARX=./arx-debug tests/climb-run.sh
 	ARX=./arx-debug tests/ui.sh
+	ARX=./arx-debug tests/trust.sh
+	ARX=./arx-debug tests/gate.sh
 
 # The browser build: the same sources with proc_host.c in place of the
 # native platform files. zig bundles wasi-libc; WASI_CC can name wasi-sdk's

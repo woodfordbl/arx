@@ -11,6 +11,7 @@
 #include "src/base/base.h"
 #include "src/cli/cli.h"
 #include "src/harness/harness.h"
+#include "src/harness/trust.h"
 #include "src/io/io.h"
 #include "src/model/model.h"
 
@@ -18,7 +19,8 @@
 static int LoadSpec(Agent* a) {
   Buffer err = {0};
   ResolveSpec(a);
-  int failed = SpecLoad(a->spec_path, a->sets, &a->spec, &err);
+  int failed = PolicyResolve(&a->policy, &err) ||
+               SpecLoad(a->spec_path, a->sets, a->policy, &a->spec, &err);
   if (failed) fputs(err.data, stderr);
   BufferFree(&err);
   return failed ? kExitUsage : 0;

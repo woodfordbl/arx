@@ -12,6 +12,7 @@
 #include "src/agent/agent.h"
 #include "src/base/base.h"
 #include "src/harness/harness.h"
+#include "src/harness/trust.h"
 #include "src/io/io.h"
 
 // Captured output: the head and tail in memory, everything in a file.
@@ -131,11 +132,12 @@ static void ForwardSink(void* ctx, const char* data, size_t n) {
 }
 
 // Starts a subagent: `arx -p - --spec <path> --json --events fd:3`, with our
-// caps and one more level of depth. Each subagent forwards its own events,
-// one whole line at a time, so several can run at once.
+// caps, our policy folders and one more level of depth. Each subagent forwards
+// its own events, one whole line at a time, so several can run at once.
 static ProcChild* StartSubagent(Agent* a, Tool* t, ToolRun* run) {
   int k = 0;
-  char** argv = XMalloc((size_t)(12 + 2 * a->cap_count) * sizeof(*argv));
+  int extra = 2 * (a->cap_count + cJSON_GetArraySize(a->policy));
+  char** argv = XMalloc((size_t)(12 + extra) * sizeof(*argv));
   char* fixed[] = {g_self,   "-p",      "-",        "--spec", t->path,
                    "--json", "--quiet", "--events", "fd:3"};
   for (size_t i = 0; i < sizeof(fixed) / sizeof(fixed[0]); i++) {
@@ -144,6 +146,11 @@ static ProcChild* StartSubagent(Agent* a, Tool* t, ToolRun* run) {
   for (int i = 0; i < a->cap_count; i++) {
     argv[k++] = "--cap";
     argv[k++] = a->cap_args[i];
+  }
+  cJSON* dir;
+  cJSON_ArrayForEach(dir, a->policy) {  // the same policy, also from a flag
+    argv[k++] = "--policy";
+    argv[k++] = dir->valuestring;
   }
   argv[k] = NULL;
   free(run->env[6]);
@@ -316,7 +323,10 @@ ToolRun* ToolStart(Agent* a, const char* name, const char* args, char** text,
   const char* raw = args && *args ? args : "{}";
   cJSON* parsed = cJSON_Parse(raw);
   ToolRun* run = NULL;
-  if (!cJSON_IsObject(parsed)) {
+  const char* changed = NULL;
+  if (t->kind == kToolExec && !GateAllows(a, t->path, &changed)) {
+    *text = XAsprintf("%s %s", t->path, changed);  // see trust.h
+  } else if (!cJSON_IsObject(parsed)) {
     *text = XAsprintf("the arguments are not a valid JSON object: %.200s", raw);
   } else if (!(*text = CheckArgs(t, parsed))) {
     *output_path = SessionOutputPath(&a->session);

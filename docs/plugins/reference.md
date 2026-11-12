@@ -175,7 +175,8 @@ fields as `settings`.
 `arx check` with no option reports the whole harness: a `kit:` line when
 there is a kit, `credential:` and `adapter:` lines when the endpoint names
 them, then `hosts:`, `tools:`, `hooks:`, `prompt:`, `model_settings:` (when
-there are settings), `plugins:` (in order), `problems:` and `warnings:`:
+there are settings), `policy:` (the policy folders, in order, when there
+are any), `plugins:` (in order), `problems:` and `warnings:`:
 
 ```text
 prompt: kit coding; plugins add test-runner (121 bytes)
@@ -184,14 +185,26 @@ model_settings: reasoning_effort="medium" (spec), parallel_tool_calls=true (plug
 
 - **`prompt:`**: where the base prompt comes from (`agent.yaml`,
   `kit NAME`, `config.yaml`, `--set` or `default`), then the plugins that
-  add text, with the size of their raw text.
+  add text, with the size of their raw text. Policy folders that add text
+  come before them, as `policies add NAME (N bytes)`.
+- **`hooks:`**: each point that has a hook, with the plugins it comes from.
+  A policy folder's hook has a `*`: `before_tool(guard*)`. `harness_edit`
+  lists policy folders only.
 - **`model_settings:`**: each field as compact JSON, with its source:
   `spec` (the spec, the kit, `config.yaml` or `--set`) or `plugin NAME`.
 - **`warnings:`**: two hooks at one point that change the same field, a
   plugin that hides a tool without `replaces:`, two plugins that set one
   model setting to different values, and a plugin that adds more than 4096
-  bytes to the prompt. `arx check --list` prints the active list as tab-separated
-rows (position, name, state, why, folder) for scripts. `arx plugin list`
+  bytes to the prompt. With policy folders: a `hooks/harness_edit` outside
+  a policy folder, a policy folder inside the working directory, a policy's
+  `before_tool` hook without `band: policy` and `fail: closed`, and settings
+  for a policy in `agent.yaml`. A hide that the tool rule explains (a
+  policy's tool, or a name in `replaces:`) gets no warning.
+
+`arx check --policy DIR` loads the harness with that
+[policy folder](policies.md). `arx check --list` prints the active list as tab-separated
+rows (position, name, state, why, folder) for scripts. The states are
+`on`, `off`, `broken`, `missing` and `policy`; the policy rows come first. `arx plugin list`
 shows the same list as a table.
 
 ### Hosts
@@ -231,6 +244,13 @@ arx removes any `ARX_PLUGIN_DIR`, `ARX_PLUGIN_SETTINGS`, `ARX_STATE_DIR` and
 | `ARX_STATE_DIR` | `$ARX_SESSION_DIR/plugins/<name>`: the plugin's state for this session; arx doesn't make it. See [Plugin state](concepts.md#plugin-state) |
 | `ARX_DATA_DIR` | `<working folder>/.arx/data/<name>`: the plugin's data across sessions; arx doesn't make it |
 
+arx reads one more variable and does not set it: `ARX_POLICY`, a
+colon-separated list of [policy folders](policies.md#--policy-and-arx_policy)
+that load before those of `--policy`. Tools and hooks inherit it from arx's
+own environment, so an `arx` that a tool starts gets the same policy. A
+policy folder's programs get the variables of any plugin, with
+`ARX_PLUGIN_DIR` set to the policy folder.
+
 | Kind | Gets the variables above | Gets `ARX_PLUGIN_DIR` | Gets `ARX_STATE_DIR` | Gets `ARX_DATA_DIR` |
 |---|---|---|---|---|
 | Tool (a call) | yes | in a plugin | in a plugin | in a plugin |
@@ -263,10 +283,13 @@ arx removes any `ARX_PLUGIN_DIR`, `ARX_PLUGIN_SETTINGS`, `ARX_STATE_DIR` and
 | `before_tool` | `{"id", "name", "args", "keys"}` | any of `name`, `args`, `keys`, `result`; or `{"decision": "deny", "reason": "..."}` |
 | `after_tool` | `{"call": {"id", "name", "args"}, "result", "is_error"}` | `result`, `backoff`; or `{"note": "..."}` |
 | `stop` | `{"last_message": "..."}` | `{"decision": "continue" or "restart", "message": "..."}` |
+| `harness_edit` | `{"changes": [{"path", "rel", "layer", "kind", "change", "exec", "old", "keys", "pinned"}]}` | `{"reject": {"PATH": "REASON"}}`; or `{"decision": "reject" or "stop", "reason": "..."}` |
 
 Every input also has `point`, `session` and `turn`. At the four middle points
 the hooks form a chain, and each prints only the fields it changes. See
-[Hooks](hooks.md).
+[Hooks](hooks.md). `harness_edit` runs only in a policy folder, and its
+`fail` option defaults to `closed`. See
+[Policies](policies.md#the-harness_edit-hook).
 
 ## Events
 
@@ -281,7 +304,7 @@ new `v`.
 
 | `type` | Fields |
 |---|---|
-| `session.start` | `name`, `model`, `spec`, `resumed`, `tools` (a count), `context_window` (tokens), `cwd` (the working folder) |
+| `session.start` | `name`, `model`, `spec`, `resumed`, `tools` (a count), `context_window` (tokens), `cwd` (the working folder), and `policy` (the names of the policy folders) when there are any |
 | `prompt.start` | `text`: a prompt from you, cut at 64 KB. Sent for the `-p` task, each interactive line and each `--input jsonl` prompt, not for hook messages or harness notes. |
 | `turn.start` | none |
 | `model.delta` | `text`: streamed model text, batched about every 50 ms |
@@ -292,10 +315,11 @@ new `v`.
 | `tool.run` | `id`, `name`: the call's process started. A call that a hook answered or denied has none. |
 | `tool.detach` | `id`, `name`, `call` (the short id, such as `"c7"`), `queued` (true when the scheduler holds it): the call moved to the [background](schedulers.md#run-calls-in-the-background) and the model got the placeholder |
 | `tool.end` | `id`, `name`, `error`, `preview`, and `output`: the first 2 KB of the result, before the `after_tool` hooks; process tools add `exit`, `secs`, `bytes` and `path`; a background call adds `call` and `detached: true`, and its event can come turns later |
-| `hook` | `point`, `secs`, `plugin` (for a plugin's hook), `band` (outside `normal`); `changed` (the fields the hook changed), `decision`, `ignored` (a change dropped after a policy result), or `error` |
-| `harness.reload` | `ok`, `ms`, and `tools` (a count) or `errors` |
+| `hook` | `point`, `secs`, `plugin` (for a plugin's hook), `policy` (true for a policy folder's hook), `band` (outside `normal`); `changed` (the fields the hook changed), `decision`, `ignored` (a change dropped after a policy result, or a `harness_edit` reject of a path arx did not send), or `error` |
+| `harness.reload` | `ok`, `ms`, and `tools` (a count) or `errors`; `rejected` (a count) when the policy rejected changes |
+| `harness.edit` | one for each changed harness file in a run with a `harness_edit` hook: `path`, `layer`, `kind`, `change`, `decision` (`accept`, `reject` or `stop`), and `reason` and `policy` (the policy's name) for a reject |
 | `compact` | `strategy`, `tokens_before`, `tokens_after` |
-| `note` | `text`: harness notes, and caps reached |
+| `note` | `text`: harness notes, caps reached, and a stop by the policy |
 | `error` | `error`; also sent when a scheduler plugin fails |
 | `prompt.end` | `status` (`done`, `cap`, `error`, `auth` or `interrupted`), `turns`, `tokens` and `cost` (the session's totals so far), `final_output` (this prompt's answer, cut at 2000 bytes). Sent when a prompt's turns end in interactive and `--input jsonl` runs. A headless run has only `session.end`. |
 | `session.end` | `status`, `turns`, `tokens`, `cost`, `secs`, `final_output` |
@@ -320,6 +344,7 @@ Each session has a folder `.arx/sessions/<id>/` in the working directory.
 | `tool-NNNN.out` | the full output of each process tool call |
 | `inbox` | commands from `arx ctl`, and the results of background calls; see [Inbox lines](#inbox-lines) |
 | `plugins/<name>/` | a plugin's `ARX_STATE_DIR`, when the plugin made it |
+| `harness/rejected/<turn>-<rel>` | the agent's version of each harness edit that a [policy](policies.md#what-a-reject-does) rejected; each `/` of `rel` is `__` |
 
 With a kit that pins versions, arx also writes `kit.lock` next to the spec.
 
@@ -418,9 +443,10 @@ for `arx plugin add`.
 |---|---|---|---|
 | `0` | done | valid | done |
 | `1` | error | | an error, or a question answered no |
-| `2` | usage, a spec that is not valid, or a missing or bad kit | not valid | usage |
+| `2` | usage, a spec that is not valid, a missing or bad kit, or a missing or broken policy folder | not valid | usage |
 | `3` | a cap was reached | | |
 | `4` | authentication failed | | |
+| `5` | the policy stopped the run: status `policy` | | |
 | `130` | interrupted | | |
 
 `arx check` exits 0 when the spec is valid, even when it lists skipped tools

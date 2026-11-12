@@ -23,6 +23,7 @@ begin "help and dispatch"
 check "help lists built-ins" has help.txt 'request'
 check "help lists external commands" has help.txt 'setup '
 check "help shows summaries" has help.txt 'update arx to the latest release'
+check "help lists exit code 5" has help.txt '5 policy'
 "$ARX" help setup >setup-help.txt 2>&1
 check "help COMMAND runs its --help" has setup-help.txt 'usage: arx setup'
 mkdir bin

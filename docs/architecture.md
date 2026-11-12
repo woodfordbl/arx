@@ -17,6 +17,7 @@ it:
 | **Model calls through `curl`** | Every request goes through `HttpRun`, which runs curl natively. The binary has no TLS or HTTP code. curl handles proxies, certificates and HTTP/2. The API key goes in a 0600 header file, never on the command line. |
 | **Hot reload by `stat()`** | A fingerprint of the harness files costs microseconds, so arx checks before every model call instead of watching files. |
 | **One field table for the spec** | Validation, "did you mean" hints and `arx schema` all come from `kTopFields` in `fields.c`. Adding a key adds it to all three. |
+| **A gate on harness edits, not a sandbox** | With `--policy DIR`, arx keeps each harness file as the policy accepted it, in memory, and a `harness_edit` hook judges every change before it loads. arx reverts a rejected file, because it runs hooks and tools from disk. Without a sandbox this stops mistakes, not a hostile agent. See [Policies](plugins/policies.md). |
 | **Errors go to the agent** | A rejected edit or a broken tool becomes a `[harness]` note with enough detail for the agent to fix it itself. |
 | **Observers can't block** | The event pipe is non-blocking. A slow observer loses events; the agent never waits. |
 | **One platform section** | Processes, signals, exec, observers, sleeping and HTTP sit behind the platform section of `src/base/base.h`. Natively `proc.c` and `proc_posix.c` implement it, and `proc_host.c` in the browser build. Nothing else in `src/` makes a process call, and `make lint` and `make wasm` check it. |
@@ -72,6 +73,7 @@ Every source file, by folder:
 | `cli/` | `options.c` | option parsing, spec lookup and usage errors |
 | | `commands.c` | built-in commands: `schema`, `tool`, `watch`, `ctl`, `request`, `version`, `help` |
 | | `check.c` | `arx check` and `arx tools` |
+| | `check_policy.c` | the `policy:` line and the policy warnings of `arx check` |
 | | `shell_tools.c` | the `bash` and `edit` tools behind `arx tool NAME` |
 | | `external.c` | `arx foo` runs `arx-foo`; `arx help` lists every command |
 | `agent/` | `loop.c` | the turn loop: caps, reload, inbox, notes, compaction, tool calls, the wait for background calls, stop hook |
@@ -83,14 +85,18 @@ Every source file, by folder:
 | | `agent.c` | caps parsing, notes, the system prompt and `{{templates}}` |
 | `harness/` | `spec.c` | YAML to JSON with line numbers, `--set`, merging over `config.yaml` |
 | | `plugins.c` | the layers: spec folder, project plugins, config folder, user plugins |
+| | `policy.c` | policy folders (`--policy DIR`, `ARX_POLICY`): the layers before the spec folder, and the changed keys of a YAML edit |
 | | `active.c` | the active list: the ordered plugins one run uses |
 | | `kits.c` | kits |
-| | `signature.c` | the hot-reload fingerprint, over every layer, by `stat()` |
+| | `signature.c` | the walk over every harness file, and the hot-reload fingerprint on it, by `stat()` |
+| | `manifest.c` | the accepted list: each harness file as the policy accepted it, with copies in memory, a diff and the revert |
+| | `gate.c` | the gate: runs the `harness_edit` hooks before a reload, reverts rejected files, and checks a file right before arx runs it |
 | | `fields.c` | the field tables of `agent.yaml`, `plugin.yaml` and `kit.yaml` |
 | | `validate.c` | validation against the field tables |
 | | `schema.c` | the JSON Schema, from the same table |
 | | `describe.c` | `arx check --plugin DIR`: checks one plugin without loading it |
 | | `tools.c` | finds tools and caches their `--schema` |
+| | `tool_layers.c` | which layer's tool wins: a policy folder's, then one that `replaces:` the name, then the first |
 | | `keys.c` | the keys of a tool call |
 | | `tool_exec.c` | runs one tool call; subagents run arx again |
 | | `hooks.c` | runs `hooks/<point>`: one hook, its options and band, and the `session_start` and `stop` points |
@@ -130,7 +136,7 @@ Every build, test and release step is a `make` target:
 |---|---|
 | `make` | release build: `-Os`, LTO, dead code stripped; also `commands/lib/pick` |
 | `make debug` | `./arx-debug` with AddressSanitizer and UBSan |
-| `make test` | the unit tests of `src/base` (`tests/base_test.c`), then 949 end-to-end checks in thirteen suites against `tests/fake-curl` (77 core, 38 marketplace plugins, 74 plugin loading, 94 CLI, 56 shell plugin, 70 hooks, 56 tool runtime, 93 kits, 84 credentials, 35 plugin state, 89 climb config, 73 climb runs, 110 terminal UI). No network or API key needed. The terminal UI suite drives pick and `arx setup` on a pseudo-terminal with `tests/pty.py`, and skips itself without python3. |
+| `make test` | the unit tests of `src/base` (`tests/base_test.c`) and of the accepted list (`tests/manifest_test.c`), then 1179 end-to-end checks in sixteen suites against `tests/fake-curl` (78 core, 59 marketplace plugins, 74 plugin loading, 95 CLI, 56 shell plugin, 70 hooks, 61 tool runtime, 86 background calls, 93 kits, 84 credentials, 35 plugin state, 89 climb config, 73 climb runs, 110 terminal UI, 49 policy folders, 67 harness edit gate). No network or API key needed. The terminal UI suite drives pick and `arx setup` on a pseudo-terminal with `tests/pty.py`, and skips itself without python3. |
 | `make bench` | the [performance budgets](#performance-budgets) |
 | `make lint` | clang-format, cpplint, files of 400 lines or fewer, doc comments, for `src/` and `pick/`, and process calls only in `proc.c` and `proc_posix.c` |
 | `make format` | rewrites `src/` and `pick/` in Google style |
@@ -149,7 +155,8 @@ GitHub Actions builds, tests and publishes arx:
 
 - **CI** runs on every push to `main` and every pull request: lint, with
   clang-format 23.1.3 and cpplint 2.0.2 pinned, then the core, marketplace
-  plugin, plugin loading, CLI and terminal UI suites and the performance
+  plugin, plugin loading, CLI, terminal UI, policy folder and gate suites and
+  the performance
   budgets against a static Linux build, and the browser build: `make wasm`
   with zig 0.17.1 (checked by SHA-256) and binaryen 132, its import check,
   and a 300 KB size budget.

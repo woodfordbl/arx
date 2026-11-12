@@ -1,4 +1,5 @@
-// tools.c: builds the tool set from the tools/ folder of every layer.
+// tools.c: builds the tool set from the tools/ folder of every layer
+// (tool_layers.c says which layer's tool wins).
 // Executable tools are found by path and described by a <name>.json file
 // next to them, or else by `--schema` (description, parameters and keys);
 // the answers are cached by modification time and size, so a reload only
@@ -13,6 +14,7 @@
 #include "src/agent/agent.h"
 #include "src/base/base.h"
 #include "src/harness/harness.h"
+#include "src/harness/trust.h"
 
 static const char kAgentParams[] =
     "{\"type\":\"object\",\"properties\":{\"task\":{\"type\":\"string\","
@@ -214,24 +216,9 @@ static void Add(ToolSet* t, ToolKind kind, const char* name, const char* desc,
   tool->keys = kind == kToolAgent ? cJSON_CreateArray() : NULL;
 }
 
-// True for a <name>.json schema file, which sits next to its tool.
-static int IsSchemaFile(const char* name) {
-  size_t n = strlen(name);
-  return n > 5 && !strcmp(name + n - 5, ".json");
-}
-
-// True when the set already has a tool called `name`.
-static int HasTool(const ToolSet* t, const char* name) {
-  for (int i = 0; i < t->count; i++) {
-    if (!strcmp(t->items[i].name, name)) return 1;
-  }
-  return 0;
-}
-
-// Adds one executable from a layer's tools/, or explains in `notes` why it
-// is skipped. `where` names the layer in notes ("" for the spec folder).
-static void AddExecutable(struct Agent* a, const Layer* layer,
-                          const char* where, const char* name, Buffer* notes) {
+// Adds one executable from a layer's tools/; see trust.h.
+void ToolAddExecutable(struct Agent* a, const Layer* layer, const char* where,
+                       const char* name, Buffer* notes) {
   char key[160];
   char* path = XAsprintf("%s/tools/%s", layer->dir, name);
   struct stat st;
@@ -267,46 +254,6 @@ static void AddExecutable(struct Agent* a, const Layer* layer,
     }
   }
   free(path);
-}
-
-// How notes name a layer: "" for the spec folder, "plugin <name>: " for a
-// plugin, and the folder for the user's config folder.
-static char* LayerName(const Layer* layer, int index) {
-  if (index == 0) return XStrdup("");
-  if (layer->plugin) return XAsprintf("plugin %s: ", layer->plugin);
-  return XAsprintf("%s/", layer->dir);
-}
-
-// Adds the executables of every layer; the first working tool with a name
-// wins. Collects every file name in `names` (for AddConfigured) and returns
-// how many there are.
-static int AddLayers(struct Agent* a, char*** names, Buffer* notes) {
-  int total = 0;
-  *names = NULL;
-  for (int l = 0; l < a->spec.layer_count; l++) {
-    const Layer* layer = &a->spec.layers[l];
-    char* dir = PathJoin(layer->dir, "tools");
-    char* where = LayerName(layer, l);
-    char** found;
-    int n = ListNames(dir, &found);
-    for (int i = 0; i < n; i++) {
-      if (IsSchemaFile(found[i])) {
-        free(found[i]);
-        continue;
-      } else if (!HasTool(&a->tools, found[i])) {
-        AddExecutable(a, layer, where, found[i], notes);
-      } else {
-        BufferPrintf(notes, "- %stools/%s is hidden by a tool above it\n",
-                     where, found[i]);
-      }
-      *names = XRealloc(*names, (size_t)(total + 1) * sizeof(**names));
-      (*names)[total++] = found[i];
-    }
-    free(found);
-    free(where);
-    free(dir);
-  }
-  return total;
 }
 
 // Adds subagent tools and flags spec entries that match nothing.
@@ -346,7 +293,7 @@ void ToolsBuild(struct Agent* a) {
   char** names;
   ToolsFree(&a->tools);
   if (a->spec.problems.len) BufferAppendStr(&notes, a->spec.problems.data);
-  int n = AddLayers(a, &names, &notes);
+  int n = ToolsAddLayers(a, &names, &notes);
   AddConfigured(a, names, n, &notes);
   for (int i = 0; i < n; i++) free(names[i]);
   free(names);

@@ -242,7 +242,7 @@ static void ValidateNames(const Spec* spec, Buffer* err) {
     char* path = XAsprintf("hooks.%s", c->string);
     Problem(spec, err, path,
             "unknown hook point (known: session_start, before_model, "
-            "after_model, before_tool, after_tool, stop)");
+            "after_model, before_tool, after_tool, stop, harness_edit)");
     free(path);
   }
   cJSON_ArrayForEach(c, JsonGet(spec->root, "tools")) {

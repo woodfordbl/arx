@@ -28,6 +28,16 @@ done
 
 echo "harness"
 if [ -f agent.yaml ]; then ok "./agent.yaml"; else warn "no ./agent.yaml; using your defaults (arx init makes one)"; fi
+# A missing policy folder stops every run before it starts.
+old_ifs=$IFS
+IFS=:
+for dir in ${ARX_POLICY:-}; do
+  [ -n "$dir" ] || continue
+  if [ -d "$dir" ]; then ok "policy folder $dir (from ARX_POLICY)"; else
+    warn "ARX_POLICY names $dir, which is missing; every run stops with exit 2 until it is back"
+  fi
+done
+IFS=$old_ifs
 if check=$("$arx" check 2>&1); then
   ok "$(echo "$check" | head -1)"
   tools=$(echo "$check" | sed -n 's/^tools: *//p')

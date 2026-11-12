@@ -1,7 +1,8 @@
-// plugins.c: the layers a harness is made of. The spec folder comes first;
-// plugins (folders with a plugin.yaml) and the user's config folder add
-// tools/, hooks/ and skills below it, so the agent's own files always win.
-// With an active list (active.c), only its plugins load, in its order.
+// plugins.c: the layers a harness is made of. The policy folders come first
+// (policy.c adds them), then the spec folder; plugins (folders with a
+// plugin.yaml) and the user's config folder add tools/, hooks/ and skills
+// below it. With an active list (active.c), only its plugins load, in its
+// order.
 
 #include <ctype.h>
 #include <dirent.h>
@@ -12,6 +13,7 @@
 
 #include "src/base/base.h"
 #include "src/harness/harness.h"
+#include "src/harness/trust.h"
 
 // plugin.yaml keys that describe the plugin, or that PluginsLoad handles
 // itself, so they are not merged into the spec.
@@ -63,12 +65,13 @@ static Layer* AddLayer(Spec* spec, const char* dir, const char* plugin,
   layer->settings = NULL;
   layer->replaces = NULL;
   layer->instructions = NULL;
+  layer->policy = 0;
   return layer;
 }
 
-// Adds a row for `arx check --list`.
-static void AddRow(Spec* spec, const char* name, const char* state,
-                   const char* why, const char* dir) {
+// Adds a row for `arx check --list`; see trust.h.
+void PluginRow(Spec* spec, const char* name, const char* state, const char* why,
+               const char* dir) {
   if (!spec->rows) spec->rows = cJSON_CreateArray();
   cJSON* row = cJSON_CreateObject();
   cJSON_AddStringToObject(row, "name", name);
@@ -164,11 +167,13 @@ static void AppendHosts(Spec* spec, cJSON* hosts) {
   }
 }
 
-// Merges a checked plugin.yaml under the spec and adds the plugin's layer.
-static void Adopt(Spec* spec, Spec* plugin, const char* dir, const char* name) {
+// Adds a checked plugin's layer and merges its values; see trust.h.
+void PluginAdopt(Spec* spec, Spec* plugin, const char* dir, const char* name,
+                 cJSON* above) {
   cJSON* root = plugin->root;
   cJSON* c;
   Layer* layer = AddLayer(spec, dir, name, PathJoin(dir, "skills"));
+  layer->policy = above != NULL;
   cJSON* settings = cJSON_GetObjectItemCaseSensitive(spec->settings, name);
   // Settings may set the plugin's own tool and hook options and model
   // settings; PluginKeysAdopt applies them to its instructions.
@@ -186,7 +191,7 @@ static void Adopt(Spec* spec, Spec* plugin, const char* dir, const char* name) {
   layer->settings = settings ? cJSON_Duplicate(settings, 1) : NULL;
   layer->hooks = cJSON_DetachItemFromObjectCaseSensitive(root, "hooks");
   layer->replaces = cJSON_DetachItemFromObjectCaseSensitive(root, "replaces");
-  PluginKeysAdopt(spec, root, layer);
+  PluginKeysAdopt(spec, root, layer, above);
   cJSON_ArrayForEach(c, JsonGet(root, "tools")) {
     Absolute(JsonGet(c, "agent"), dir);
   }
@@ -208,7 +213,15 @@ static void Adopt(Spec* spec, Spec* plugin, const char* dir, const char* name) {
   for (const char* const* k = kOwnKeys; *k; k++) {
     cJSON_DeleteItemFromObjectCaseSensitive(root, *k);
   }
-  SpecMergeUnder(spec, plugin);
+  if (!above) {
+    SpecMergeUnder(spec, plugin);
+    return;
+  }
+  // A policy: the folders before it win, so its values go under theirs.
+  cJSON* merged = cJSON_Duplicate(root, 1);
+  JsonMergeOver(merged, above);
+  JsonMergeOver(above, merged);
+  cJSON_Delete(merged);
 }
 
 // Reads and checks a plugin.yaml; see harness.h.
@@ -246,10 +259,10 @@ static void LoadPlugin(Spec* spec, const char* dir, const char* name,
   if (err.len) {
     BufferPrintf(&spec->problems, "- plugin %s was skipped:\n%s", name,
                  err.data);
-    AddRow(spec, name, "broken", "skipped: see arx check", where);
+    PluginRow(spec, name, "broken", "skipped: see arx check", where);
   } else {
-    Adopt(spec, &plugin, where, name);
-    AddRow(spec, name, "on", why, where);
+    PluginAdopt(spec, &plugin, where, name, NULL);
+    PluginRow(spec, name, "on", why, where);
   }
   SpecFree(&plugin);
   BufferFree(&err);
@@ -279,7 +292,7 @@ static void LoadPlugins(Spec* spec, const char* parent, int load) {
       LoadPlugin(spec, dir, names[i], "installed");
     } else {
       char* why = OffWhy(spec, names[i]);
-      AddRow(spec, names[i], "off", why, dir);
+      PluginRow(spec, names[i], "off", why, dir);
       free(why);
     }
     free(yaml);
@@ -297,6 +310,7 @@ static void LoadActive(Spec* spec, const char* config) {
     const char* name = JsonStr(row, "name", "");
     const char* why = JsonStr(row, "why", "");
     char* dir = NULL;
+    if (HaveRow(spec, name)) continue;  // a policy folder has this name
     const char* parents[] = {spec->dir, config};
     for (int i = 0; i < 2 && !dir && parents[i]; i++) {
       char* yaml = XAsprintf("%s/plugins/%s/plugin.yaml", parents[i], name);
@@ -311,7 +325,7 @@ static void LoadActive(Spec* spec, const char* config) {
                    "- plugin %s (%s) is not installed: run `arx plugin add "
                    "%s`\n",
                    name, why, name);
-      AddRow(spec, name, "missing", why, NULL);
+      PluginRow(spec, name, "missing", why, NULL);
     }
     free(dir);
   }

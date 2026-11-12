@@ -13,32 +13,18 @@ Most of the plugin redesign is already built and documented: hooks on raw
 objects ([Hooks](hooks.md)), the `shell` plugin
 ([Tools](tools.md#bash-and-edit)), keys and the tool runtime
 ([Keys](tools.md#keys), [Schedulers](schedulers.md)), calls in the
-background ([Schedulers](schedulers.md#run-calls-in-the-background)), and
+background ([Schedulers](schedulers.md#run-calls-in-the-background)),
 kits, the active list and hook bands ([Kits](kits.md),
-[Bands](hooks.md#bands)). These parts are not built:
+[Bands](hooks.md#bands)), and policy folders with the `harness_edit` gate
+([Policies](policies.md)). These parts are not built:
 
 | Part | What it would add | Section |
 |---|---|---|
-| Trust | a policy folder that the spec cannot remove, and a `harness_edit` hook point | [Trust](#trust) |
 | Sandboxes | a `sandbox:` value that sandbox plugins read | [Sandboxes](#sandboxes) |
 | Long-lived and concurrent hooks | hooks that keep state, and `before_tool` hooks that run at the same time | [Long-lived and concurrent hooks](#long-lived-and-concurrent-hooks) |
 | Front-ends | an ACP server and a terminal UI | [Front-ends](#front-ends) |
 | MCP client | MCP servers as tools | [MCP client](#mcp-client) |
 | The marketplace index | `index.yaml` and `arx plugin search` | [More of arx plugin](#more-of-arx-plugin) |
-
-## Trust
-
-The agent and arx run as the same user on the same disk, so today the
-agent's `bash` can change plugin files and its own `agent.yaml`. A launcher
-pin (`--kit`, `--set`) keeps the active list, but not the files.
-
-The plan adds two parts:
-
-- **`--policy DIR`** would name a policy folder that loads first, before the
-  spec folder, and that the spec cannot remove.
-- **A `harness_edit` hook point**: before a reload, the policy would see each
-  harness file that the agent changed, and accept or reject the change. Then
-  "the agent may edit prompts, but not hooks" would be one small hook.
 
 ## Sandboxes
 
@@ -48,7 +34,9 @@ it to each tool and hook as `ARX_SANDBOX`. A sandbox plugin, such as
 in a layer above the `shell` plugin, with `replaces: [bash, edit]`. The rule
 "the first tool with a name wins" would do the rest.
 
-Only a sandbox that cannot reach the harness files would make a policy safe.
+Only a sandbox that cannot write the harness files and the policy folders
+would make a [policy](policies.md#what-a-policy-needs-from-a-sandbox) a
+boundary. Today a policy stops mistakes, not a hostile agent.
 
 ## Long-lived and concurrent hooks
 

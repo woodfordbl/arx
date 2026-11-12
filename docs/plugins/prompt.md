@@ -65,8 +65,8 @@ read it. `{{harness}}` names the plugins that add text, so the agent can
 find it and change it. With no plugin text, the prompt is the same as before
 0.2.0, byte for byte.
 
-**Planned:** with [trust](planned.md#trust), the text of a policy folder
-will come before the base, and the spec will not be able to move or drop it.
+The text of a [policy folder](policies.md) comes before the base, outside
+`{{plugin_instructions}}`, and no setting moves or drops it.
 
 ### Add request fields
 
@@ -103,8 +103,8 @@ arx sends the fields in Chat Completions form. An [adapter](adapters.md)
 translates them for its endpoint, and drops the ones its endpoint rejects.
 See [Map model settings](adapters.md#map-model-settings).
 
-**Planned:** with [trust](planned.md#trust), a policy folder's settings will
-rank above `--set`.
+A [policy folder](policies.md)'s `model_settings` rank above `--set`. With
+two policy folders, the first wins.
 
 ### Change one plugin's text and settings
 

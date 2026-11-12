@@ -21,7 +21,8 @@ static char* UiCommand(Agent* a) {
   Spec spec;
   Buffer err = {0};
   char* name = NULL;
-  if (!SpecLoad(a->spec_path, a->sets, &spec, &err)) {
+  // Without the policy folders: the run resolves and checks them later.
+  if (!SpecLoad(a->spec_path, a->sets, NULL, &spec, &err)) {
     const char* ui = JsonStr(spec.root, "ui", "");
     if (*ui && strcmp(ui, "none")) name = XStrdup(ui);
     SpecFree(&spec);
@@ -81,6 +82,7 @@ int main(int argc, char** argv) {
   }
   free(a.cap_args);
   cJSON_Delete(a.sets);
+  cJSON_Delete(a.policy);
   free(g_self);
   return code;
 }
