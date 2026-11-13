@@ -156,6 +156,21 @@ msg0() { jq -r '.messages[0].content' "fake/req-0$1.json"; }
 # The JSON of field KEY in the body of model call N.
 field() { jq -c ".$2" "fake/req-0$1.json"; }
 
+# Prints a spec whose endpoint has the extra keys in $1.
+cred_spec() {
+  cat <<EOF
+name: test
+model: test-model
+endpoint: {$1, retry_base: 0.01, retry_max: 0.05}
+EOF
+}
+
+# The lines of FILE, joined by spaces.
+lines() { tr '\n' ' ' <"$1" | sed 's/ $//'; }
+
+# Runs a Python check on JSON file $1: $2 is an expression over `j`.
+json() { python3 -c "import json,sys; j=json.load(open('$1')); sys.exit(0 if ($2) else 1)"; }
+
 # Prints the totals and returns non-zero if anything failed.
 summary() {
   echo

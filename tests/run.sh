@@ -25,6 +25,16 @@ begin "gateway cost"
 run "hi" --json
 check "cost from market_cost" has out.txt '"cost":0.0123'
 
+# Cached prompt tokens, as OpenAI-compatible providers report them.
+begin "cached tokens"
+{
+  printf 'data: {"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}\n\n'
+  printf 'data: {"choices":[],"usage":{"prompt_tokens":2000,"completion_tokens":2,"prompt_tokens_details":{"cached_tokens":1920}}}\n\n'
+  printf 'data: [DONE]\n\n'
+} | reply 1 "200 OK"
+run "hi"
+check "model.message has tokens_cached" has .arx/sessions/last/events.jsonl '"tokens_cached":1920'
+
 # A tool call: the output reaches the next request.
 begin "bash tool"
 sse_tool bash '{\"command\":\"echo hi-there\"}' | reply 1 "200 OK"

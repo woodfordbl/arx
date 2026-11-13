@@ -94,8 +94,9 @@ typedef struct Reply {
   cJSON* message;  // the assistant message; the caller owns it
   int64_t tokens_in;
   int64_t tokens_out;
-  double cost;      // from the provider, else from the spec's prices
-  char finish[32];  // finish_reason: "stop", "tool_calls", "length", ...
+  int64_t tokens_cached;  // the part of tokens_in read from the prompt cache
+  double cost;            // from the provider, else from the spec's prices
+  char finish[32];        // finish_reason: "stop", "tool_calls", "length", ...
 } Reply;
 
 // Sends `messages` and `tools` (NULL or empty for none) to the model in the
@@ -140,7 +141,8 @@ typedef struct Stream {
   char* error;        // an error object sent inside the stream, or NULL
   int64_t tokens_in;  // usage.prompt_tokens
   int64_t tokens_out;
-  double cost;  // usage.cost, when the provider sends it
+  int64_t tokens_cached;  // usage.prompt_tokens_details.cached_tokens
+  double cost;            // usage.cost, when the provider sends it
   int has_cost;
 } Stream;
 

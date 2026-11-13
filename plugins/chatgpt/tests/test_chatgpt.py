@@ -1,6 +1,6 @@
 """Tests for the chatgpt plugin: sign-in, refresh, ID tokens, the adapter.
 
-Run with `python3 plugins/chatgpt/tests/test_chatgpt.py`; tests/credentials.sh
+Run with `python3 plugins/chatgpt/tests/test_chatgpt.py`; tests/chatgpt.sh
 does. Nothing here reaches the network: `call` is replaced by fakes, and the
 ID tokens are signed with a throwaway RSA key made here.
 """
@@ -16,6 +16,7 @@ import time
 import unittest
 import urllib.parse
 import urllib.request
+import uuid
 from importlib.machinery import SourceFileLoader
 from importlib.util import module_from_spec, spec_from_loader
 
@@ -407,6 +408,9 @@ class AdapterTest(unittest.TestCase):
              "output": "ok"}])
         self.assertEqual(out["tools"][0]["type"], "namespace")
         self.assertEqual(out["tools"][0]["tools"][0]["name"], "bash")
+        # The history goes last, so a request starts with the bytes of the
+        # one before it (see to_responses).
+        self.assertEqual(list(out)[-1], "input")
 
     def test_settings(self):
         out = adapter.to_responses({
@@ -427,6 +431,27 @@ class AdapterTest(unittest.TestCase):
         })
         self.assertEqual(out["text"],
                          {"verbosity": "high", "format": {"type": "text"}})
+
+    def test_cache_key(self):
+        first = {"model": "m", "messages": [
+            {"role": "system", "content": "be brief"},
+            {"role": "user", "content": "task one"}]}
+        later = dict(first, messages=first["messages"] + [
+            {"role": "assistant", "content": "working"},
+            {"role": "user", "content": "go on"}])
+        other = dict(first, messages=first["messages"][:1] + [
+            {"role": "user", "content": "task two"}])
+        key = adapter.to_responses(first)["prompt_cache_key"]
+        self.assertEqual(str(uuid.UUID(key)), key)
+        self.assertEqual(adapter.to_responses(later)["prompt_cache_key"], key)
+        self.assertNotEqual(adapter.to_responses(other)["prompt_cache_key"],
+                            key)
+        mine = dict(first, prompt_cache_key="climb-a01")
+        self.assertEqual(adapter.to_responses(mine)["prompt_cache_key"],
+                         "climb-a01")
+        bad = dict(first, prompt_cache_key="a\r\nX-Evil: 1")
+        self.assertEqual(adapter.to_responses(bad)["prompt_cache_key"], key)
+        self.assertEqual(list(adapter.to_responses(bad))[-1], "input")
 
     def translate(self, events, headers_file=None):
         out = io.StringIO()
@@ -460,6 +485,17 @@ class AdapterTest(unittest.TestCase):
         self.assertEqual(chunks[4]["usage"],
                          {"prompt_tokens": 5, "completion_tokens": 2})
         self.assertTrue(raw.endswith("data: [DONE]\n\n"))
+
+    def test_cached_tokens(self):
+        chunks, _ = self.translate([
+            {"type": "response.output_text.delta", "delta": "hi"},
+            {"type": "response.completed", "response": {"usage": {
+                "input_tokens": 900, "output_tokens": 2,
+                "input_tokens_details": {"cached_tokens": 768}}}},
+        ])
+        self.assertEqual(chunks[-1]["usage"], {
+            "prompt_tokens": 900, "completion_tokens": 2,
+            "prompt_tokens_details": {"cached_tokens": 768}})
 
     def test_failure_becomes_a_status(self):
         path = os.path.join(tempfile.mkdtemp(), "headers")

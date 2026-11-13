@@ -12,17 +12,25 @@ docs/plugins/adapters.md). For a model call (a URL that ends in
   passes the fields in PASSED, and leaves out every other setting, such as
   temperature and max_tokens, which that route does not accept, so a
   setting from a plugin never fails the call;
+- names the conversation with one UUID, in `prompt_cache_key` and in a
+  `session_id` header, so that its calls go to the server that holds its
+  prompt cache;
 - turns the Responses event stream back into Chat Completions chunks;
 - turns a failure inside the stream into an HTTP status in curl's -D file,
   so arx retries, compacts or stops as it would for that status.
 
 Any other call, such as `arx request /models`, runs unchanged.
 """
+import hashlib
 import json
+import re
 import subprocess
 import sys
+import uuid
 
 NAMESPACE = "arx"
+# A prompt_cache_key from the spec that can also be the session_id header.
+KEY = re.compile(r"[A-Za-z0-9_.:-]{1,64}")
 # Request fields the Responses API takes as they are.
 PASSED = ("reasoning", "text", "parallel_tool_calls", "include",
           "prompt_cache_key", "service_tier")
@@ -115,11 +123,33 @@ def to_tools(tools):
              "description": "The tools of this agent.", "tools": functions}]
 
 
+def cache_key(out):
+    """A UUID that stays the same for every call of a conversation: from
+    the model, the instructions and the first input item, which only a
+    restart changes.
+
+    The ChatGPT plan route picks the server for a call from its
+    `session_id` header, so calls with one header reuse one server's
+    prompt cache. Without the header, each call goes to a random server
+    and few calls reuse the cache (measured
+    on 2026-11-09, 10 calls a run: 15-20% of input tokens cached without
+    it, 74-91% with it). It ignores `prompt_cache_key` alone; Codex sends
+    both."""
+    seed = json.dumps([out.get("model"), out.get("instructions"),
+                       (out.get("input") or [None])[0]], sort_keys=True)
+    digest = hashlib.sha256(seed.encode()).hexdigest()[:32]
+    return str(uuid.UUID(hex=digest, version=4))
+
+
 def to_responses(request):
-    """A Chat Completions request as a Responses request."""
+    """A Chat Completions request as a Responses request.
+
+    `input` goes last. The history only grows between turns, so each
+    request then starts with the exact bytes of the one before it, up to
+    the end of its `input` list: the stable prefix that the prompt cache
+    needs shows in the bytes, and tests/chatgpt.sh checks it."""
     instructions, items = to_input(request.get("messages", []))
-    out = {"model": request.get("model"), "input": items, "store": False,
-           "stream": True}
+    out = {"model": request.get("model")}
     if instructions:
         out["instructions"] = instructions
     tools = to_tools(request.get("tools"))
@@ -140,6 +170,15 @@ def to_responses(request):
         # A `text` that the request sets itself wins, as `reasoning` does.
         text = out.get("text") if isinstance(out.get("text"), dict) else {}
         out["text"] = dict({"verbosity": request["verbosity"]}, **text)
+    out["store"] = False
+    out["stream"] = True
+    out["input"] = items
+    key = out.get("prompt_cache_key")
+    if not (isinstance(key, str) and KEY.fullmatch(key)):
+        key = cache_key(out)  # none, or not fit for a header
+        del out["input"]  # keep it last
+        out["prompt_cache_key"] = key
+        out["input"] = items
     return out
 
 
@@ -188,9 +227,12 @@ class Translator:
             finish = "length"
         self.delta({}, finish)
         usage = response.get("usage") or {}
-        self.emit({"choices": [], "usage": {
-            "prompt_tokens": usage.get("input_tokens", 0),
-            "completion_tokens": usage.get("output_tokens", 0)}})
+        out = {"prompt_tokens": usage.get("input_tokens", 0),
+               "completion_tokens": usage.get("output_tokens", 0)}
+        cached = (usage.get("input_tokens_details") or {}).get("cached_tokens")
+        if cached is not None:  # the part of the prompt read from the cache
+            out["prompt_tokens_details"] = {"cached_tokens": cached}
+        self.emit({"choices": [], "usage": out})
         self.out.write("data: [DONE]\n\n")
         self.out.flush()
 
@@ -275,8 +317,9 @@ def main(args):
     suffix = "/chat/completions"
     if not args[-1].endswith(suffix):
         return subprocess.run(args, input=body).returncode
-    args = args[:-1] + [args[-1][:-len(suffix)] + "/responses"]
     request = to_responses(json.loads(body))
+    args = args[:-1] + ["-H", "session_id: %s" % request["prompt_cache_key"],
+                        args[-1][:-len(suffix)] + "/responses"]
     proc = subprocess.Popen(args, stdin=subprocess.PIPE,
                             stdout=subprocess.PIPE)
     proc.stdin.write(json.dumps(request).encode())

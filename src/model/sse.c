@@ -13,7 +13,8 @@
 // Non-SSE body text kept for error messages.
 static const size_t kMaxRawBytes = 65536;
 
-// Reads usage numbers, wherever in the stream they arrive. Providers report
+// Reads usage numbers, wherever in the stream they arrive, including the
+// prompt tokens the provider read from its prompt cache. Providers report
 // cost differently: OpenRouter sends usage.cost; Vercel AI Gateway sends
 // usage.cost = 0 when the request used your own provider key, with the real
 // price in usage.market_cost. The first non-zero one wins; with none, the
@@ -25,6 +26,8 @@ static void ReadUsage(Stream* s, cJSON* usage) {
   s->tokens_in = (int64_t)JsonNum(usage, "prompt_tokens", (double)s->tokens_in);
   s->tokens_out =
       (int64_t)JsonNum(usage, "completion_tokens", (double)s->tokens_out);
+  s->tokens_cached = (int64_t)JsonNum(
+      usage, "prompt_tokens_details.cached_tokens", (double)s->tokens_cached);
   for (size_t i = 0; i < sizeof(kCostFields) / sizeof(kCostFields[0]); i++) {
     double cost = JsonNum(usage, kCostFields[i], 0);
     if (cost > 0) {

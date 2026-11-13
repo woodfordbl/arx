@@ -140,6 +140,15 @@ OpenAI answers. Nothing in the tests reaches OpenAI.
   `ARX_CHATGPT_DIR`.
 - **No reasoning carried between turns.** With `store: false`, arx does not
   send the model's earlier reasoning back.
+- **Prompt cache.** Each request starts with the exact bytes of the one
+  before it, and the adapter names the conversation with one UUID, in
+  `prompt_cache_key` and in a `session_id` header. The plan route uses the
+  header to send each call to the server that holds the conversation's
+  cache; it ignores `prompt_cache_key` alone. In live tests on 2026-11-09
+  (10 calls each), 74% to 91% of input tokens came from the cache with the
+  header, and 15% to 20% without it. A proxy between arx and OpenAI must
+  pass the `session_id` header on.
+  The `tokens_cached` field of each `model.message` event shows the hits.
 - **The tests use fake answers.** The flow was checked by hand against the
   live service on 2026-11-09: first sign-in, `arx models`, text and tool
   calls through the `responses` adapter, and a refresh that rotated the

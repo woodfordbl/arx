@@ -90,6 +90,7 @@ static void Account(Agent* a, const Reply* r) {
   cJSON* e = EventNew("model.message");
   cJSON_AddNumberToObject(e, "tokens_in", (double)r->tokens_in);
   cJSON_AddNumberToObject(e, "tokens_out", (double)r->tokens_out);
+  cJSON_AddNumberToObject(e, "tokens_cached", (double)r->tokens_cached);
   cJSON_AddNumberToObject(e, "cost", r->cost);
   cJSON_AddNumberToObject(
       e, "tool_calls",

@@ -234,6 +234,7 @@ LlmStatus LlmChatWith(struct Agent* a, const char* model, cJSON* settings,
       reply->message = StreamMessage(&s, a->session.turns);
       reply->tokens_in = s.tokens_in;
       reply->tokens_out = s.tokens_out;
+      reply->tokens_cached = s.tokens_cached;
       reply->cost =
           s.has_cost ? s.cost : PriceCost(root, s.tokens_in, s.tokens_out);
       snprintf(reply->finish, sizeof(reply->finish), "%s",
